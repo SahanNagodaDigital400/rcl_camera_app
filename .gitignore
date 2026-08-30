@@ -2,3 +2,10 @@
 .bmad-loop/cache/
 .bmad-loop/policy.toml
 _bmad/render/
+poc/Tiles/
+poc/index/
+poc/models/
+poc/queries/
+poc/.venv/
+__pycache__/
+.pytest_cache/

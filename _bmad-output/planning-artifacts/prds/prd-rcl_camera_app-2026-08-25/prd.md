@@ -2,7 +2,7 @@
 title: Rocell Tile Identification App
 status: final
 created: 2026-08-25
-updated: 2026-08-25
+updated: 2026-08-30
 ---
 
 # PRD: Rocell Tile Identification App
@@ -10,7 +10,7 @@ updated: 2026-08-25
 
 ## 0. Document Purpose
 
-This PRD is for the team building the Rocell Tile Identification App, and for the Rocell stakeholders it's built for, to align on what the product must do before architecture and story breakdown begin. It builds on the product brief (`_bmad-output/planning-artifacts/briefs/brief-rcl_camera_app-2026-08-25/brief.md` + `addendum.md`) and the working repository conventions (`AGENTS.md` / `CLAUDE.md`) rather than repeating them — full security requirement detail, the dataset audit, and technology choices live there, not here. This PRD uses the Glossary in §3 exactly; features are grouped with functional requirements (FR-1 through FR-23) nested beneath them; inferred content is tagged `[ASSUMPTION]` inline and indexed in §13 for confirmation.
+This PRD is for the team building the Rocell Tile Identification App, and for the Rocell stakeholders it's built for, to align on what the product must do before architecture and story breakdown begin. It builds on the product brief (`_bmad-output/planning-artifacts/briefs/brief-rcl_camera_app-2026-08-25/brief.md` + `addendum.md`) and the working repository conventions (`AGENTS.md` / `CLAUDE.md`) rather than repeating them — full security requirement detail, the dataset audit, and technology choices live there, not here. This PRD uses the Glossary in §3 exactly; features are grouped with functional requirements (FR-1 through FR-24) nested beneath them; inferred content is tagged `[ASSUMPTION]` inline and indexed in §13 for confirmation.
 
 ## 1. Vision
 
@@ -38,11 +38,11 @@ The system is built to survive an independent penetration test before general st
 - **UJ-1. Kasun identifies an unlabelled tile mid-sale.** `[ASSUMPTION: narrated from the brief's described flow, not a user-provided session — confirm it matches reality.]`
   - **Persona + context:** Kasun, a showroom sales associate, is helping a customer who's brought in a leftover tile from a renovation and wants three more boxes of the same one.
   - **Entry state:** Already authenticated — his session has persisted through the shift. On the showroom floor, PWA installed to his home screen.
-  - **Path:** Opens the app → taps Scan → on-screen framing guide helps him fill the frame with the tile face → captures the photo → brief processing → results screen shows three candidates, each with its reference image, cleaned code, and size/design.
+  - **Path:** Opens the app → taps Scan → on-screen framing guide helps him fill the frame with the tile face → captures the photo → adjusts the crop selection to the tile face and confirms → brief processing → results screen shows three candidates, each with its reference image, cleaned code, and size/design.
   - **Climax:** The top card's reference image visually matches the tile in his hand within a second or two of looking at it — he doesn't need to recognize a code, just recognize a picture.
   - **Resolution:** He reads the code to the customer and proceeds with the order. The scan is saved to his history.
   - **Edge case:** None of the three candidates look right — he retakes the photo with better framing, or falls back to asking a colleague (this is what Fallback Rate, §11, measures).
-  - **Capability mapping:** The system must let an authenticated user capture or upload a photo → FR-6. The system must return ranked candidates with images, code, size, and design → FR-7. The system must log the scan to the user's history → FR-8.
+  - **Capability mapping:** The system must let an authenticated user capture or upload a photo → FR-6. The system must let the user crop to the tile face before submitting → FR-24. The system must return ranked candidates with images, code, size, and design → FR-7. The system must log the scan to the user's history → FR-8.
 
 - **UJ-2. Nadeesha adds a new tile range the day it arrives.** `[ASSUMPTION: narrated from the brief's described flow, not a user-provided session — confirm it matches reality.]`
   - **Persona + context:** Nadeesha, an operations admin, receives a new tile range and needs it identifiable before it hits the showroom floor.
@@ -63,7 +63,7 @@ The system is built to survive an independent penetration test before general st
 - **Face** — One manufactured surface variation within a Product. Shade-varying ranges have several Faces; not all are necessarily photographed.
 - **Code** — The cleaned reference-image file name returned as the scan result (e.g. `RP.CMA.0001DJ.SM.0T`). Not a separately maintained SKU — see §9 Non-Goals.
 - **Reference Image** — A catalogue photo of a Product/Face, indexed for matching. Distinct from a **Scan**.
-- **Scan** — A photo a Staff user captures or uploads to identify a Product.
+- **Scan** — The cropped photo a Staff user submits to identify a Product — the result of capturing or uploading (FR-6), then cropping to the tile face (FR-24). The pre-crop capture/upload is an input, not itself the Scan.
 - **Candidate** — One of the (up to three) results returned for a Scan: a specific Reference Image — and therefore a specific Product and Face — ranked by visual similarity. Candidates are not deduplicated by Product: two or three Candidates may represent different Faces of the same Product (resolved, OQ-12).
 - **Catalogue** — The full set of indexed Products and their Reference Images.
 - **Staff** — A user role that can scan, view results, and view their own scan history.
@@ -119,7 +119,7 @@ A signed-in Staff or Administrator user can change their own password at any tim
 
 ### 4.2 Tile Scanning & Identification
 
-**Description:** The core staff-facing capability. A user captures or uploads a photo of a tile and receives up to three ranked candidate matches — never a single unverifiable answer — each shown with its reference image so the user can visually confirm before acting on it. Realizes UJ-1.
+**Description:** The core staff-facing capability. A user captures or uploads a photo of a tile, crops it down to just the tile face, and receives up to three ranked candidate matches — never a single unverifiable answer — each shown with its reference image so the user can visually confirm before acting on it. Realizes UJ-1.
 
 **Functional Requirements:**
 
@@ -129,7 +129,7 @@ An authenticated Staff or Administrator user can capture a live photo via the de
 
 **Consequences (testable):**
 - The framing guide is visible during live capture.
-- Both the live-capture and upload paths produce an equivalent scan submission.
+- Both the live-capture and upload paths produce an equivalent scan submission — both proceed to the crop step (FR-24) before submission, uploaded photos included.
 
 #### FR-7: Ranked candidate results with images
 
@@ -141,7 +141,7 @@ The system returns up to three Candidates for a submitted Scan, ranked by visual
 - Candidates are ranked purely by visual similarity and are not deduplicated by Product — two or three Candidates may show different Faces of the same Product (resolved, OQ-12).
 
 **Feature-specific NFRs:**
-- Capture-to-result latency under 3 seconds (§5).
+- Crop-confirmation-to-result latency under 3 seconds (§5). Measured from crop confirmation, not initial capture — cropping is user-paced and isn't counted against system latency.
 
 #### FR-8: Scan history
 
@@ -158,6 +158,17 @@ The system detects a materially blurry or poorly framed capture and prompts the 
 - A test image below the blur/framing threshold triggers a retake prompt rather than proceeding to matching. `[ASSUMPTION: the exact threshold isn't set here — see OQ-13.]`
 
 **Out of Scope:** Identifying tiles already installed (grouted, angled, partially obscured) — §9.
+
+#### FR-24: Crop before submit
+
+After capture or upload, the user can adjust a crop selection to isolate the tile face before the Scan is submitted for matching. Realizes UJ-1 (refined).
+
+**Consequences (testable):**
+- The submitted Scan is the cropped region, not the original full-frame capture or upload. `[ASSUMPTION: crop defaults to a pre-filled selection — the framing-guide area on a live capture, or an auto-detected best-guess on an upload — which the user can drag/resize before confirming. See OQ-14.]`
+- Confirming the crop is required before submission proceeds — there is no skip path directly from capture/upload to matching. `[ASSUMPTION — see OQ-14: is a mandatory crop the right call, or should it be skippable for a photo that's already tight?]`
+- The crop selection is free-form (any rectangle within the source image), not locked to a fixed aspect ratio, since tile proportions vary by Product. `[ASSUMPTION — see OQ-14.]`
+
+**Notes:** This is a genuinely new capability, not previously in the brief or an earlier PRD draft — added by explicit request. It has an architecture consequence beyond this PRD's scope: unlike FR-9's blur check, a crop changes *what's in* the image, not just its quality, which interacts with the architecture spine's AD-1 (index/query preprocessing symmetry) and AD-2 (client-side resize is bandwidth-only, never the preprocessing boundary). Worth noting in the product's favor: reference images are already expected to be "tile face fills the frame, no background clutter" (brief `addendum.md`, Target State for the Reference Set) — so a tightened query-time crop likely *improves* index/query symmetry rather than breaking it, but the spine should say so explicitly rather than leave it implied. `[NOTE FOR PM]` Flag this FR for an architecture spine Update before or during Foundation build.
 
 ### 4.3 Admin — User Management
 
@@ -280,7 +291,7 @@ The system rate-limits scan submissions per user, bounding the volume achievable
 
 ## 5. Cross-Cutting NFRs
 
-- **Performance:** Capture-to-result under 3 seconds, end to end (validates via SM-2).
+- **Performance:** Crop-confirmation-to-result under 3 seconds, end to end (validates via SM-2). Cropping (FR-24) is user-paced and excluded from the budget — the clock starts when the user confirms the crop, not when they open the camera.
 - **Security:** Every privileged action is authorized server-side, independent of what the UI hides; no credential or secret is ever stored or transmitted in recoverable form. Every image upload — a Scan (FR-6) or a catalogue Reference Image (FR-14, FR-15, FR-17) — is validated by content inspection, never by file extension, and re-encoded before storage. This PRD states the product-facing consequence of each rule inline against the relevant FR; the complete standing rule set lives in `AGENTS.md` (Policy) and the brief's `addendum.md` — this PRD does not duplicate it.
 - **Auditability:** Every account and Catalogue change is attributable to a specific Administrator, timestamped, and permanent (FR-20–22).
 - **Availability:** `[ASSUMPTION]` No formal SLA defined for v1 — availability during Rocell business hours is the working bar. Confirm or set a real target (§12).
@@ -311,7 +322,7 @@ Full 14-item risk register: `_bmad-output/planning-artifacts/briefs/brief-rcl_ca
 
 0. **Dataset consolidation** — migrate reference images to a Rocell-owned store, audit coverage and naming. Prerequisite for a realistic accuracy estimate, not a hard blocker on starting Phase 1.
 1. **Foundation** — FR-1–5 (auth), FR-20–22 (audit), FR-10–19 (admin user/catalogue management), indexing pipeline.
-2. **Scanning pilot** — FR-6–9 against a 150–200 product pilot Catalogue. Internal accuracy testing sets the SM-1 target.
+2. **Scanning pilot** — FR-6–9, FR-24 against a 150–200 product pilot Catalogue. Internal accuracy testing sets the SM-1 target.
 3. **Full rollout** — full Catalogue ingestion, tuning from pilot findings, staff training. **Gated on an independent penetration test passing.**
 4. **Refinement** — accuracy improvements from real scan data, reference-image backfill for weak products.
 
@@ -331,7 +342,7 @@ Full 14-item risk register: `_bmad-output/planning-artifacts/briefs/brief-rcl_ca
 
 ### 10.1 In Scope
 
-- Everything in FR-1 through FR-23. Both phase-blocking forks flagged during review are now resolved: FR-7's Candidate-dedup semantics (OQ-12 — Candidates are not deduplicated by Product) and the auth approach (OQ-6 — no existing IdP, local auth per FR-1–5 stands).
+- Everything in FR-1 through FR-24 (FR-24, crop before submit, added in a later update — see `.memlog.md`). Both phase-blocking forks flagged during the original review are resolved: FR-7's Candidate-dedup semantics (OQ-12 — Candidates are not deduplicated by Product) and the auth approach (OQ-6 — no existing IdP, local auth per FR-1–5 stands). FR-24's own open items are non-blocking (OQ-14) but its architecture-spine consequence should land before or during Foundation build (see FR-24 Notes).
 
 ### 10.2 Out of Scope for MVP
 
@@ -344,7 +355,7 @@ Full 14-item risk register: `_bmad-output/planning-artifacts/briefs/brief-rcl_ca
 
 **Primary**
 - **SM-1**: Top-3 accuracy — the correct Product appears among the returned Candidates. Target set after the Phase 2 pilot (§8). Validates FR-7.
-- **SM-2**: Time to result — capture to displayed candidates, under 3 seconds. Validates FR-6, FR-7.
+- **SM-2**: Time to result — crop confirmation to displayed candidates, under 3 seconds. Validates FR-6, FR-7, FR-24.
 
 **Secondary**
 - **SM-3**: Adoption — proportion of showroom staff scanning at least weekly. Validates FR-6.
@@ -370,6 +381,7 @@ Full 14-item risk register: `_bmad-output/planning-artifacts/briefs/brief-rcl_ca
 11. §5 Availability: is business-hours-only availability actually acceptable, or is there a real uptime expectation?
 12. **[RESOLVED]** Must the three Candidates in FR-7 be distinct Products, or can they include multiple Faces of the same Product? — Can repeat: Candidates are not deduplicated by Product. This means SM-1/SM-6 accuracy counts a Scan as correct if any returned Candidate matches the true Product, even if another Candidate is a different Face of that same Product.
 13. Four functional thresholds are referenced but not numerically set: FR-9's blur/framing threshold, FR-14/19's reference-image quality threshold, FR-22's anomaly baseline (login time/location, scan-volume pattern), and FR-23's scan-rate limit. Each needs a concrete bound — calibrated during the Foundation build and the Phase 2 pilot, not prescribed here.
+14. FR-24's crop UX isn't nailed down: is confirming the crop mandatory, or skippable for a photo that's already tight? Free-form rectangle or a fixed/suggested aspect ratio? Auto-detected default selection, or always starting from the full frame? Resolve during UX/build, not blocking the PRD.
 
 ## 13. Assumptions Index
 
@@ -378,3 +390,4 @@ Full 14-item risk register: `_bmad-output/planning-artifacts/briefs/brief-rcl_ca
 - §5 Accessibility NFR — no formal WCAG conformance target assumed for v1.
 - §1 Vision — the brief's own `[ASSUMPTION]` vision (extending the capability to warehouse checks, returns, and staff training) is deliberately not carried into this PRD's Vision, which scopes to the identification product only. Not an oversight — a scoping decision. Revisit as a separate initiative if Rocell wants it pursued.
 - FR-9, FR-19 Notes, FR-22, FR-23 — none of the four thresholds these FRs depend on is numerically set; consolidated as OQ-13.
+- FR-24 — crop-selection defaults, mandatory-vs-skippable, and free-form-vs-fixed-aspect are all inferred, not confirmed; consolidated as OQ-14.
