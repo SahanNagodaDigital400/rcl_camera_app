@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rocell Tile Scanner — POC</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --card: #fff; --ink: #1a1a18; --muted: #6b6b66;
+    --line: #e2e2dd; --accent: #8a5a2b; --ok: #2f6f4f;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161614; --card:#201f1c; --ink:#f0efec; --muted:#a3a099;
+            --line:#33312d; --accent:#d0a06a; --ok:#7fc0a0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  header { padding:18px 20px 14px; border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:17px; letter-spacing:-0.01em; }
+  .sub { color:var(--muted); font-size:12.5px; margin-top:3px; }
+  main { max-width:760px; margin:0 auto; padding:20px; }
+  .stage { background:var(--card); border:1px solid var(--line); border-radius:14px;
+           overflow:hidden; }
+  #view { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; background:#000; }
+  #view.hide { display:none; }
+  #drop { aspect-ratio:4/3; display:flex; flex-direction:column; align-items:center;
+          justify-content:center; gap:8px; color:var(--muted); text-align:center;
+          padding:24px; border:2px dashed var(--line); border-radius:14px; margin:0; }
+  #drop.hide { display:none; }
+  #drop.over { border-color:var(--accent); color:var(--accent); }
+  .bar { display:flex; gap:10px; padding:12px; flex-wrap:wrap; }
+  button, .filebtn { flex:1; min-width:130px; padding:12px 16px; border-radius:10px;
+      border:1px solid var(--line); background:var(--card); color:var(--ink);
+      font:inherit; font-weight:550; cursor:pointer; text-align:center; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.45; cursor:default; }
+  input[type=file] { display:none; }
+  .status { padding:10px 2px; color:var(--muted); font-size:13px; min-height:20px; }
+  .status.err { color:#b5462f; }
+  .note { margin:14px 0 0; padding:11px 13px; border-left:3px solid var(--accent);
+          background:var(--card); border-radius:0 8px 8px 0; font-size:12.5px; color:var(--muted); }
+  ol.results { list-style:none; padding:0; margin:16px 0 0; display:grid; gap:10px; }
+  .cand { display:grid; grid-template-columns:96px 1fr auto; gap:14px; align-items:center;
+          background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .cand img { width:96px; height:96px; object-fit:cover; border-radius:8px;
+              background:var(--bg); border:1px solid var(--line); }
+  .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px;
+          word-break:break-all; }
+  .prod { font-size:12.5px; color:var(--muted); margin-top:3px; }
+  .rank { font-size:12px; color:var(--muted); }
+  .score { font-variant-numeric:tabular-nums; font-size:13px; color:var(--ok); font-weight:600; }
+  .warn { color:var(--accent); font-size:11.5px; }
+  canvas { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Rocell Tile Scanner <span style="color:var(--muted);font-weight:400">· POC</span></h1>
+  <div class="sub" id="info">loading index…</div>
+</header>
+
+<main>
+  <div class="stage">
+    <video id="view" class="hide" playsinline muted autoplay></video>
+    <p id="drop">
+      <strong>Drop a tile photo here</strong>
+      <span>or use the buttons below</span>
+    </p>
+    <div class="bar">
+      <button id="cam">Start camera</button>
+      <button id="shoot" class="primary" disabled>Capture &amp; match</button>
+      <label class="filebtn" for="pick">Choose / take photo</label>
+      <input id="pick" type="file" accept="image/*" capture="environment">
+    </div>
+  </div>
+
+  <div class="status" id="status"></div>
+  <ol class="results" id="results"></ol>
+
+  <p class="note">
+    Three candidates are always returned, never one. Size and finish are not
+    recoverable from a photo — <strong>MONO COLOUR GLOSSY</strong> and
+    <strong>MONO COLOUR MATT</strong> are visually identical. Verify against the
+    reference image before quoting a code.
+  </p>
+</main>
+
+<canvas id="canvas"></canvas>
+<script>
+const $ = s => document.querySelector(s);
+const view = $('#view'), drop = $('#drop'), status = $('#status'), results = $('#results');
+let stream = null;
+
+fetch('/api/info').then(r => r.json()).then(d => {
+  $('#info').textContent = d.ready
+    ? `${d.images} reference images · ${d.products} products · ${d.vectors} vectors · ${d.pipeline_version}`
+    : `index not ready — ${d.error}`;
+}).catch(() => $('#info').textContent = 'server unreachable');
+
+function say(msg, isErr) { status.textContent = msg; status.className = 'status' + (isErr ? ' err' : ''); }
+
+$('#cam').onclick = async () => {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null;
+                view.classList.add('hide'); drop.classList.remove('hide');
+                $('#shoot').disabled = true; $('#cam').textContent = 'Start camera'; return; }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, audio: false });
+    view.srcObject = stream; view.classList.remove('hide'); drop.classList.add('hide');
+    $('#shoot').disabled = false; $('#cam').textContent = 'Stop camera'; say('');
+  } catch (e) {
+    // getUserMedia needs a secure context: fine on localhost, blocked over plain
+    // HTTP from a phone. The file input below opens the native camera instead.
+    say('Camera unavailable (' + e.name + '). On a phone over http://, use "Choose / take photo".', true);
+  }
+};
+
+$('#shoot').onclick = () => {
+  const c = $('#canvas'), scale = Math.min(1, 1024 / Math.max(view.videoWidth, view.videoHeight));
+  c.width = Math.round(view.videoWidth * scale); c.height = Math.round(view.videoHeight * scale);
+  c.getContext('2d').drawImage(view, 0, 0, c.width, c.height);
+  c.toBlob(b => send(b, 'capture.jpg'), 'image/jpeg', 0.9);
+};
+
+$('#pick').onchange = e => { if (e.target.files[0]) send(e.target.files[0], e.target.files[0].name); };
+
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => {
+  e.preventDefault(); drop.classList.remove('over');
+  const f = e.dataTransfer.files[0]; if (f) send(f, f.name);
+};
+
+async function send(blob, name) {
+  results.innerHTML = ''; say('matching…');
+  const fd = new FormData(); fd.append('file', blob, name);
+  const t = performance.now();
+  try {
+    const r = await fetch('/api/scan', { method: 'POST', body: fd });
+    if (!r.ok) { say('scan failed: ' + (await r.text()), true); return; }
+    const d = await r.json();
+    say(`${d.candidates.length} candidates · ${d.elapsed_ms} ms server · ${Math.round(performance.now()-t)} ms round trip`);
+    render(d.candidates);
+  } catch (e) { say('request failed: ' + e.message, true); }
+}
+
+function render(cands) {
+  results.innerHTML = cands.map(c => `
+    <li class="cand">
+      <img src="/${c.thumb}" alt="${c.design}">
+      <div>
+        <div class="code">${c.code}</div>
+        <div class="prod">${c.size} · ${c.design}${c.face ? ' · face ' + c.face : ''}</div>
+        ${c.design_unknown ? '<div class="warn">⚠ design folder unclassified</div>' : ''}
+      </div>
+      <div style="text-align:right">
+        <div class="rank">#${c.rank}</div>
+        <div class="score">${c.score.toFixed(3)}</div>
+      </div>
+    </li>`).join('');
+}
+</script>
+</body>
+</html>
