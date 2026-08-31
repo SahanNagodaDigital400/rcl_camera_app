@@ -15,6 +15,7 @@ That is an open production decision; see poc/README.md.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 import time
@@ -29,7 +30,26 @@ from .catalog import format_report, scan_tree
 POC_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TILES = POC_ROOT / "Tiles"
 DEFAULT_INDEX = POC_ROOT / "index"
-THUMB_SIZE = 512
+# The results card renders these at 96 CSS px, so 320 covers a 3x device pixel
+# ratio with room to spare. They were 512px/q82 (~17 KB median); at 320/q78
+# progressive they are ~8 KB, which is 3x less to pull over mobile data for a
+# picture nobody sees larger than a thumbnail.
+THUMB_SIZE = 320
+THUMB_QUALITY = 78
+
+# Full-size views for on-screen verification, pre-generated. Building one on
+# demand means decoding an original of up to 93 MB, which measured 1-3.5 s — the
+# user is staring at a spinner for the whole of it. Generating all 131 up front
+# costs one pass and ~20 MB on disk.
+REFERENCE_SIZE = 1280
+REFERENCE_QUALITY = 82
+
+# Byte budget for one reference view. Highly detailed textures (wood grain,
+# speckled stone) encode far larger than the median 112 KB — the worst hit
+# 540 KB, about 1.4 s on 4G. Stepping quality down only for those bounds the tail
+# while leaving ~90% of the set at full quality.
+REFERENCE_MAX_BYTES = 300 * 1024
+REFERENCE_MIN_QUALITY = 68
 
 # Pixel standard deviation below which a reference carries no retrievable
 # texture. Such an image will match any washed-out photo and can never be
@@ -72,8 +92,9 @@ def build(
             print(f"  [{i+1}/{len(refs)}] SKIP {ref.relpath} — {type(exc).__name__}", flush=True)
             continue
 
-        thumb_img = img.copy().resize(_thumb_size(img.size), Image.Resampling.BICUBIC)
-        thumb_img.save(thumbs / f"{len(meta):04d}.jpg", quality=82)
+        thumb_img = img.copy().resize(_thumb_size(img.size), Image.Resampling.LANCZOS)
+        _save_thumb(thumb_img, thumbs / f"{len(meta):04d}.jpg")
+        _save_reference(img, index_dir / "refs" / f"{len(meta):04d}.jpg")
 
         std = float(np.asarray(thumb_img, dtype=np.float32).std())
         if std < FEATURELESS_STD:
@@ -152,6 +173,63 @@ def build(
     return summary
 
 
+def _save_thumb(img: Image.Image, path: Path) -> None:
+    """Progressive + optimized: smaller bytes, and it paints top-down on a slow link."""
+    img.save(path, "JPEG", quality=THUMB_QUALITY, optimize=True, progressive=True)
+
+
+def _save_reference(img: Image.Image, path: Path) -> None:
+    view = img
+    if max(view.size) > REFERENCE_SIZE:
+        k = REFERENCE_SIZE / max(view.size)
+        view = view.resize((max(1, round(view.width * k)), max(1, round(view.height * k))),
+                           Image.Resampling.LANCZOS)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    quality = REFERENCE_QUALITY
+    while True:
+        buf = io.BytesIO()
+        view.save(buf, "JPEG", quality=quality, optimize=True, progressive=True)
+        if buf.tell() <= REFERENCE_MAX_BYTES or quality <= REFERENCE_MIN_QUALITY:
+            path.write_bytes(buf.getvalue())
+            return
+        quality -= 6
+
+
+def rebuild_thumbnails(index_dir: Path = DEFAULT_INDEX) -> int:
+    """Regenerate thumbnails from an existing index without re-embedding anything.
+
+    Reads the reference list out of meta.json rather than re-walking the tree, so
+    a thumbnail can never drift out of alignment with the vector that owns it.
+    """
+    index_dir = Path(index_dir)
+    meta = json.loads((index_dir / "meta.json").read_text())
+    thumbs = index_dir / "thumbs"
+    thumbs.mkdir(parents=True, exist_ok=True)
+
+    done = 0
+    for ref in meta["references"]:
+        src = POC_ROOT / "Tiles" / ref["relpath"]
+        try:
+            img = vision.load_image(src)
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            print(f"  SKIP {ref['relpath']} — {type(exc).__name__}", flush=True)
+            continue
+        _save_thumb(img.resize(_thumb_size(img.size), Image.Resampling.LANCZOS),
+                    index_dir / ref["thumb"])
+        _save_reference(img, index_dir / "refs" / Path(ref["thumb"]).name)
+        done += 1
+        if done % 25 == 0:
+            print(f"  {done}/{len(meta['references'])}", flush=True)
+
+    total = sum(p.stat().st_size for p in thumbs.glob("*.jpg"))
+    rtotal = sum(p.stat().st_size for p in (index_dir / "refs").glob("*.jpg"))
+    print(f"\n{done} thumbnails at {THUMB_SIZE}px q{THUMB_QUALITY} — "
+          f"{total/1e6:.1f} MB total, {total/max(done,1)/1024:.0f} KB average")
+    print(f"{done} reference views at {REFERENCE_SIZE}px q{REFERENCE_QUALITY} — "
+          f"{rtotal/1e6:.1f} MB total, {rtotal/max(done,1)/1024:.0f} KB average")
+    return done
+
+
 def _thumb_size(size: tuple[int, int]) -> tuple[int, int]:
     w, h = size
     s = THUMB_SIZE / max(w, h)
@@ -165,8 +243,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--views", type=int, default=augment.VIEWS_PER_IMAGE)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--limit", type=int, default=None, help="index only the first N images (smoke test)")
+    p.add_argument("--thumbs-only", action="store_true",
+                   help="regenerate thumbnails from the existing index; no re-embedding")
     a = p.parse_args(argv)
-    build(a.tiles, a.index, a.views, a.batch_size, a.limit)
+    if a.thumbs_only:
+        rebuild_thumbnails(a.index)
+    else:
+        build(a.tiles, a.index, a.views, a.batch_size, a.limit)
     return 0
 
 

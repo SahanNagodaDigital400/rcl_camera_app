@@ -21,12 +21,22 @@ from . import vision
 POC_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INDEX = POC_ROOT / "index"
 
-TOP_K = 3  # product rule: always three, never one. Not configurable by design.
+# Scoring granularity for the eval harness, and the PRD's spec for production
+# (FR-7, "up to three Candidates"). Keep this at 3: evaluate.py reports top-1 and
+# top-3 against it, so raising it would silently relabel a top-10 number as
+# top-3. How many the UI *displays* is a separate knob — server.DISPLAY_K.
+TOP_K = 3
 
 # Query-time views. Rotation invariance is already baked into the index, so this
-# only covers framing: the whole frame, and a centre zoom for when the tile
-# fills less of the shot.
-QUERY_ZOOMS = (1.0, 0.55)
+# would only cover framing.
+#
+# A 0.55 centre zoom was tried as a second view and measured worse: top-1 65.6%
+# vs 67.2%, top-3 79.5% vs 81.1%, for double the inference. Max-pooling over
+# views means a spurious high match on the zoomed crop can outrank the correct
+# full-frame one, and cropping into an already well-framed tile photo throws away
+# context without adding information. One view it is — which also halves scan
+# latency, and inference is ~97% of it. See experiments/query_views.py.
+QUERY_ZOOMS = (1.0,)
 
 
 class IndexMismatch(RuntimeError):
@@ -36,6 +46,7 @@ class IndexMismatch(RuntimeError):
 @dataclass
 class Candidate:
     rank: int
+    ref_id: int
     score: float
     code: str
     size: str
@@ -49,6 +60,7 @@ class Candidate:
     def as_dict(self) -> dict:
         return {
             "rank": self.rank,
+            "ref_id": self.ref_id,
             "score": round(self.score, 4),
             "code": self.code,
             "size": self.size,
@@ -100,10 +112,26 @@ class Matcher:
             views.append(img.crop((left, top, left + cw, top + ch)))
         return vision.embed_images(views, batch_size=len(views))
 
-    def score_images(self, img: Image.Image, exclude: set[int] | None = None) -> np.ndarray:
+    def score_images(
+        self,
+        img: Image.Image,
+        exclude: set[int] | None = None,
+        timings: dict[str, float] | None = None,
+    ) -> np.ndarray:
         """Per-reference-image similarity, max-pooled over query views and the
-        multiple stored vectors of each reference."""
+        multiple stored vectors of each reference.
+
+        Pass `timings` to have the embed and rank phases recorded in ms — the
+        two costs are wildly different (embedding is ~99% of a scan) and a single
+        total hides that.
+        """
+        t = time.perf_counter()
         qv = self.embed_query(img)
+        if timings is not None:
+            timings["embed_ms"] = (time.perf_counter() - t) * 1000
+            timings["views"] = float(len(qv))
+        t = time.perf_counter()
+
         sims = qv @ self.vectors.T                      # (V, n_vectors)
         best_per_vector = sims.max(axis=0)              # (n_vectors,)
 
@@ -112,10 +140,16 @@ class Matcher:
 
         if exclude:
             scores[list(exclude)] = -np.inf
+        if timings is not None:
+            timings["rank_ms"] = (time.perf_counter() - t) * 1000
         return scores
 
     def search(
-        self, img: Image.Image, k: int = TOP_K, exclude: set[int] | None = None
+        self,
+        img: Image.Image,
+        k: int = TOP_K,
+        exclude: set[int] | None = None,
+        timings: dict[str, float] | None = None,
     ) -> list[Candidate]:
         """Top k candidates, ranked purely by similarity.
 
@@ -123,7 +157,7 @@ class Matcher:
         different faces of the same product, and for a shade-varying range like
         45X90/POLISH that is the useful answer, not a bug.
         """
-        scores = self.score_images(img, exclude)
+        scores = self.score_images(img, exclude, timings)
         order = np.argsort(-scores)[:k]
         out = []
         for rank, idx in enumerate(order, 1):
@@ -131,6 +165,7 @@ class Matcher:
             out.append(
                 Candidate(
                     rank=rank,
+                    ref_id=int(idx),
                     score=float(scores[idx]),
                     code=r["code"],
                     size=r["size"],

@@ -23,11 +23,12 @@ import hashlib
 import io
 import json
 import os
+import threading
 from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
-from PIL import Image, ImageOps
+from PIL import Image, ImageCms, ImageOps
 
 # --- Preprocessing constants -------------------------------------------------
 # Taken verbatim from the model's own preprocessor_config.json (Xenova/dinov2-base),
@@ -52,7 +53,28 @@ GREY_WORLD = os.environ.get("TILEMATCH_GREYWORLD", "0") == "1"
 
 EMBED_DIM = 1536  # concat(CLS 768, mean-patch 768)
 
-PIPELINE_VERSION = "dinov2b-224-cls+meanpatch-v1"
+PIPELINE_VERSION = "dinov2b-224-cls+meanpatch-icc-v3"
+
+# Colour management is not optional on this dataset. Only 31 of 131 reference
+# images are sRGB; 63 carry "U.S. Web Coated (SWOP) v2" and 21 more carry custom
+# press profiles — these are CMYK printing assets, not photographs.
+#
+# Two distinct mistakes are avoided here, both found on RP.RSS.0062ST.PL.0T,
+# which is a medium grey-brown marble (mean brightness 84):
+#
+#   .convert("RGB")          ignores the profile entirely -> bright green, and
+#                            embeds CMYK references against sRGB queries across
+#                            colour spaces.
+#   perceptual intent        Pillow's default. These profiles' perceptual tables
+#                            render far darker than the file is -> near-black,
+#                            mean brightness 25.
+#
+# Relative colorimetric matches macOS ColorSync within ~1 level on every profile
+# type in this tree; perceptual was off by up to 59. No black-point
+# compensation — adding it re-darkens to 41 and diverges from ColorSync again.
+RENDERING_INTENT = ImageCms.Intent.RELATIVE_COLORIMETRIC
+
+_SRGB = ImageCms.createProfile("sRGB")
 
 MODEL_DIR = Path(__file__).resolve().parent.parent / "models"
 MODEL_PATH = MODEL_DIR / "model.onnx"
@@ -75,6 +97,7 @@ def config_hash() -> str:
             "std": IMAGE_STD.tolist(),
             "decode_max_edge": DECODE_MAX_EDGE,
             "grey_world": GREY_WORLD,
+            "rendering_intent": int(RENDERING_INTENT),
             "dim": EMBED_DIM,
         },
         sort_keys=True,
@@ -102,10 +125,13 @@ def load_image(src: str | Path | bytes | io.BytesIO) -> Image.Image:
 
     # Fast DCT-domain downscale for JPEG. Deterministic for a given file, and
     # applied on both paths, so it cannot introduce index/query asymmetry.
-    img.draft("RGB", (DECODE_MAX_EDGE, DECODE_MAX_EDGE))
+    # Mode is left alone (draft(None, ...)) so a CMYK source stays CMYK until the
+    # colour-managed conversion below — asking draft for RGB here would discard
+    # the profile silently, which is the bug this replaced.
+    img.draft(None, (DECODE_MAX_EDGE, DECODE_MAX_EDGE))
 
+    img = _to_srgb(img)
     img = ImageOps.exif_transpose(img)
-    img = img.convert("RGB")
 
     if max(img.size) > DECODE_MAX_EDGE:
         scale = DECODE_MAX_EDGE / max(img.size)
@@ -116,6 +142,28 @@ def load_image(src: str | Path | bytes | io.BytesIO) -> Image.Image:
     # along. frombytes is a C-level copy (~90x faster than putdata, verified
     # byte-identical) — this runs on every scan, so it matters.
     return Image.frombytes("RGB", img.size, img.tobytes())
+
+
+def _to_srgb(img: Image.Image) -> Image.Image:
+    """Convert to sRGB honouring any embedded ICC profile.
+
+    Falls back to a plain conversion when there is no profile or the transform
+    fails — a slightly wrong colour beats refusing to index the image, and the
+    caller has no better option to offer.
+    """
+    icc = img.info.get("icc_profile")
+    if icc:
+        try:
+            return ImageCms.profileToProfile(
+                img,
+                ImageCms.ImageCmsProfile(io.BytesIO(icc)),
+                _SRGB,
+                renderingIntent=RENDERING_INTENT,
+                outputMode="RGB",
+            )
+        except (ImageCms.PyCMSError, OSError, ValueError):
+            pass
+    return img.convert("RGB")
 
 
 # --- Preprocess --------------------------------------------------------------
@@ -155,12 +203,25 @@ def preprocess(img: Image.Image) -> np.ndarray:
 _session: ort.InferenceSession | None = None
 _input_name: str = ""
 _output_name: str = ""
+# Scans run in a threadpool, so two first-scans can race here. Without the lock
+# each builds its own session and loads the 346 MB model — double the memory and
+# a long stall, for one session that ends up used.
+_session_lock = threading.Lock()
 
 
 def _get_session() -> ort.InferenceSession:
     global _session, _input_name, _output_name
     if _session is not None:
         return _session
+
+    with _session_lock:
+        if _session is not None:      # another thread won the race while we waited
+            return _session
+        return _build_session()
+
+
+def _build_session() -> ort.InferenceSession:
+    global _session, _input_name, _output_name
 
     if not MODEL_PATH.exists():
         raise FileNotFoundError(

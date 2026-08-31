@@ -5,6 +5,7 @@ help:
 	@echo "  make setup       create .venv (python 3.13) and install deps"
 	@echo "  make model       download DINOv2-base ONNX weights (~346 MB)"
 	@echo "  make index       build the vector index from Tiles/"
+	@echo "  make thumbs      regenerate candidate + reference images (no re-embedding)"
 	@echo "  make serve       run the demo at http://localhost:8000"
 	@echo "  make lan         same, reachable from a phone on the LAN"
 	@echo "  make match IMG=path/to/photo.jpg"
@@ -25,6 +26,9 @@ model:
 
 index:
 	$(PY) -m tilematch.index
+
+thumbs:
+	$(PY) -m tilematch.index --thumbs-only
 
 serve:
 	$(PY) -m tilematch.server
@@ -49,6 +53,6 @@ test:
 	$(PY) -m pytest -q
 
 clean:
-	rm -rf index/vectors.npz index/meta.json index/thumbs index/*.jpg index/*.json
+	rm -rf index/vectors.npz index/meta.json index/thumbs index/refs index/*.jpg index/*.json
 
-.PHONY: help setup model index serve lan match eval eval-sanity eval-real test clean
+.PHONY: help setup model index thumbs serve lan match eval eval-sanity eval-real test clean

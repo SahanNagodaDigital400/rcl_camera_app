@@ -43,7 +43,25 @@
           background:var(--card); border-radius:0 8px 8px 0; font-size:12.5px; color:var(--muted); }
   ol.results { list-style:none; padding:0; margin:16px 0 0; display:grid; gap:10px; }
   .cand { display:grid; grid-template-columns:96px 1fr auto; gap:14px; align-items:center;
-          background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; }
+          background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px;
+          cursor:pointer; -webkit-tap-highlight-color:transparent; }
+  .cand:hover, .cand:focus-visible { border-color:var(--accent); outline:none; }
+  .thumb { position:relative; width:96px; height:96px; }
+  .thumb .ph { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+               border:1px solid var(--line); border-radius:8px; background:var(--bg);
+               color:var(--muted); font-size:10.5px; text-align:center; padding:6px; line-height:1.25; }
+  .thumb.failed .ph { display:flex; }
+  .thumb.failed img { visibility:hidden; }
+  .tapnote { font-size:11.5px; color:var(--muted); margin-top:5px; }
+  .cand.extra { display:none; }
+  .cand.extra.on { display:grid; }
+  #more { width:100%; margin-top:10px; padding:11px; border-radius:10px;
+          border:1px dashed var(--line); background:transparent; color:var(--muted);
+          font:inherit; font-size:13px; cursor:pointer; }
+  #more:hover { border-color:var(--accent); color:var(--accent); }
+  #more.hide { display:none; }
+  .divider { grid-column:1/-1; font-size:11px; color:var(--muted); text-transform:uppercase;
+             letter-spacing:.06em; padding:4px 2px 0; }
   .cand img { width:96px; height:96px; object-fit:cover; border-radius:8px;
               background:var(--bg); border:1px solid var(--line); }
   .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px;
@@ -53,6 +71,27 @@
   .score { font-variant-numeric:tabular-nums; font-size:13px; color:var(--ok); font-weight:600; }
   .warn { color:var(--accent); font-size:11.5px; }
   canvas { display:none; }
+  /* Lightbox: staff verify against the picture, so it needs to be big. */
+  #box { position:fixed; inset:0; background:rgba(0,0,0,.92); display:none;
+         flex-direction:column; z-index:50; }
+  #box.on { display:flex; }
+  #box .top { display:flex; justify-content:space-between; align-items:flex-start;
+              gap:12px; padding:14px 16px; color:#f2f1ee; }
+  #box .meta .code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:14px; }
+  #box .meta .prod { font-size:12.5px; opacity:.72; margin-top:3px; }
+  #box .x { flex:0 0 auto; background:rgba(255,255,255,.14); color:#fff; border:0;
+            border-radius:999px; width:40px; height:40px; font-size:20px; line-height:1;
+            cursor:pointer; padding:0; }
+  #box .wrap { flex:1; display:flex; align-items:center; justify-content:center;
+               padding:0 12px 20px; min-height:0; position:relative; }
+  #box img { max-width:100%; max-height:100%; object-fit:contain; border-radius:8px; background:#111; }
+  /* The thumbnail is already in cache, so it can stand in instantly while the
+     full reference arrives. Blurred so it reads as a placeholder, not detail. */
+  #boxPh { position:absolute; filter:blur(6px); opacity:.5; transition:opacity .2s; }
+  #boxPh.gone { opacity:0; }
+  #box .load { position:absolute; bottom:26px; color:#f2f1ee; opacity:.75; font-size:12px;
+               background:rgba(0,0,0,.5); padding:4px 10px; border-radius:999px; }
+  #box .load[hidden] { display:none; }
 </style>
 </head>
 <body>
@@ -78,6 +117,7 @@
 
   <div class="status" id="status"></div>
   <ol class="results" id="results"></ol>
+  <button id="more" class="hide"></button>
 
   <p class="note">
     Three candidates are always returned, never one. Size and finish are not
@@ -87,6 +127,14 @@
   </p>
 </main>
 
+<div id="box" role="dialog" aria-modal="true" aria-label="Reference image">
+  <div class="top">
+    <div class="meta"><div class="code" id="boxCode"></div><div class="prod" id="boxProd"></div></div>
+    <button class="x" id="boxX" aria-label="Close">&times;</button>
+  </div>
+  <div class="wrap"><img id="boxPh" alt="" hidden><img id="boxImg" alt="" hidden><span class="load" id="boxLoad">loading reference…</span></div>
+</div>
+
 <canvas id="canvas"></canvas>
 <script>
 const $ = s => document.querySelector(s);
@@ -95,21 +143,37 @@ let stream = null;
 
 fetch('/api/info').then(r => r.json()).then(d => {
   $('#info').textContent = d.ready
-    ? `${d.images} reference images · ${d.products} products · ${d.vectors} vectors · ${d.pipeline_version}`
+    ? `${d.images} reference images · ${d.products} products · ${d.vectors} vectors · build ${d.build}`
     : `index not ready — ${d.error}`;
 }).catch(() => $('#info').textContent = 'server unreachable');
+
+// The phone has no reachable console, so anything that goes wrong client-side is
+// invisible while testing over a tunnel. Beacon it into the server log instead.
+function report(kind, detail) {
+  try {
+    fetch('/api/client-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, detail: String(detail).slice(0, 500) }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) { /* never let logging break the page */ }
+}
+
+window.addEventListener('error', e => report('js error', `${e.message} @ ${e.filename}:${e.lineno}`));
+window.addEventListener('unhandledrejection', e => report('unhandled rejection', e.reason));
 
 function say(msg, isErr) { status.textContent = msg; status.className = 'status' + (isErr ? ' err' : ''); }
 
 $('#cam').onclick = async () => {
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null;
                 view.classList.add('hide'); drop.classList.remove('hide');
-                $('#shoot').disabled = true; $('#cam').textContent = 'Start camera'; return; }
+                setBusy(false); $('#cam').textContent = 'Start camera'; return; }
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, audio: false });
     view.srcObject = stream; view.classList.remove('hide'); drop.classList.add('hide');
-    $('#shoot').disabled = false; $('#cam').textContent = 'Stop camera'; say('');
+    setBusy(false); $('#cam').textContent = 'Stop camera'; say('');
   } catch (e) {
     // getUserMedia needs a secure context: fine on localhost, blocked over plain
     // HTTP from a phone. The file input below opens the native camera instead.
@@ -118,13 +182,21 @@ $('#cam').onclick = async () => {
 };
 
 $('#shoot').onclick = () => {
-  const c = $('#canvas'), scale = Math.min(1, 1024 / Math.max(view.videoWidth, view.videoHeight));
-  c.width = Math.round(view.videoWidth * scale); c.height = Math.round(view.videoHeight * scale);
-  c.getContext('2d').drawImage(view, 0, 0, c.width, c.height);
-  c.toBlob(b => send(b, 'capture.jpg'), 'image/jpeg', 0.9);
+  const c = $('#canvas');
+  c.width = view.videoWidth; c.height = view.videoHeight;
+  c.getContext('2d').drawImage(view, 0, 0);
+  // Full frame here; shrink() below is the single place that downscales, so the
+  // camera and the file picker take exactly the same path.
+  c.toBlob(b => send(b, 'capture.jpg'), 'image/jpeg', 0.95);
 };
 
-$('#pick').onchange = e => { if (e.target.files[0]) send(e.target.files[0], e.target.files[0].name); };
+$('#pick').onchange = e => {
+  const f = e.target.files[0];
+  // Clear the value: otherwise choosing the same file twice fires no change
+  // event at all and the button appears dead.
+  e.target.value = '';
+  if (f) send(f, f.name);
+};
 
 drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
 drop.ondragleave = () => drop.classList.remove('over');
@@ -133,34 +205,215 @@ drop.ondrop = e => {
   const f = e.dataTransfer.files[0]; if (f) send(f, f.name);
 };
 
-async function send(blob, name) {
-  results.innerHTML = ''; say('matching…');
-  const fd = new FormData(); fd.append('file', blob, name);
-  const t = performance.now();
+// Bandwidth only. The server re-derives everything from the pixels it receives
+// and never assumes the client downscaled to any particular size — a phone photo
+// straight from the gallery is 4-8 MB, which is a slow upload on mobile data for
+// no gain at 224px model input.
+const UPLOAD_MAX_EDGE = 1024;
+const UPLOAD_QUALITY = 0.85;
+
+async function shrink(blob) {
+  if (!blob.type.startsWith('image/')) return blob;
+  let bmp;
   try {
-    const r = await fetch('/api/scan', { method: 'POST', body: fd });
-    if (!r.ok) { say('scan failed: ' + (await r.text()), true); return; }
-    const d = await r.json();
-    say(`${d.candidates.length} candidates · ${d.elapsed_ms} ms server · ${Math.round(performance.now()-t)} ms round trip`);
-    render(d.candidates);
-  } catch (e) { say('request failed: ' + e.message, true); }
+    // from-image keeps EXIF rotation, which drawing to a canvas would otherwise
+    // discard — an upside-down upload matches nothing.
+    bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+  } catch (e) {
+    return blob;                       // send as-is rather than fail the scan
+  }
+  const scale = Math.min(1, UPLOAD_MAX_EDGE / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * scale));
+  const h = Math.max(1, Math.round(bmp.height * scale));
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  if (!ctx) { if (bmp.close) bmp.close(); return blob; }
+  try {
+    ctx.drawImage(bmp, 0, 0, w, h);
+    const out = await new Promise(r => c.toBlob(r, 'image/jpeg', UPLOAD_QUALITY));
+    return (out && out.size < blob.size) ? out : blob;   // never send the larger one
+  } finally {
+    if (bmp.close) bmp.close();
+    // Mobile browsers cap total canvas memory and do not reclaim it promptly.
+    // Zeroing the dimensions releases the backing store now rather than at some
+    // later GC, which is what let a second large photo fail to allocate.
+    c.width = c.height = 0;
+  }
 }
 
-function render(cands) {
-  results.innerHTML = cands.map(c => `
-    <li class="cand">
-      <img src="/${c.thumb}" alt="${c.design}">
+function kb(n) { return n > 1048576 ? (n/1048576).toFixed(1) + ' MB' : Math.round(n/1024) + ' KB'; }
+
+// One scan at a time. Each one saturates the server's cores, so stacking taps
+// made every request 12x slower and looked like a hang. A new scan cancels the
+// one in flight rather than queueing behind it — the user wants the latest shot,
+// not a backlog of stale ones.
+let inFlight = null;
+const SCAN_TIMEOUT_MS = 30000;
+
+function setBusy(busy) {
+  $('#shoot').disabled = busy || !stream;
+  $('#pick').disabled = busy;
+  document.querySelector('.filebtn').style.opacity = busy ? .5 : 1;
+}
+
+async function send(blob, name) {
+  if (inFlight) { inFlight.abort('superseded'); }
+  const ctrl = new AbortController();
+  inFlight = ctrl;
+  const timer = setTimeout(() => ctrl.abort('timeout'), SCAN_TIMEOUT_MS);
+  setBusy(true);
+
+  // Everything from here down is inside the try. It previously started after
+  // shrink(), so a failure in shrink() — canvas allocation on a phone is a real
+  // one — threw past the finally, left the buttons disabled and inFlight set,
+  // and the page was dead until reload. That is the "works once" bug.
+  const t = performance.now();
+  try {
+    results.innerHTML = ''; $('#more').classList.add('hide');
+    const before = blob.size;
+    say('preparing…');
+    blob = await shrink(blob);
+    const note = blob.size < before ? `${kb(before)} → ${kb(blob.size)} · ` : '';
+    say(`uploading ${kb(blob.size)}…`);
+
+    const fd = new FormData();
+    fd.append('file', blob, blob.type === 'image/jpeg' ? 'scan.jpg' : name);
+
+    const r = await fetch('/api/scan', { method: 'POST', body: fd, signal: ctrl.signal });
+    if (!r.ok) {
+      const body = await r.text();
+      report('scan failed', `HTTP ${r.status}: ${body.slice(0, 200)}`);
+      say('scan failed (' + r.status + '): ' + body, true);
+      return;
+    }
+    const d = await r.json();
+    if (d.queue_ms > 100) console.debug(`waited ${d.queue_ms} ms in the server queue`);
+    const shown = Math.min(d.top_k ?? 3, d.candidates.length);
+    say(`${note}top ${shown} of ${d.candidates.length} · ${d.elapsed_ms} ms server · ${Math.round(performance.now()-t)} ms round trip`);
+    render(d.candidates, d.top_k ?? 3);
+  } catch (e) {
+    if (ctrl.signal.reason === 'superseded') return;      // a newer scan replaced this one
+    const why = ctrl.signal.reason === 'timeout'
+      ? `no response after ${SCAN_TIMEOUT_MS / 1000}s — check the server is running`
+      : 'request failed: ' + (e && e.message ? e.message : e);
+    report('scan error', `${e && e.name}: ${e && e.message}`);
+    say(why, true);
+  } finally {
+    clearTimeout(timer);
+    if (inFlight === ctrl) { inFlight = null; setBusy(false); }
+  }
+}
+
+const MORE_FLOOR = 0.4;   // only offer candidates at least this similar
+
+function render(cands, topK) {
+  results.innerHTML = cands.map((c, i) => `
+    <li class="cand${i >= topK ? ' extra' : ''}" tabindex="0" role="button" data-ref="${c.ref_id}"
+        data-code="${esc(c.code)}" data-prod="${esc(c.size + ' · ' + c.design)}"
+        data-thumb="/${c.thumb}">
+      <div class="thumb"><img src="/${c.thumb}" alt="${esc(c.design)}"><span class="ph">image<br>unavailable</span></div>
       <div>
-        <div class="code">${c.code}</div>
-        <div class="prod">${c.size} · ${c.design}${c.face ? ' · face ' + c.face : ''}</div>
+        <div class="code">${esc(c.code)}</div>
+        <div class="prod">${esc(c.size)} · ${esc(c.design)}${c.face ? ' · face ' + esc(c.face) : ''}</div>
         ${c.design_unknown ? '<div class="warn">⚠ design folder unclassified</div>' : ''}
+        <div class="tapnote">tap to view reference</div>
       </div>
       <div style="text-align:right">
         <div class="rank">#${c.rank}</div>
         <div class="score">${c.score.toFixed(3)}</div>
       </div>
     </li>`).join('');
+
+  // Beyond the top three, only offer what clears the floor. Scores here are not
+  // calibrated probabilities - 0.4 is close to the median similarity between any
+  // two tiles in this catalogue - so this trims the tail rather than filtering.
+  const extra = cands.slice(topK).filter(c => c.score >= MORE_FLOOR).length;
+  const btn = $('#more');
+  btn.classList.toggle('hide', extra === 0);
+  btn.dataset.open = '';
+  btn.textContent = `show ${extra} more above ${MORE_FLOOR.toFixed(2)}`;
+  results.querySelectorAll('.cand.extra').forEach((el, i) => {
+    if (i >= extra) el.remove();
+  });
+
+  // A dropped thumbnail request used to leave a silent blank square. Retry once
+  // past the cache, then say so rather than showing nothing.
+  results.querySelectorAll('.thumb img').forEach(img => {
+    img.onerror = () => {
+      if (img.dataset.retried) { img.parentElement.classList.add('failed'); return; }
+      img.dataset.retried = '1';
+      img.src = img.getAttribute('src').split('?')[0] + '?r=' + Date.now();
+    };
+  });
+
+  // Warm the browser cache for the visible candidates while the user is still
+  // reading the list. Tapping one then paints from cache instead of waiting on a
+  // ~100-500 KB transfer that has not started yet.
+  cands.slice(0, topK).forEach(c => { new Image().src = '/reference/' + c.ref_id; });
+
+  results.querySelectorAll('.cand').forEach(el => {
+    el.onclick = () => openRef(el.dataset.ref, el.dataset.code, el.dataset.prod, el.dataset.thumb);
+    el.onkeydown = e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); }
+    };
+  });
 }
+
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, ch => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+const box = $('#box'), boxImg = $('#boxImg'), boxPh = $('#boxPh'), boxLoad = $('#boxLoad');
+
+function openRef(id, code, prod, thumb) {
+  $('#boxCode').textContent = code;
+  $('#boxProd').textContent = prod;
+  box.classList.add('on');
+  document.body.style.overflow = 'hidden';
+
+  // Instant: the thumbnail is already cached, so something correct is on screen
+  // in the same frame as the tap.
+  boxPh.classList.remove('gone');
+  boxPh.hidden = !thumb;
+  if (thumb) boxPh.src = thumb;
+
+  boxImg.hidden = true;
+  boxLoad.hidden = false;
+  boxLoad.textContent = 'loading full reference…';
+
+  const t = performance.now();
+  boxImg.onload = () => {
+    boxLoad.hidden = true;
+    boxImg.hidden = false;
+    boxPh.classList.add('gone');
+    console.debug(`reference ${id} in ${Math.round(performance.now()-t)} ms`);
+  };
+  boxImg.onerror = () => { boxLoad.textContent = 'reference image unavailable'; };
+  boxImg.src = '/reference/' + id;
+}
+
+function closeRef() {
+  box.classList.remove('on');
+  document.body.style.overflow = '';
+  boxImg.removeAttribute('src');
+  boxPh.removeAttribute('src');
+}
+$('#more').onclick = () => {
+  const btn = $('#more');
+  const open = btn.dataset.open === '1';
+  btn.dataset.open = open ? '' : '1';
+  const extras = results.querySelectorAll('.cand.extra');
+  extras.forEach(el => el.classList.toggle('on', !open));
+  btn.textContent = open
+    ? `show ${extras.length} more above ${MORE_FLOOR.toFixed(2)}`
+    : 'show fewer';
+};
+
+$('#boxX').onclick = closeRef;
+box.onclick = e => { if (e.target === box || e.target.classList.contains('wrap')) closeRef(); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && box.classList.contains('on')) closeRef(); });
 </script>
 </body>
 </html>
