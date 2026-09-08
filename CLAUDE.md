@@ -74,11 +74,17 @@ Get these right — they are not interchangeable.
 The reference set comes from a Google Drive tree with real inconsistencies. The ingestion pipeline must **validate, not assume**.
 
 - Top level mixes size folders (`40X40`, `45X90`) with category folders (`Cement`, `Earthen`, `Fashion`, `Mono Colour`, `Randomness`, `Speckled`). Depth is not uniform.
-- Two naming conventions coexist:
-  - `Copy of RP.CMA.0001DJ.SM.0T.jpg` — structured code
-  - `Copy of 1Jk.jpg` — bare face number, no code
+- **Five** naming conventions coexist, not two — verified against real files and pinned in a working POC (`poc/tests/test_catalog.py`):
+  - `Copy of RP.CMA.0008DJ.SM.0T.jpg` — structured code, face embedded as a segment
+  - `Copy of 77DH.MA_F3.jpg` — face as an underscore-`F` suffix
+  - `Copy of 1Jk.jpg` / `Copy of 61M.jpg` — bare face number, no code
+  - `Copy of 279.jpg` — bare integer
+  - `Copy of 6LD.MA Quarry Stone Natural.jpg` — free text trailing the code
+  - Dash-delimited names (`RC-001-OHA-156-MA-J2`) carry **no recoverable face number** — return `None` rather than guessing; the Code is still kept.
+- File extensions include `.tif` alongside `.jpg` — not mentioned in earlier planning docs, confirmed present in the real source tree.
 - Strip the `Copy of ` prefix and the extension before storing or displaying.
-- Reference images are 2–6.5 MB studio assets. Query images are phone photos. This domain gap is the main accuracy risk — apply aggressive augmentation at index time (lighting, white balance, blur, perspective).
+- Reference images range **384 KB to 96 MB** (up to 19276×9638 px) — not "2–6.5 MB," which understated the real range by more than an order of magnitude; decode to a capped long edge (2048px) before any further processing. Query images are phone photos. This domain gap is the main accuracy risk — apply aggressive augmentation at index time (lighting, white balance, blur, perspective).
+- **Most reference images are CMYK press files, not sRGB photographs** (~60% of a working POC's catalogue) — a naive RGB conversion silently discards the embedded color profile and corrupts both the displayed color and the embedding. Color management (ICC profile → sRGB, relative colorimetric intent) is mandatory in `shared/vision`, before any other step. See `ARCHITECTURE-SPINE.md` AD-15.
 
 ## Product rules
 
