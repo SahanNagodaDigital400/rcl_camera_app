@@ -29,11 +29,43 @@ make eval-real     # accuracy on real photos (see below)
 
 ### Testing from a phone
 
-`getUserMedia` needs a secure context. That is satisfied on `localhost`, but not
-over plain HTTP from a phone, so the live camera preview will not start there.
-Use `make lan`, open `http://<your-ip>:8000` on the phone and tap **Choose /
-take photo** — a file input with `capture="environment"` opens the native camera
-and works over plain HTTP.
+Use the LAN, not a dev tunnel. A tunnel routes over the internet, and a 198 KB
+upload on a mobile uplink took long enough to trip the client timeout before the
+request ever reached the server.
+
+```bash
+make lan          # http://<your-lan-ip>:8000
+make lan-https    # https, self-signed — the live camera preview works
+```
+
+Both print the exact phone-reachable URL on startup.
+
+`getUserMedia` requires a secure context, which `localhost` satisfies but a plain
+`http://` LAN address does not — so over `make lan` the live preview will not
+start, though **Choose / take photo** still works (a file input with
+`capture="environment"` opens the native camera over plain HTTP).
+
+`make lan-https` issues a self-signed certificate for the detected LAN IP into
+`certs/` and serves TLS, which makes the live preview work too. The browser
+warns once about the certificate; accept it and it is remembered. The
+certificate is reissued automatically if the machine's LAN address changes.
+
+**Type the plain `http://` address either way.** Under `--tls` the HTTPS
+listener moves to port 8443 and the requested port keeps serving plain HTTP that
+307-redirects to it. Without that, typing a bare IP — which every browser reads
+as `http://` — hits a TLS socket with plaintext and returns
+`ERR_EMPTY_RESPONSE`, which names neither the cause nor the fix.
+
+### Upload failures are stalls, not timeouts
+
+The client aborted on total elapsed time, which killed uploads that were
+progressing perfectly well. Diagnosed from the server log: an abort was reported
+by the browser at 20:24:34, and the first request the server ever saw was 30
+seconds *later* — so the aborted request never arrived at all.
+
+The client now aborts only when no bytes have moved for 25 s, shows real upload
+progress (via `XMLHttpRequest`, since `fetch` reports none), and retries once on
+a network failure. A stall and a slow link are no longer indistinguishable.
 
 ## How it works
 
@@ -94,6 +126,27 @@ Views are sampled randomly rather than as a full cross-product: a 6-crop ×
 that is hours. The per-image seed keeps a build reproducible.
 
 At search time, similarities are max-pooled per reference image.
+
+### Preparing the reference tree
+
+Reference scans reach 19276x9638, but the pipeline caps decode at
+`DECODE_MAX_EDGE` (2048px), so none of that resolution ever reaches the model —
+it is decoded and thrown away on every single rebuild.
+
+`make prep` writes a parallel `Tiles-prepared/` tree of already-decoded,
+already-colour-managed sRGB copies. The source tree is never modified.
+
+| | per image |
+|---|---|
+| decode from source | 3590 ms |
+| decode from prepared | **30 ms** |
+
+Disk drops about 10x as well (3.6 GB -> 0.29 GB). It is incremental, so adding
+tiles only prepares the new ones, and it prunes copies whose source has been
+deleted — without that, removing a tile from `Tiles/` would leave it in the
+index for ever. The cache carries `config_hash()`, so a change to colour
+management or the decode cap invalidates it exactly as it invalidates the
+vectors.
 
 ### Where scan time actually goes
 
@@ -291,6 +344,26 @@ Worth recording, because `CLAUDE.md` is wrong about some of it:
 - **Five** filename conventions coexist, not the two `CLAUDE.md` describes.
   All five are pinned in `tests/test_catalog.py`.
 - Face counts are lopsided: `45X90/POLISH` has 22, 11 products have exactly 1.
+
+### Accuracy falls as the catalogue grows
+
+The clearest scaling signal so far, measured on the same pipeline as the
+catalogue roughly doubled:
+
+| catalogue | products | top-1 | top-3 |
+|---|---|---|---|
+| 131 images | 36 | 65.6% | **79.5%** |
+| 381 images | 76 | 56.3% | **70.0%** |
+
+Nothing about the pipeline changed between these — only the number of things it
+has to tell apart. Doubling the catalogue cost ~9 points of top-3.
+
+Production targets a far larger catalogue, so this is the number to watch, and
+it is an argument for measuring against real photos at realistic scale before
+committing to the approach. A 224px global embedding may simply not have the
+capacity to separate thousands of near-identical textures; if that holds, the
+answer is higher input resolution or local-feature re-ranking on the top-N, not
+more augmentation.
 
 ## Findings
 

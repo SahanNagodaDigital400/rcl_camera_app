@@ -14,10 +14,11 @@ import hashlib
 import io
 import itertools
 import logging
+import subprocess
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, UnidentifiedImageError
@@ -157,7 +158,7 @@ def reference(ref_id: int) -> FileResponse:
         log.warning("reference %d not pre-generated; building on demand", ref_id)
         t = time.perf_counter()
         ref = m.references[ref_id]
-        src = POC_ROOT / "Tiles" / ref["relpath"]
+        src = POC_ROOT / m.meta.get("tiles_dir", "Tiles") / ref["relpath"]
         if not src.is_file():
             raise HTTPException(404, "reference file missing")
         img = vision.load_image(src)
@@ -209,7 +210,9 @@ async def _run_scan(rid: int, m: Matcher, raw: bytes, wait_ms: float) -> JSONRes
     try:
         # Content is sniffed by the shared intake path, never trusted from the
         # filename or the declared content-type.
-        img = await run_in_threadpool(vision.load_image, io.BytesIO(raw))
+        img = await run_in_threadpool(
+            vision.load_image, io.BytesIO(raw), vision.UPLOAD_MAX_PIXELS
+        )
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         log.warning("[%04d] rejected: unreadable image (%s, %.0f KB)",
                     rid, type(exc).__name__, len(raw) / 1024)
@@ -281,6 +284,73 @@ def warm_up() -> None:
              vision._get_session().get_session_options().intra_op_num_threads)
 
 
+def lan_ip() -> str | None:
+    """Best-guess LAN address of this machine, for printing a reachable URL."""
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("192.0.2.1", 1))          # TEST-NET-1: routed, never answers
+        return sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+
+def ensure_cert(host: str) -> tuple[Path, Path]:
+    """Self-signed cert for LAN HTTPS, so the live camera works off localhost.
+
+    getUserMedia requires a secure context. localhost qualifies; a plain-http LAN
+    address does not, which is why the camera preview refuses to start there. The
+    file input with capture="environment" still works over http, so TLS is only
+    needed for the live preview.
+    """
+    cert_dir = POC_ROOT / "certs"
+    cert_dir.mkdir(exist_ok=True)
+    cert, key = cert_dir / "server.crt", cert_dir / "server.key"
+
+    ip = lan_ip() or "127.0.0.1"
+    marker = cert_dir / "issued-for.txt"
+    if cert.exists() and key.exists() and marker.exists() and marker.read_text().strip() == ip:
+        return cert, key
+
+    log.info("issuing a self-signed certificate for %s", ip)
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+         "-keyout", str(key), "-out", str(cert), "-days", "365",
+         "-subj", f"/CN={ip}", "-addext", f"subjectAltName=IP:{ip},IP:127.0.0.1,DNS:localhost"],
+        check=True, capture_output=True,
+    )
+    marker.write_text(ip)
+    return cert, key
+
+
+def start_redirector(http_port: int, https_port: int) -> None:
+    """Serve plain HTTP on `http_port` that redirects to HTTPS on `https_port`.
+
+    A phone given a bare IP defaults to http://. Sending that to a TLS socket
+    produces ERR_EMPTY_RESPONSE with no hint of the cause, so the plain port is
+    kept alive purely to bounce people to the right scheme.
+    """
+    import threading
+
+    import uvicorn
+    from fastapi.responses import RedirectResponse
+
+    redirect_app = FastAPI()
+
+    @redirect_app.get("/{path:path}")
+    def to_https(path: str, request: Request) -> RedirectResponse:
+        host = (request.headers.get("host") or "").split(":")[0]
+        return RedirectResponse(f"https://{host}:{https_port}/{path}", status_code=307)
+
+    def run() -> None:
+        uvicorn.run(redirect_app, host="0.0.0.0", port=http_port, log_level="critical")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
@@ -288,16 +358,43 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default="127.0.0.1",
                    help="use 0.0.0.0 to reach it from a phone on the same LAN")
     p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--tls", action="store_true",
+                   help="serve HTTPS with a self-signed cert so the live camera "
+                        "works from a phone on the LAN")
     p.add_argument("--access-log", action="store_true",
                    help="also log every HTTP request (thumbnails included; noisy)")
     a = p.parse_args(argv)
 
     warm_up()
-    log.info("serving on http://%s:%d",
-             "localhost" if a.host == "127.0.0.1" else a.host, a.port)
-    uvicorn.run(app, host=a.host, port=a.port,
+
+    ssl_args = {}
+    scheme = "http"
+    if a.tls:
+        cert, key = ensure_cert(a.host)
+        ssl_args = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+        scheme = "https"
+        # TLS moves to 8443 and the requested port keeps serving plain HTTP as a
+        # redirector, so typing the bare IP still lands somewhere that works.
+        https_port, a.port = a.port + 443, a.port
+        start_redirector(a.port, https_port)
+
+    listen_port = https_port if a.tls else a.port
+    ip = lan_ip()
+
+    if a.tls:
+        log.info("open this on the phone:  http://%s:%d", ip or "localhost", a.port)
+        log.info("  it redirects to        https://%s:%d", ip or "localhost", listen_port)
+        log.info("  the certificate is self-signed — accept the warning once")
+    elif a.host in ("0.0.0.0", "::"):
+        log.info("open this on the phone:  http://%s:%d", ip or "localhost", a.port)
+        log.info("  live camera preview needs HTTPS off localhost — use `make lan-https`,")
+        log.info("  or tap \"Choose / take photo\", which opens the native camera over http")
+    else:
+        log.info("serving on http://localhost:%d", a.port)
+
+    uvicorn.run(app, host=a.host, port=listen_port,
                 log_level="info" if a.access_log else "warning",
-                access_log=a.access_log)
+                access_log=a.access_log, **ssl_args)
     return 0
 
 

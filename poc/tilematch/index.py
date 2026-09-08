@@ -23,8 +23,10 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, UnidentifiedImageError
+from PIL.Image import DecompressionBombError
 
 from . import augment, vision
+from .prepare import resolve_tiles
 from .catalog import format_report, scan_tree
 
 POC_ROOT = Path(__file__).resolve().parent.parent
@@ -59,12 +61,14 @@ FEATURELESS_STD = 3.0
 
 
 def build(
-    tiles_dir: Path = DEFAULT_TILES,
+    tiles_dir: Path | None = None,
     index_dir: Path = DEFAULT_INDEX,
     views: int = augment.VIEWS_PER_IMAGE,
     batch_size: int = 8,
     limit: int | None = None,
 ) -> dict:
+    tiles_dir = Path(tiles_dir) if tiles_dir else resolve_tiles()
+    print(f"reading references from {tiles_dir.name}/\n", flush=True)
     index_dir = Path(index_dir)
     thumbs = index_dir / "thumbs"
     thumbs.mkdir(parents=True, exist_ok=True)
@@ -86,8 +90,11 @@ def build(
     for i, ref in enumerate(refs):
         try:
             img = vision.load_image(ref.path)
-        except (UnidentifiedImageError, OSError, ValueError) as exc:
-            # A corrupt reference must never abort a build; report and continue.
+        except (UnidentifiedImageError, OSError, ValueError, DecompressionBombError) as exc:
+            # A corrupt or oversized reference must never abort a build.
+            # DecompressionBombError inherits from Exception, not OSError, so it
+            # has to be named explicitly — omitting it killed a 669-image build
+            # 18 minutes in, on image 160.
             failed.append((ref.relpath, f"{type(exc).__name__}: {exc}"))
             print(f"  [{i+1}/{len(refs)}] SKIP {ref.relpath} — {type(exc).__name__}", flush=True)
             continue
@@ -133,6 +140,7 @@ def build(
         json.dumps(
             {
                 "pipeline_version": vision.PIPELINE_VERSION,
+                "tiles_dir": tiles_dir.name,
                 "config_hash": vision.config_hash(),
                 "embed_dim": vision.EMBED_DIM,
                 "views_per_image": views,
@@ -203,15 +211,16 @@ def rebuild_thumbnails(index_dir: Path = DEFAULT_INDEX) -> int:
     """
     index_dir = Path(index_dir)
     meta = json.loads((index_dir / "meta.json").read_text())
+    tiles_dir = POC_ROOT / meta.get("tiles_dir", "Tiles")
     thumbs = index_dir / "thumbs"
     thumbs.mkdir(parents=True, exist_ok=True)
 
     done = 0
     for ref in meta["references"]:
-        src = POC_ROOT / "Tiles" / ref["relpath"]
+        src = tiles_dir / ref["relpath"]
         try:
             img = vision.load_image(src)
-        except (UnidentifiedImageError, OSError, ValueError) as exc:
+        except (UnidentifiedImageError, OSError, ValueError, DecompressionBombError) as exc:
             print(f"  SKIP {ref['relpath']} — {type(exc).__name__}", flush=True)
             continue
         _save_thumb(img.resize(_thumb_size(img.size), Image.Resampling.LANCZOS),
@@ -238,7 +247,8 @@ def _thumb_size(size: tuple[int, int]) -> tuple[int, int]:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Build the tile vector index.")
-    p.add_argument("--tiles", type=Path, default=DEFAULT_TILES)
+    p.add_argument("--tiles", type=Path, default=None,
+                   help="reference tree (default: Tiles-prepared if current, else Tiles)")
     p.add_argument("--index", type=Path, default=DEFAULT_INDEX)
     p.add_argument("--views", type=int, default=augment.VIEWS_PER_IMAGE)
     p.add_argument("--batch-size", type=int, default=8)

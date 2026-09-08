@@ -4,10 +4,13 @@ PY := .venv/bin/python
 help:
 	@echo "  make setup       create .venv (python 3.13) and install deps"
 	@echo "  make model       download DINOv2-base ONNX weights (~346 MB)"
-	@echo "  make index       build the vector index from Tiles/"
+	@echo "  make prep        normalize Tiles/ into Tiles-prepared/ (fast re-indexing)"
+	@echo "  make index       build the vector index (runs prep first)"
 	@echo "  make thumbs      regenerate candidate + reference images (no re-embedding)"
 	@echo "  make serve       run the demo at http://localhost:8000"
-	@echo "  make lan         same, reachable from a phone on the LAN"
+	@echo "  make lan         reachable from a phone on the LAN (http; use the"
+	@echo "                   'Choose / take photo' button, not the live preview)"
+	@echo "  make lan-https   same but HTTPS, so the live camera preview works too"
 	@echo "  make match IMG=path/to/photo.jpg"
 	@echo "  make eval        synthetic leave-one-out accuracy"
 	@echo "  make eval-sanity pipeline wiring check (expect ~100%)"
@@ -24,7 +27,10 @@ model:
 	[shutil.copyfile(d('Xenova/dinov2-base',f), os.path.join('models',os.path.basename(f))) \
 	 for f in ['onnx/model.onnx','preprocessor_config.json','config.json']]; print('model ready')"
 
-index:
+prep:
+	$(PY) -m tilematch.prepare
+
+index: prep
 	$(PY) -m tilematch.index
 
 thumbs:
@@ -35,6 +41,9 @@ serve:
 
 lan:
 	$(PY) -m tilematch.server --host 0.0.0.0
+
+lan-https:
+	$(PY) -m tilematch.server --host 0.0.0.0 --tls
 
 match:
 	@test -n "$(IMG)" || (echo "usage: make match IMG=path/to/photo.jpg"; exit 1)
@@ -55,4 +64,4 @@ test:
 clean:
 	rm -rf index/vectors.npz index/meta.json index/thumbs index/refs index/*.jpg index/*.json
 
-.PHONY: help setup model index thumbs serve lan match eval eval-sanity eval-real test clean
+.PHONY: help setup model prep index thumbs serve lan lan-https match eval eval-sanity eval-real test clean

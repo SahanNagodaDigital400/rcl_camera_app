@@ -42,6 +42,11 @@ from .search import DEFAULT_INDEX, TOP_K, Matcher
 POC_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_QUERIES = POC_ROOT / "queries"
 
+
+def tiles_root(matcher: Matcher) -> Path:
+    """The reference tree this index was built from — prepared or original."""
+    return POC_ROOT / matcher.meta.get("tiles_dir", "Tiles")
+
 CAVEAT = {
     "sanity": "PIPELINE CHECK ONLY — unmodified images already in the index. Not an accuracy result.",
     "synthetic": "SYNTHETIC — warped studio assets, not phone photos. Overstates real accuracy.",
@@ -126,7 +131,7 @@ def run_synthetic(matcher: Matcher, mode: str, seed: int, limit: int | None) -> 
               f"unreachable under leave-one-out.\n")
 
     for n, (idx, ref) in enumerate(targets, 1):
-        src = POC_ROOT / "Tiles" / ref["relpath"]
+        src = tiles_root(matcher) / ref["relpath"]
         try:
             img = vision.load_image(src)
         except Exception as exc:
@@ -228,7 +233,7 @@ def write_failure_sheet(results: list[dict], out: Path, matcher: Matcher) -> Pat
         y = pad + row * (cell + pad)
         # Show what the matcher actually saw, not the pristine reference: for a
         # synthetic run that means re-deriving the same warped query from its seed.
-        src = POC_ROOT / "Tiles" / r["relpath"]
+        src = tiles_root(matcher) / r["relpath"]
         qpath = POC_ROOT / "queries" / r["relpath"]
         for p, is_ref in ((qpath, False), (src, True)):
             if not p.exists():

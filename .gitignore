@@ -9,3 +9,5 @@ poc/queries/
 poc/.venv/
 __pycache__/
 .pytest_cache/
+poc/Tiles-prepared/
+poc/certs/

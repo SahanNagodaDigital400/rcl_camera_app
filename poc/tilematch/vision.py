@@ -19,6 +19,8 @@ both sides.
 
 from __future__ import annotations
 
+import atexit
+import gc
 import hashlib
 import io
 import json
@@ -44,6 +46,20 @@ IMAGE_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 # size is slow and buys nothing at 224px input. Applied identically on both
 # paths so it can never become an asymmetry.
 DECODE_MAX_EDGE = 2048
+
+# Pillow refuses images above 2x MAX_IMAGE_PIXELS with DecompressionBombError,
+# which inherits straight from Exception — not OSError — so it slips past the
+# usual "corrupt file" handlers and aborts a whole build.
+#
+# The catalogue legitimately contains 185.8 Mpixel scans (19276x9638), so the
+# default 89.5 Mpixel limit is simply wrong for trusted reference files. Query
+# uploads are a different matter: they are untrusted, and a 60 Mpixel cap is
+# already far above any real phone camera.
+#
+# This is a gate, not a transform — it rejects, it never alters pixels — so it
+# cannot introduce index/query asymmetry.
+REFERENCE_MAX_PIXELS = 400_000_000
+UPLOAD_MAX_PIXELS = 60_000_000
 
 # Grey-world colour constancy: scale each channel so its mean matches the global
 # mean, cancelling a uniform illuminant cast. Applied inside preprocess, so it is
@@ -75,6 +91,11 @@ PIPELINE_VERSION = "dinov2b-224-cls+meanpatch-icc-v3"
 RENDERING_INTENT = ImageCms.Intent.RELATIVE_COLORIMETRIC
 
 _SRGB = ImageCms.createProfile("sRGB")
+
+# We enforce our own explicit limit above, so Pillow's global default (which
+# would raise on legitimate 185 Mpixel reference scans) is lifted. Not set to
+# None: the per-call check is what bounds this, and it is stricter for uploads.
+Image.MAX_IMAGE_PIXELS = REFERENCE_MAX_PIXELS
 
 MODEL_DIR = Path(__file__).resolve().parent.parent / "models"
 MODEL_PATH = MODEL_DIR / "model.onnx"
@@ -108,20 +129,35 @@ def config_hash() -> str:
 # --- Intake (AD-7: sniff -> orient -> strip EXIF -> RGB) ---------------------
 
 
-def load_image(src: str | Path | bytes | io.BytesIO) -> Image.Image:
+def load_image(
+    src: str | Path | bytes | io.BytesIO,
+    max_pixels: int = REFERENCE_MAX_PIXELS,
+) -> Image.Image:
     """Decode any input to a clean RGB image with no metadata.
 
     Content is sniffed by Pillow, not trusted from the extension. EXIF
     orientation is applied and then all metadata is dropped, so a phone photo
     and a studio scan arrive at `preprocess` in the same state.
 
-    Raises PIL.UnidentifiedImageError for unreadable/empty files; callers
-    decide whether that is fatal.
+    `max_pixels` bounds decompression-bomb exposure. It defaults to the
+    reference-file limit; the upload path passes the much tighter
+    UPLOAD_MAX_PIXELS because that input is untrusted.
+
+    Raises PIL.UnidentifiedImageError for unreadable/empty files and
+    ValueError for an image above `max_pixels`; callers decide what is fatal.
     """
     if isinstance(src, bytes):
         src = io.BytesIO(src)
 
     img = Image.open(src)
+
+    # Check the header dimensions before any decode, so an oversized file is
+    # rejected without ever allocating its pixels.
+    pixels = img.width * img.height
+    if pixels > max_pixels:
+        raise ValueError(
+            f"image is {pixels/1e6:.0f} Mpixels, above the {max_pixels/1e6:.0f} Mpixel limit"
+        )
 
     # Fast DCT-domain downscale for JPEG. Deterministic for a given file, and
     # applied on both paths, so it cannot introduce index/query asymmetry.
@@ -246,6 +282,24 @@ def _build_session() -> ort.InferenceSession:
     rank3 = [o.name for o in _session.get_outputs() if len(o.shape) == 3]
     _output_name = rank3[0] if rank3 else _session.get_outputs()[0].name
     return _session
+
+
+@atexit.register
+def _release_session() -> None:
+    """Destroy the ONNX session before interpreter shutdown.
+
+    Left to finalization, ONNX Runtime's teardown intermittently aborts the
+    process with "recursive_mutex lock failed" — the tests pass and then the exit
+    code says otherwise (measured at 1 in 8 runs). Dropping the reference is not
+    enough on its own; the collection has to be forced while the interpreter is
+    still healthy enough to run the destructor.
+    """
+    global _session, _input_name, _output_name
+    if _session is None:
+        return
+    _session = None
+    _input_name = _output_name = ""
+    gc.collect()
 
 
 def embed(batch: np.ndarray) -> np.ndarray:

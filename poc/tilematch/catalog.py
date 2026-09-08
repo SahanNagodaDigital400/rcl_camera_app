@@ -27,6 +27,12 @@ COPY_PREFIX = re.compile(r"^copy\s+of\s+", re.IGNORECASE)
 UNNAMED_DESIGN_RE = re.compile(r"^(untitled|new)\s+folder\s*\d*$", re.IGNORECASE)
 UNKNOWN_DESIGN = "UNKNOWN"
 
+# Multi-tile arrangement mockups, not tile faces: they show several tiles with
+# grout grid lines, sometimes over a coloured base. Indexing one as a reference
+# means matching a phone photo of a single tile against a picture of a floor,
+# and handing staff a reference image that is not the product.
+LAYOUT_RE = re.compile(r"(_layout[_\d]*|with\s+base)", re.IGNORECASE)
+
 
 def normalize_folder(name: str) -> str:
     """Whitespace- and case-normalize a size/design folder name.
@@ -81,6 +87,7 @@ class Reference:
     code: str
     face: str | None
     design_unknown: bool = False
+    subpath: str = ""          # grouping folders between design and file, if any
 
     @property
     def product(self) -> str:
@@ -96,6 +103,7 @@ class Reference:
             "face": self.face,
             "product": self.product,
             "design_unknown": self.design_unknown,
+            "subpath": self.subpath,
         }
 
 
@@ -109,7 +117,9 @@ class ScanReport:
     unnamed_design: list[str] = field(default_factory=list)
     normalized_folders: set[str] = field(default_factory=set)
     no_face: list[str] = field(default_factory=list)
-    unexpected_depth: list[str] = field(default_factory=list)
+    nested: list[str] = field(default_factory=list)
+    layouts: list[str] = field(default_factory=list)
+    duplicates: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def products(self) -> set[str]:
@@ -117,11 +127,15 @@ class ScanReport:
 
 
 def scan_tree(root: Path) -> ScanReport:
-    """Walk <root>/<SIZE>/<DESIGN>/<file> and build the reference list.
+    """Walk <root>/<SIZE>/<DESIGN>/.../<file> and build the reference list.
 
-    Depth is not uniform in the real Drive tree, so anything that is not exactly
-    two levels deep is recorded in `unexpected_depth` for a human to look at
-    rather than being force-fitted into the size/design model.
+    Depth is not uniform: the Drive export nests some ranges under grouping
+    folders ("New Wall tiles/A/") and some under timestamped export folders
+    ("Outdoor tiles/Adoquines_MA-20250702T053732Z-1-001/Adoquines_MA/"). Size is
+    always the top folder and design the one below it; anything deeper is a
+    sub-path that is recorded but carries no identity.
+
+    Requiring exactly three parts silently dropped 126 real images.
     """
     root = Path(root)
     report = ScanReport()
@@ -137,8 +151,13 @@ def scan_tree(root: Path) -> ScanReport:
             report.skipped_non_image.append(str(rel))
             continue
 
-        if len(parts) != 3:
-            report.unexpected_depth.append(str(rel))
+        if len(parts) < 3:
+            # A file sitting directly in a size folder has no design to belong to.
+            report.nested.append(str(rel))
+            continue
+
+        if LAYOUT_RE.search(path.stem):
+            report.layouts.append(str(rel))
             continue
 
         # Zero-byte and truncated files are real in this tree (two in "30X90/ARKE ").
@@ -147,7 +166,11 @@ def scan_tree(root: Path) -> ScanReport:
             report.skipped_unreadable.append((str(rel), "zero-byte file"))
             continue
 
-        raw_size, raw_design, filename = parts
+        raw_size, raw_design = parts[0], parts[1]
+        filename = parts[-1]
+        subpath = "/".join(parts[2:-1])          # grouping folders, no identity
+        if subpath:
+            report.nested.append(str(rel))
         size = normalize_folder(raw_size)
         design = normalize_folder(raw_design)
 
@@ -173,10 +196,37 @@ def scan_tree(root: Path) -> ScanReport:
                 code=code,
                 face=face,
                 design_unknown=design_unknown,
+                subpath=subpath,
             )
         )
 
+    _find_duplicates(report)
     return report
+
+
+def _find_duplicates(report: ScanReport) -> None:
+    """Flag byte-identical references.
+
+    The Drive tree carries the same export twice under different timestamped
+    folders. Duplicates are reported, not removed: whether two identical files
+    are one product or two is a catalogue decision, not an ingest one.
+    """
+    import hashlib
+
+    seen: dict[str, str] = {}
+    for ref in report.references:
+        try:
+            h = hashlib.sha256()
+            h.update(str(ref.path.stat().st_size).encode())
+            with ref.path.open("rb") as fh:
+                h.update(fh.read(65536))
+            key = h.hexdigest()
+        except OSError:
+            continue
+        if key in seen:
+            report.duplicates.append((seen[key], ref.relpath))
+        else:
+            seen[key] = ref.relpath
 
 
 def format_report(report: ScanReport) -> str:
@@ -204,9 +254,16 @@ def format_report(report: ScanReport) -> str:
             lines.append(f"                        {f!r}")
     if report.no_face:
         lines.append(f"  ⚠ no face number {len(report.no_face):3d}  code kept, face left null")
-    if report.unexpected_depth:
-        lines.append(f"  ⚠ unexpected depth {len(report.unexpected_depth):3d}  not <size>/<design>/<file>")
-        for f in report.unexpected_depth[:10]:
-            lines.append(f"                        {f}")
+    if report.layouts:
+        lines.append(f"  excluded       {len(report.layouts):5d}  layout mockups (multi-tile renders, not faces)")
+    if report.nested:
+        lines.append(f"  nested         {len(report.nested):5d}  under grouping folders; size/design still taken "
+                     f"from the top two levels")
+    if report.duplicates:
+        lines.append(f"  ⚠ duplicates   {len(report.duplicates):5d}  byte-identical pairs, all indexed "
+                     f"(a catalogue decision, not an ingest one)")
+        for a, b in report.duplicates[:4]:
+            lines.append(f"                        {b}")
+            lines.append(f"                          == {a}")
     lines.append("─" * 62)
     return "\n".join(lines)

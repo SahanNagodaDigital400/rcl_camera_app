@@ -212,6 +212,58 @@ drop.ondrop = e => {
 const UPLOAD_MAX_EDGE = 1024;
 const UPLOAD_QUALITY = 0.85;
 
+// XHR rather than fetch: only XHR reports upload progress, and without it a slow
+// uplink is indistinguishable from a hang — for the user and for us.
+function post(fd, ctrl, total, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let stall;
+    const bump = () => {
+      clearTimeout(stall);
+      stall = setTimeout(() => { xhr.abort(); reject(new Error('stalled')); }, STALL_TIMEOUT_MS);
+    };
+    bump();
+
+    xhr.upload.onprogress = e => {
+      bump();
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    };
+    xhr.onprogress = bump;                       // response bytes count as progress too
+    xhr.onload = () => {
+      clearTimeout(stall);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch (err) { reject(new Error('bad response')); }
+      } else {
+        reject(new Error(`HTTP ${xhr.status}: ${String(xhr.responseText).slice(0, 200)}`));
+      }
+    };
+    xhr.onerror = () => { clearTimeout(stall); reject(new Error('network error')); };
+    xhr.onabort = () => { clearTimeout(stall); reject(new Error(ctrl.signal.reason || 'aborted')); };
+    ctrl.signal.addEventListener('abort', () => xhr.abort(), { once: true });
+
+    xhr.open('POST', '/api/scan');
+    xhr.send(fd);
+  });
+}
+
+async function upload(fd, ctrl, bytes) {
+  let lastErr;
+  for (let attempt = 0; attempt <= UPLOAD_RETRIES; attempt++) {
+    if (attempt) say(`retrying upload (${kb(bytes)})…`);
+    try {
+      return await post(fd, ctrl, bytes, frac =>
+        say(`uploading ${kb(bytes)} — ${Math.round(frac * 100)}%`));
+    } catch (e) {
+      lastErr = e;
+      // A user-initiated cancel or a newer scan must not trigger a retry.
+      if (ctrl.signal.reason || e.message.startsWith('HTTP')) throw e;
+      report('upload retry', `attempt ${attempt + 1}: ${e.message} (${kb(bytes)})`);
+    }
+  }
+  throw lastErr;
+}
+
 async function shrink(blob) {
   if (!blob.type.startsWith('image/')) return blob;
   let bmp;
@@ -249,7 +301,13 @@ function kb(n) { return n > 1048576 ? (n/1048576).toFixed(1) + ' MB' : Math.roun
 // one in flight rather than queueing behind it — the user wants the latest shot,
 // not a backlog of stale ones.
 let inFlight = null;
-const SCAN_TIMEOUT_MS = 30000;
+// A stall timeout, not a total one. The previous 30 s cap on total elapsed time
+// killed uploads that were progressing perfectly well — a 198 KB image over a
+// weak 4G uplink can legitimately take longer than that, and the request never
+// even reached the server before being aborted. What actually indicates a dead
+// connection is bytes not moving.
+const STALL_TIMEOUT_MS = 25000;
+const UPLOAD_RETRIES = 1;
 
 function setBusy(busy) {
   $('#shoot').disabled = busy || !stream;
@@ -261,7 +319,6 @@ async function send(blob, name) {
   if (inFlight) { inFlight.abort('superseded'); }
   const ctrl = new AbortController();
   inFlight = ctrl;
-  const timer = setTimeout(() => ctrl.abort('timeout'), SCAN_TIMEOUT_MS);
   setBusy(true);
 
   // Everything from here down is inside the try. It previously started after
@@ -280,27 +337,22 @@ async function send(blob, name) {
     const fd = new FormData();
     fd.append('file', blob, blob.type === 'image/jpeg' ? 'scan.jpg' : name);
 
-    const r = await fetch('/api/scan', { method: 'POST', body: fd, signal: ctrl.signal });
-    if (!r.ok) {
-      const body = await r.text();
-      report('scan failed', `HTTP ${r.status}: ${body.slice(0, 200)}`);
-      say('scan failed (' + r.status + '): ' + body, true);
-      return;
-    }
-    const d = await r.json();
+    const d = await upload(fd, ctrl, blob.size);
     if (d.queue_ms > 100) console.debug(`waited ${d.queue_ms} ms in the server queue`);
     const shown = Math.min(d.top_k ?? 3, d.candidates.length);
     say(`${note}top ${shown} of ${d.candidates.length} · ${d.elapsed_ms} ms server · ${Math.round(performance.now()-t)} ms round trip`);
     render(d.candidates, d.top_k ?? 3);
   } catch (e) {
     if (ctrl.signal.reason === 'superseded') return;      // a newer scan replaced this one
-    const why = ctrl.signal.reason === 'timeout'
-      ? `no response after ${SCAN_TIMEOUT_MS / 1000}s — check the server is running`
-      : 'request failed: ' + (e && e.message ? e.message : e);
-    report('scan error', `${e && e.name}: ${e && e.message}`);
+    const msg = (e && e.message) || String(e);
+    const why = msg === 'stalled'
+      ? `upload stalled — no data moved for ${STALL_TIMEOUT_MS / 1000}s. Check the connection and try again.`
+      : msg === 'network error'
+        ? 'could not reach the server — check the connection'
+        : 'scan failed: ' + msg;
+    report('scan error', `${e && e.name}: ${msg}`);
     say(why, true);
   } finally {
-    clearTimeout(timer);
     if (inFlight === ctrl) { inFlight = null; setBusy(false); }
   }
 }
