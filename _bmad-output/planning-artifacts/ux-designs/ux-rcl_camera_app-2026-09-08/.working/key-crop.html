@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rocell Tile Scanner — Crop (key screen)</title>
+<style>
+/* =====================================================================
+   KEY SCREEN: Crop
+   Full-screen sheet reached after capture/upload; one modal level over Scan.
+
+   Governed by:
+   - EXPERIENCE.md > Information Architecture > "Crop" row (isolate the tile face
+     before submission)
+   - EXPERIENCE.md > Foundation ("Modal/sheet stacks one level deep — Crop is a
+     full-screen sheet over Scan, never a sheet-over-a-sheet")
+   - EXPERIENCE.md > Component Patterns > "Crop selector" (free-form rectangle, drag
+     corners/edges to resize, drag body to move; pre-filled to a best-guess selection;
+     confirm required before proceeding)
+   - EXPERIENCE.md > Interaction Primitives ("Drag to adjust crop — corners resize,
+     body moves. No pinch-zoom layered on top.")
+   - DESIGN.md > Components > Crop selector (accent border on active selection, white
+     corner/edge handles with accent border sized to the 44px touch-target floor, dark
+     scrim rgba(24,24,48,0.55) over the deselected area), App bar
+   - DESIGN.md > Shapes ("{rounded.lg} reserved for full-screen sheets — the crop tool")
+   - DESIGN.md > Colors (one orange action per screen: "Confirm Crop")
+   - DESIGN.md > Accessibility Floor (crop-handle grab areas ≥ 44×44px)
+
+   Font note: production loads the real Plus Jakarta Sans webfont. This offline mock
+   approximates it with the system sans stack (-apple-system, Segoe UI, sans-serif) per
+   key-screens.md's no-network-call constraint.
+
+   Placeholder note: no real tile photography exists yet. The captured-photo area below
+   is a subtle textured/patterned div standing in for a phone photo of a tile, per the
+   parent task's instruction — not a claim about what real tile imagery looks like.
+   ===================================================================== */
+
+:root{
+  --bg:#FAFAF8; --surface:#FFFFFF;
+  --primary:#131B5E; --primary-fg:#FFFFFF;
+  --accent:#F58025; --accent-fg:#131B5E;
+  --border:#ECE6DB; --text:#181830; --muted:#736F82;
+  --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-full:9999px;
+  --scrim: rgba(24,24,48,0.55);
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+*,*::before,*::after{ box-sizing:border-box; }
+html,body{ margin:0; background:#EDEDE9; font-family:var(--font-body); -webkit-font-smoothing:antialiased; }
+
+.page{ min-height:100vh; padding:40px 20px 64px; display:flex; flex-direction:column; align-items:center; }
+.page-head{ max-width:520px; text-align:center; margin-bottom:28px; }
+.page-head h1{ font-size:20px; font-weight:800; color:var(--primary); margin:0 0 6px; letter-spacing:-0.01em; }
+.page-head p{ font-size:13px; line-height:1.55; color:#5B5763; margin:0; }
+
+.device{ width:402px; background:#15151f; border-radius:46px; padding:12px; position:relative; box-shadow:0 24px 44px rgba(19,27,94,0.22); }
+.device .notch{ position:absolute; top:12px; left:50%; transform:translateX(-50%); width:120px; height:24px; background:#15151f; border-radius:0 0 16px 16px; z-index:5; }
+.screen{ width:100%; height:780px; background:var(--bg); border-radius:var(--radius-lg); overflow:hidden; display:flex; flex-direction:column; position:relative; }
+
+/* ---------- App bar (sheet header: close + title, no back/avatar — a sheet, not a nav surface) ---------- */
+.app-bar{
+  display:flex; align-items:center; gap:12px;
+  padding:16px 16px 12px; background:var(--primary); color:var(--primary-fg);
+  border-bottom:3px solid var(--accent); flex-shrink:0;
+}
+.icon-btn{ width:30px; height:30px; display:flex; align-items:center; justify-content:center; color:#fff; flex-shrink:0; }
+.icon-btn svg{ width:20px; height:20px; }
+.app-bar .title{ font-weight:800; font-size:15px; letter-spacing:-0.01em; }
+
+/* ---------- Crop stage ---------- */
+.stage{ position:relative; flex:1; overflow:hidden; background:#0f0f16; }
+
+/* placeholder "captured photo" — textured stand-in, not real tile photography */
+.photo-placeholder{
+  position:absolute; inset:0;
+  background-color:#3b3a4a;
+  background-image:
+    repeating-linear-gradient(115deg, rgba(255,255,255,0.07) 0 2px, transparent 2px 22px),
+    repeating-linear-gradient(25deg, rgba(0,0,0,0.18) 0 3px, transparent 3px 30px);
+}
+
+/* scrim over the deselected area, punched out with a matching inset box-shadow trick */
+.crop-select{
+  position:absolute; left:11%; right:15%; top:24%; bottom:32%;
+  border:3px solid var(--accent); border-radius:var(--radius-sm);
+  box-shadow:0 0 0 9999px var(--scrim);
+}
+
+.handle{
+  position:absolute; width:26px; height:26px; border-radius:var(--radius-full);
+  background:var(--surface); border:3px solid var(--accent);
+  transform:translate(-50%,-50%);
+}
+.handle.corner{ width:26px; height:26px; }
+.handle.edge{ width:22px; height:22px; }
+/* corners */
+.handle[data-pos="tl"]{ left:0; top:0; }
+.handle[data-pos="tr"]{ left:100%; top:0; }
+.handle[data-pos="bl"]{ left:0; top:100%; }
+.handle[data-pos="br"]{ left:100%; top:100%; }
+/* edge midpoints */
+.handle[data-pos="tm"]{ left:50%; top:0; }
+.handle[data-pos="bm"]{ left:50%; top:100%; }
+.handle[data-pos="lm"]{ left:0; top:50%; }
+.handle[data-pos="rm"]{ left:100%; top:50%; }
+
+/* ---------- Sheet footer ---------- */
+.sheet-footer{ flex-shrink:0; background:var(--surface); border-top:1px solid var(--border); padding:16px 20px 22px; position:relative; }
+.hint{ font-size:12.5px; color:var(--muted); text-align:center; margin:0 0 12px; }
+.btn-primary{
+  display:flex; align-items:center; justify-content:center; gap:8px; width:100%;
+  background:var(--accent); color:var(--accent-fg); border:none; font-family:inherit;
+  font-weight:700; font-size:14.5px; padding:13px 16px; border-radius:var(--radius-sm);
+}
+.btn-primary svg{ width:18px; height:18px; }
+.home-indicator{ position:absolute; bottom:6px; left:50%; transform:translateX(-50%); width:120px; height:4px; border-radius:3px; background:rgba(24,24,48,0.16); }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="page-head">
+    <h1>Crop — full-screen sheet</h1>
+    <p>Pre-filled best-guess selection over the captured photo; drag corners/edges to resize, drag the body to move. Confirm is required before Results.</p>
+  </div>
+
+  <div class="device">
+    <div class="notch"></div>
+    <div class="screen">
+
+      <div class="app-bar">
+        <div class="icon-btn" aria-label="Cancel">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </div>
+        <div class="title">Crop</div>
+      </div>
+
+      <div class="stage">
+        <div class="photo-placeholder"></div>
+        <div class="crop-select">
+          <div class="handle corner" data-pos="tl"></div>
+          <div class="handle corner" data-pos="tr"></div>
+          <div class="handle corner" data-pos="bl"></div>
+          <div class="handle corner" data-pos="br"></div>
+          <div class="handle edge" data-pos="tm"></div>
+          <div class="handle edge" data-pos="bm"></div>
+          <div class="handle edge" data-pos="lm"></div>
+          <div class="handle edge" data-pos="rm"></div>
+        </div>
+      </div>
+
+      <div class="sheet-footer">
+        <p class="hint">Drag the corners to fit the tile face, then confirm.</p>
+        <button class="btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>
+          Confirm Crop
+        </button>
+        <div class="home-indicator"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

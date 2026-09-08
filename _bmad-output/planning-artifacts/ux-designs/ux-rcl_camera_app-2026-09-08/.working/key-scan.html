@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rocell Tile Scanner — Scan (key screen)</title>
+<style>
+/* =====================================================================
+   KEY SCREEN: Scan (live camera capture with framing guide)
+   Canonical entry point — default landing surface for Staff.
+
+   Governed by:
+   - EXPERIENCE.md > Information Architecture > "Scan" row (capture/upload entry point)
+   - EXPERIENCE.md > Foundation (mobile-first scan flow; role-conditional bottom tab bar,
+     Staff sees Scan + History only)
+   - EXPERIENCE.md > Component Patterns > "Framing guide overlay" (fixed guide rect over
+     the viewfinder, doesn't block the shutter control)
+   - EXPERIENCE.md > State Patterns > "Camera permission not yet granted" (the always-visible
+     "Choose a photo" fallback referenced here is shown; the permission-prompt state itself
+     is a separate state, not rendered in this canonical mock)
+   - EXPERIENCE.md > Voice and Tone ("Fill the frame with the tile face." — used verbatim)
+   - EXPERIENCE.md > Interaction Primitives ("Tap to capture; tap to open the file picker
+     for upload. Both lead to the same Crop step.")
+   - DESIGN.md > Components > App bar, Framing guide overlay, Button (primary), Button (secondary)
+   - DESIGN.md > Colors (one orange action per screen — the shutter control; "Scan" is
+     listed as a canonical accent-action label)
+   - DESIGN.md > Do's and Don'ts (Phosphor outline icons, no pill buttons, navy chrome)
+
+   Font note: production loads the real Plus Jakarta Sans webfont. This offline mock
+   approximates it with the system sans stack (-apple-system, Segoe UI, sans-serif) per
+   key-screens.md's no-network-call constraint.
+
+   Gap note: the bottom tab bar and the "shutter" capture control are confirmed
+   behaviorally in EXPERIENCE.md/DESIGN.md but have no dedicated visual token entry of
+   their own in DESIGN.md's Components table. Both are rendered here by directly reusing
+   already-specified tokens (app-bar chrome colors for the tab bar; button-primary's
+   accent-fill/navy-foreground/rounded-sm pairing for the shutter) rather than inventing
+   a new component.
+   ===================================================================== */
+
+:root{
+  --bg:#FAFAF8; --surface:#FFFFFF;
+  --primary:#131B5E; --primary-fg:#FFFFFF;
+  --accent:#F58025; --accent-fg:#131B5E;
+  --destructive:#E30425; --destructive-fg:#FFFFFF;
+  --border:#ECE6DB; --text:#181830; --muted:#736F82;
+  --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-full:9999px;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+*,*::before,*::after{ box-sizing:border-box; }
+html,body{ margin:0; background:#EDEDE9; font-family:var(--font-body); -webkit-font-smoothing:antialiased; }
+
+.page{ min-height:100vh; padding:40px 20px 64px; display:flex; flex-direction:column; align-items:center; }
+.page-head{ max-width:520px; text-align:center; margin-bottom:28px; }
+.page-head h1{ font-size:20px; font-weight:800; color:var(--primary); margin:0 0 6px; letter-spacing:-0.01em; }
+.page-head p{ font-size:13px; line-height:1.55; color:#5B5763; margin:0; }
+
+.device{ width:402px; background:#15151f; border-radius:46px; padding:12px; position:relative; box-shadow:0 24px 44px rgba(19,27,94,0.22); }
+.device .notch{ position:absolute; top:12px; left:50%; transform:translateX(-50%); width:120px; height:24px; background:#15151f; border-radius:0 0 16px 16px; z-index:5; }
+.screen{ width:100%; height:780px; background:var(--bg); border-radius:34px; overflow:hidden; display:flex; flex-direction:column; position:relative; }
+
+/* ---------- App bar ---------- */
+.app-bar{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:16px 16px 12px; background:var(--primary); color:var(--primary-fg);
+  border-bottom:3px solid var(--accent); flex-shrink:0;
+}
+.app-bar .brand{ display:flex; align-items:center; gap:8px; font-weight:800; font-size:15px; letter-spacing:-0.01em; }
+.avatar-btn{ width:30px; height:30px; border-radius:var(--radius-full); background:rgba(255,255,255,0.14); display:flex; align-items:center; justify-content:center; color:#fff; flex-shrink:0; }
+.avatar-btn svg{ width:17px; height:17px; }
+
+/* ---------- Viewfinder ---------- */
+.viewfinder{ position:relative; flex:1; overflow:hidden; background:
+  radial-gradient(120% 90% at 50% 20%, #2b2b3d 0%, #1a1a26 55%, #101018 100%);
+}
+.viewfinder .texture{
+  position:absolute; inset:0; opacity:0.16;
+  background-image: repeating-linear-gradient(35deg, rgba(255,255,255,0.5) 0 1.5px, transparent 1.5px 26px);
+}
+
+.frame-guide{
+  position:absolute; left:9%; right:9%; top:26%; bottom:30%;
+  border:3px solid var(--accent); border-radius:var(--radius-md);
+  box-shadow:0 0 0 9999px rgba(10,10,16,0.42);
+}
+.frame-guide::before, .frame-guide::after{ content:""; }
+
+.guide-copy{
+  position:absolute; left:50%; top:16.5%; transform:translateX(-50%); z-index:2;
+  background:rgba(10,10,16,0.5); color:#fff; font-size:13px; font-weight:500;
+  padding:8px 14px; border-radius:var(--radius-full); white-space:nowrap;
+  text-align:center; letter-spacing:0.01em;
+}
+
+/* Three-column grid, not space-between: keeps the shutter optically centred and
+   guarantees the "Choose a photo" fallback can never collide with it, whatever
+   the label's rendered width. */
+.controls{
+  position:absolute; left:0; right:0; bottom:0; z-index:2; padding:18px 16px 22px;
+  display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:12px;
+  background:linear-gradient(to top, rgba(8,8,14,0.55), rgba(8,8,14,0));
+}
+.choose-photo{
+  justify-self:start; white-space:nowrap; min-height:44px; /* Accessibility Floor: >=44x44 */
+  display:inline-flex; align-items:center; gap:6px; background:transparent;
+  border:1.5px solid rgba(255,255,255,0.75); color:#fff; font-family:inherit;
+  font-size:11.5px; font-weight:600; padding:8px 12px; border-radius:var(--radius-sm);
+}
+.choose-photo svg{ width:15px; height:15px; flex-shrink:0; }
+.shutter{
+  justify-self:center; width:66px; height:66px; border-radius:var(--radius-sm);
+  background:var(--accent); color:var(--accent-fg); border:none;
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 6px 16px rgba(245,128,37,0.4);
+}
+.shutter svg{ width:28px; height:28px; }
+
+/* ---------- Bottom tab bar ---------- */
+.tab-bar{ flex-shrink:0; display:flex; background:var(--surface); border-top:1px solid var(--border); padding-top:6px; padding-bottom:10px; position:relative; }
+.tab-item{ flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:4px 0; color:var(--muted); font-size:11px; font-weight:600; }
+.tab-item svg{ width:22px; height:22px; }
+.tab-item.active{ color:var(--primary); }
+.home-indicator{ position:absolute; bottom:4px; left:50%; transform:translateX(-50%); width:120px; height:4px; border-radius:3px; background:rgba(24,24,48,0.16); }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="page-head">
+    <h1>Scan — canonical entry point</h1>
+    <p>Live camera capture with framing guide. Default landing surface for Staff; the shutter and the "Choose a photo" fallback both lead to Crop.</p>
+  </div>
+
+  <div class="device">
+    <div class="notch"></div>
+    <div class="screen">
+
+      <div class="app-bar">
+        <div class="brand">Rocell Scanner</div>
+        <div class="avatar-btn" aria-label="Account settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c1.1-3.6 3.9-5.4 7-5.4s5.9 1.8 7 5.4"/></svg>
+        </div>
+      </div>
+
+      <div class="viewfinder">
+        <div class="texture"></div>
+        <div class="guide-copy">Fill the frame with the tile face.</div>
+        <div class="frame-guide"></div>
+
+        <div class="controls">
+          <button class="choose-photo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16l-5.5-5.5L9 17"/></svg>
+            Choose a photo
+          </button>
+          <button class="shutter" aria-label="Capture">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8a2 2 0 0 1 2-2h1.2l.9-1.5A2 2 0 0 1 9.8 3.5h4.4a2 2 0 0 1 1.7 1L16.8 6H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z"/><circle cx="12" cy="13" r="3.2"/></svg>
+          </button>
+          <div class="controls-spacer"></div>
+        </div>
+      </div>
+
+      <div class="tab-bar">
+        <div class="tab-item active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8a2 2 0 0 1 2-2h1.2l.9-1.5A2 2 0 0 1 9.8 3.5h4.4a2 2 0 0 1 1.7 1L16.8 6H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z"/><circle cx="12" cy="13" r="3.2"/></svg>
+          Scan
+        </div>
+        <div class="tab-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          History
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

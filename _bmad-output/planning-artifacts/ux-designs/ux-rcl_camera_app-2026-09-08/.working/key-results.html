@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rocell Tile Scanner — Results (key screen)</title>
+<style>
+/* =====================================================================
+   KEY SCREEN: Results — the hero screen
+   Reached after crop confirm + processing. Shows up to 3 ranked Candidates.
+
+   Governed by:
+   - EXPERIENCE.md > Information Architecture > "Results" row (up to 3 ranked Candidates)
+   - EXPERIENCE.md > Component Patterns > "Candidate card" (reference image, Code in
+     {typography.code}, Size · Design line; top card uses candidate-card-best-match
+     styling; tapping any card opens its reference image full-screen)
+   - EXPERIENCE.md > Voice and Tone ("Best match" — never a percentage; the PRD
+     explicitly rejects calibrated-confidence framing)
+   - EXPERIENCE.md > Key Flows > Flow 1 ("Kasun identifies a tile mid-sale") — climax
+     step: "Results shows three candidates; the top card's reference image visually
+     matches the tile in his hand within a second of looking at it."
+   - EXPERIENCE.md > Interaction Primitives ("Tap a Candidate to view its reference
+     image full-screen — this is the verification moment.")
+   - DESIGN.md > Components > Candidate card (best match) — {colors.accent} 2px border
+     instead of the neutral border, no confidence-score label; App bar
+   - DESIGN.md > Typography (display reserved for "a scan result's top match" / "a
+     screen title" — applied here to the screen heading; the Candidate card's own Code
+     field stays pinned to {typography.code} per Component Patterns, so display type is
+     not applied inside the cards)
+   - DESIGN.md > Colors (candidate-card-best-match border = accent; accent-foreground =
+     navy, verified 5.94:1 — used for the "Best match" pill)
+
+   Font notes: production loads the real Plus Jakarta Sans and JetBrains Mono webfonts.
+   This offline mock approximates Plus Jakarta Sans with the system sans stack
+   (-apple-system, Segoe UI, sans-serif) and JetBrains Mono with the system monospace
+   stack (ui-monospace, SF Mono, Menlo, monospace), per key-screens.md's no-network-call
+   constraint.
+
+   Placeholder note: reference-image squares are subtle textured/patterned divs standing
+   in for real product photography, since no real tile reference images exist yet.
+   ===================================================================== */
+
+:root{
+  --bg:#FAFAF8; --surface:#FFFFFF;
+  --primary:#131B5E; --primary-fg:#FFFFFF;
+  --accent:#F58025; --accent-fg:#131B5E;
+  --border:#ECE6DB; --text:#181830; --muted:#736F82;
+  --radius-sm:8px; --radius-md:12px; --radius-full:9999px;
+  --shadow: 0 2px 8px rgba(19,27,94,0.08);
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-code: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+*,*::before,*::after{ box-sizing:border-box; }
+html,body{ margin:0; background:#EDEDE9; font-family:var(--font-body); -webkit-font-smoothing:antialiased; }
+
+.page{ min-height:100vh; padding:40px 20px 64px; display:flex; flex-direction:column; align-items:center; }
+.page-head{ max-width:520px; text-align:center; margin-bottom:28px; }
+.page-head h1{ font-size:20px; font-weight:800; color:var(--primary); margin:0 0 6px; letter-spacing:-0.01em; }
+.page-head p{ font-size:13px; line-height:1.55; color:#5B5763; margin:0; }
+
+.device{ width:402px; background:#15151f; border-radius:46px; padding:12px; position:relative; box-shadow:0 24px 44px rgba(19,27,94,0.22); }
+.device .notch{ position:absolute; top:12px; left:50%; transform:translateX(-50%); width:120px; height:24px; background:#15151f; border-radius:0 0 16px 16px; z-index:5; }
+.screen{ width:100%; height:780px; background:var(--bg); border-radius:34px; overflow:hidden; display:flex; flex-direction:column; position:relative; }
+
+/* ---------- App bar ---------- */
+.app-bar{
+  display:flex; align-items:center; gap:12px;
+  padding:16px 16px 12px; background:var(--primary); color:var(--primary-fg);
+  border-bottom:3px solid var(--accent); flex-shrink:0;
+}
+.icon-btn{ width:26px; height:26px; display:flex; align-items:center; justify-content:center; color:#fff; flex-shrink:0; }
+.icon-btn svg{ width:20px; height:20px; }
+.app-bar .title{ font-weight:800; font-size:15px; letter-spacing:-0.01em; }
+
+/* ---------- Content ---------- */
+.content{ flex:1; overflow-y:auto; padding:20px 18px 8px; }
+.heading{
+  font-size:26px; font-weight:800; color:var(--text); letter-spacing:-0.01em; line-height:1.15;
+  margin:0 0 4px;
+}
+.subheading{ font-size:13px; color:var(--muted); font-weight:500; margin:0 0 18px; }
+
+.candidate-card{
+  display:flex; gap:13px; align-items:flex-start;
+  padding:13px; margin-bottom:12px;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md);
+  box-shadow:var(--shadow);
+}
+.candidate-card.best{ border:2px solid var(--accent); padding:12px; }
+.candidate-card:last-child{ margin-bottom:0; }
+
+.ref-image{ width:68px; height:68px; border-radius:var(--radius-sm); flex-shrink:0; border:1px solid var(--border); background:var(--surface); }
+.ref-image.pattern-a{ background-image:repeating-linear-gradient(45deg, var(--border) 0 4px, var(--surface) 4px 12px); }
+.ref-image.pattern-b{ background-image:repeating-linear-gradient(-45deg, var(--muted) 0 3px, var(--surface) 3px 14px); opacity:0.6; }
+.ref-image.pattern-c{ background-image:radial-gradient(var(--muted) 1.3px, transparent 1.3px); background-size:8px 8px; }
+
+.candidate-info{ flex:1; min-width:0; }
+.best-pill{
+  display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:0.02em;
+  background:var(--accent); color:var(--accent-fg);
+  padding:3px 9px; border-radius:var(--radius-full); margin-bottom:7px;
+}
+.candidate-code{
+  font-family:var(--font-code); font-size:14px; font-weight:500; color:var(--text);
+  margin-bottom:4px; overflow-wrap:anywhere; line-height:1.4;
+}
+.candidate-meta{ font-size:13px; color:var(--muted); font-weight:500; }
+
+/* ---------- Bottom tab bar ---------- */
+.tab-bar{ flex-shrink:0; display:flex; background:var(--surface); border-top:1px solid var(--border); padding-top:6px; padding-bottom:10px; position:relative; }
+.tab-item{ flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:4px 0; color:var(--muted); font-size:11px; font-weight:600; }
+.tab-item svg{ width:22px; height:22px; }
+.tab-item.active{ color:var(--primary); }
+.home-indicator{ position:absolute; bottom:4px; left:50%; transform:translateX(-50%); width:120px; height:4px; border-radius:3px; background:rgba(24,24,48,0.16); }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="page-head">
+    <h1>Results — hero screen</h1>
+    <p>Three ranked Candidates, always shown together. The top card carries the candidate-card-best-match treatment; "Best match" is stated, never a percentage.</p>
+  </div>
+
+  <div class="device">
+    <div class="notch"></div>
+    <div class="screen">
+
+      <div class="app-bar">
+        <div class="icon-btn" aria-label="Back">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+        </div>
+        <div class="title">Rocell Scanner</div>
+      </div>
+
+      <div class="content">
+        <h2 class="heading">Results</h2>
+        <p class="subheading">Tap a candidate to view its reference image full-screen.</p>
+
+        <div class="candidate-card best">
+          <div class="ref-image pattern-a"></div>
+          <div class="candidate-info">
+            <span class="best-pill">Best match</span>
+            <div class="candidate-code">RP.CMA.0001DJ.SM.0T</div>
+            <div class="candidate-meta">45X90 · CREMA MARMOL</div>
+          </div>
+        </div>
+
+        <div class="candidate-card">
+          <div class="ref-image pattern-b"></div>
+          <div class="candidate-info">
+            <div class="candidate-code">RP.CMA.0008DJ.SM.0T</div>
+            <div class="candidate-meta">45X90 · CREMA MARMOL</div>
+          </div>
+        </div>
+
+        <div class="candidate-card">
+          <div class="ref-image pattern-c"></div>
+          <div class="candidate-info">
+            <div class="candidate-code">RP.AST.0004TK.SM.0T</div>
+            <div class="candidate-meta">60X60 · ASTORIA</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-bar">
+        <div class="tab-item active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8a2 2 0 0 1 2-2h1.2l.9-1.5A2 2 0 0 1 9.8 3.5h4.4a2 2 0 0 1 1.7 1L16.8 6H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z"/><circle cx="12" cy="13" r="3.2"/></svg>
+          Scan
+        </div>
+        <div class="tab-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          History
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

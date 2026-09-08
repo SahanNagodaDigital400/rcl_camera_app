@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rocell Tile Scanner — User List (key screen)</title>
+<style>
+/* =====================================================================
+   KEY SCREEN: User List
+   Desktop/browser-width admin surface — dense account table. Admin-only nav.
+
+   Governed by:
+   - EXPERIENCE.md > Information Architecture > "User List" row (Nav (Admin); all
+     accounts, status, last login) — Name/Email/Role/Status/Last Login columns below
+     trace directly to this row's stated purpose
+   - EXPERIENCE.md > Component Patterns > "Role badge / Status badge" (display-only, no
+     tap target, never a button) and "Data table row" (dense spacing.2–spacing.3; row
+     click opens detail; destructive actions live in a row-end menu, never a bare icon
+     with no label)
+   - EXPERIENCE.md > Key Flows > Flow 3 ("Ruwan deactivates a departing staff member") —
+     Ruwan Jayasuriya (Administrator) and Kasun Perera (the named example account in
+     both Flow 3 and the Confirmation dialog component spec) are used verbatim below for
+     continuity with the spine's own worked example
+   - EXPERIENCE.md > Responsive & Platform ("Desktop/tablet (Admin surfaces): sidebar nav
+     replaces the tab bar … multi-column layout permitted for user/catalogue tables,
+     denser spacing")
+   - DESIGN.md > Components > badge-role-admin (navy fill/white text), badge-role-staff
+     (outline/muted text), badge-status-deactivated (destructive fill/white text) —
+     Active status uses the prose-specified "outline, muted text" treatment; data-table-row
+     (surface bg, background-hover on hover, hairline border, no card wrapper/shadow);
+     App bar
+   - DESIGN.md > Layout & Spacing ("Admin screens … use denser spacing (spacing.2–spacing.3
+     within table rows) … desktop-first and value scanability over generous whitespace")
+   - DESIGN.md > Colors (one orange action per screen: "+ Add User"; navy reserved for
+     chrome/authority, never a button fill)
+
+   Font note: production loads the real Plus Jakarta Sans webfont. This offline mock
+   approximates it with the system sans stack (-apple-system, Segoe UI, sans-serif) per
+   key-screens.md's no-network-call constraint.
+
+   Gap note: DESIGN.md's Components table has no dedicated token entry for the sidebar
+   nav or the outer browser chrome. Both are rendered here by reusing already-specified
+   tokens (app-bar navy/accent for top chrome; navy-tint + navy left-rule for the active
+   sidebar item, kept out of accent-orange specifically so the "one orange action per
+   screen" rule stays intact) rather than inventing new component semantics. No filter
+   tabs are shown — EXPERIENCE.md documents a Flagged filter for Audit Log only, not for
+   User List, so none is added here.
+   ===================================================================== */
+
+:root{
+  --bg:#FAFAF8; --surface:#FFFFFF;
+  --primary:#131B5E; --primary-fg:#FFFFFF;
+  --accent:#F58025; --accent-fg:#131B5E;
+  --destructive:#E30425; --destructive-fg:#FFFFFF;
+  --border:#ECE6DB; --text:#181830; --muted:#736F82;
+  --radius-sm:8px; --radius-md:12px; --radius-full:9999px;
+  --shadow: 0 2px 8px rgba(19,27,94,0.08);
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-code: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+*,*::before,*::after{ box-sizing:border-box; }
+html,body{ margin:0; background:#EDEDE9; font-family:var(--font-body); -webkit-font-smoothing:antialiased; }
+
+.page{ min-height:100vh; padding:40px 20px 64px; display:flex; flex-direction:column; align-items:center; }
+.page-head{ max-width:640px; text-align:center; margin-bottom:28px; }
+.page-head h1{ font-size:20px; font-weight:800; color:var(--primary); margin:0 0 6px; letter-spacing:-0.01em; }
+.page-head p{ font-size:13px; line-height:1.55; color:#5B5763; margin:0; }
+
+/* ---------- Browser chrome ---------- */
+.browser{
+  width:1180px; max-width:96vw; background:#DCDCD6; border-radius:12px 12px 0 0;
+  box-shadow:0 24px 44px rgba(19,27,94,0.20); overflow:hidden;
+}
+.browser-bar{ display:flex; align-items:center; gap:14px; padding:10px 14px; background:#E8E8E3; border-bottom:1px solid #CFCFC8; }
+.dots{ display:flex; gap:6px; flex-shrink:0; }
+.dots span{ width:11px; height:11px; border-radius:50%; background:#C6C6BF; }
+.url-bar{ flex:1; background:#F5F5F1; border:1px solid #CFCFC8; border-radius:7px; padding:5px 12px; font-size:11.5px; color:#7A7A73; }
+
+/* ---------- App shell ---------- */
+.app-shell{ display:flex; flex-direction:column; height:760px; background:var(--bg); }
+
+.app-bar{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:13px 22px; background:var(--primary); color:var(--primary-fg);
+  border-bottom:3px solid var(--accent); flex-shrink:0;
+}
+.app-bar .brand{ font-weight:800; font-size:15px; letter-spacing:-0.01em; }
+.avatar-btn{ width:28px; height:28px; border-radius:var(--radius-full); background:rgba(255,255,255,0.14); display:flex; align-items:center; justify-content:center; color:#fff; }
+.avatar-btn svg{ width:16px; height:16px; }
+
+.body-row{ flex:1; display:flex; min-height:0; }
+
+/* ---------- Sidebar ---------- */
+.sidebar{ width:212px; flex-shrink:0; background:var(--surface); border-right:1px solid var(--border); padding:16px 0; }
+.nav-item{
+  display:flex; align-items:center; gap:11px; padding:10px 20px; font-size:13.5px; font-weight:600;
+  color:var(--muted); border-left:3px solid transparent;
+}
+.nav-item svg{ width:19px; height:19px; flex-shrink:0; }
+.nav-item.active{ color:var(--primary); background:rgba(19,27,94,0.06); border-left-color:var(--primary); font-weight:700; }
+
+/* ---------- Main content ---------- */
+.main{ flex:1; min-width:0; overflow:auto; padding:22px 26px 26px; }
+.toolbar{ display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+.toolbar h2{ font-size:19px; font-weight:800; color:var(--text); margin:0; letter-spacing:-0.01em; }
+.btn-primary{
+  display:flex; align-items:center; gap:7px; background:var(--accent); color:var(--accent-fg);
+  border:none; font-family:inherit; font-weight:700; font-size:13px; padding:9px 15px; border-radius:var(--radius-sm);
+}
+.btn-primary svg{ width:16px; height:16px; }
+
+/* ---------- Table ---------- */
+/* overflow stays visible so an open row-end menu on the last row isn't clipped;
+   corner rounding is handled per-cell instead of by clipping the wrapper. */
+.table-wrap{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md); }
+thead th:first-child{ border-top-left-radius:var(--radius-md); }
+thead th:last-child{ border-top-right-radius:var(--radius-md); }
+tbody tr:last-child td:first-child{ border-bottom-left-radius:var(--radius-md); }
+tbody tr:last-child td:last-child{ border-bottom-right-radius:var(--radius-md); }
+table{ width:100%; border-collapse:collapse; font-size:13px; }
+thead th{
+  text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;
+  color:var(--muted); padding:11px 16px; border-bottom:1px solid var(--border); background:var(--surface);
+}
+tbody td{ padding:11px 16px; border-bottom:1px solid var(--border); color:var(--text); font-weight:500; vertical-align:middle; }
+tbody tr:last-child td{ border-bottom:none; }
+tbody tr{ background:var(--surface); }
+tbody tr:hover{ background:var(--bg); }
+.cell-name{ font-weight:700; }
+.cell-email{ color:var(--muted); font-weight:500; }
+.cell-login{ color:var(--muted); font-weight:500; white-space:nowrap; }
+
+.badge{ display:inline-block; font-size:11.5px; font-weight:700; padding:3px 10px; border-radius:var(--radius-full); white-space:nowrap; }
+.badge-admin{ background:var(--primary); color:var(--primary-fg); }
+.badge-staff{ background:transparent; color:var(--muted); border:1px solid var(--border); }
+.badge-active{ background:transparent; color:var(--muted); border:1px solid var(--border); }
+.badge-deactivated{ background:var(--destructive); color:var(--destructive-fg); }
+
+.row-menu-cell{ position:relative; text-align:right; }
+.kebab-btn{ width:28px; height:28px; border-radius:var(--radius-sm); display:inline-flex; align-items:center; justify-content:center; color:var(--muted); }
+.kebab-btn svg{ width:18px; height:18px; }
+
+.menu{
+  position:absolute; right:16px; top:38px; z-index:5; width:168px;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm);
+  box-shadow:0 10px 24px rgba(19,27,94,0.16); overflow:hidden; text-align:left;
+}
+.menu-item{ display:flex; align-items:center; gap:9px; padding:10px 13px; font-size:12.5px; font-weight:600; color:var(--text); }
+.menu-item svg{ width:16px; height:16px; flex-shrink:0; }
+.menu-item.destructive{ color:var(--destructive); }
+.menu-divider{ height:1px; background:var(--border); }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="page-head">
+    <h1>User List — desktop admin surface</h1>
+    <p>Dense data-table-row treatment. Role and status badges are display-only; destructive actions sit in a labeled row-end menu, shown open on the last row so it overlays empty space rather than obscuring another row's data.</p>
+  </div>
+
+  <div class="browser">
+    <div class="browser-bar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="url-bar">rocell-scanner.internal/admin/users</div>
+    </div>
+
+    <div class="app-shell">
+      <div class="app-bar">
+        <div class="brand">Rocell Scanner</div>
+        <div class="avatar-btn" aria-label="Account settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c1.1-3.6 3.9-5.4 7-5.4s5.9 1.8 7 5.4"/></svg>
+        </div>
+      </div>
+
+      <div class="body-row">
+        <div class="sidebar">
+          <div class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8a2 2 0 0 1 2-2h1.2l.9-1.5A2 2 0 0 1 9.8 3.5h4.4a2 2 0 0 1 1.7 1L16.8 6H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z"/><circle cx="12" cy="13" r="3.2"/></svg>
+            Scan
+          </div>
+          <div class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+            Scan History
+          </div>
+          <div class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="1.3"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.3"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.3"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.3"/></svg>
+            Catalogue
+          </div>
+          <div class="nav-item active">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.3 19c.9-3.4 3.2-5 5.7-5s4.8 1.6 5.7 5"/><circle cx="17" cy="9" r="2.3"/><path d="M15.8 14.3c1.9.5 3.1 1.9 3.7 4.3"/></svg>
+            User List
+          </div>
+          <div class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.3" cy="6" r="1.1" fill="currentColor" stroke="none"/><circle cx="3.3" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="3.3" cy="18" r="1.1" fill="currentColor" stroke="none"/></svg>
+            Audit Log
+          </div>
+        </div>
+
+        <div class="main">
+          <div class="toolbar">
+            <h2>User List</h2>
+            <button class="btn-primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+              Add User
+            </button>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last login</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="cell-name">Ruwan Jayasuriya</td>
+                  <td class="cell-email">ruwan.jayasuriya@rocell.com</td>
+                  <td><span class="badge badge-admin">Administrator</span></td>
+                  <td><span class="badge badge-active">Active</span></td>
+                  <td class="cell-login">Today, 9:14 AM</td>
+                  <td class="row-menu-cell">
+                    <span class="kebab-btn"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="cell-name">Priyantha Silva</td>
+                  <td class="cell-email">priyantha.silva@rocell.com</td>
+                  <td><span class="badge badge-admin">Administrator</span></td>
+                  <td><span class="badge badge-active">Active</span></td>
+                  <td class="cell-login">Yesterday, 4:47 PM</td>
+                  <td class="row-menu-cell">
+                    <span class="kebab-btn"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="cell-name">Nadeesha Perera</td>
+                  <td class="cell-email">nadeesha.perera@rocell.com</td>
+                  <td><span class="badge badge-staff">Staff</span></td>
+                  <td><span class="badge badge-active">Active</span></td>
+                  <td class="cell-login">Today, 8:02 AM</td>
+                  <td class="row-menu-cell">
+                    <span class="kebab-btn"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="cell-name">Kasun Perera</td>
+                  <td class="cell-email">kasun.perera@rocell.com</td>
+                  <td><span class="badge badge-staff">Staff</span></td>
+                  <td><span class="badge badge-deactivated">Deactivated</span></td>
+                  <td class="cell-login">3 days ago</td>
+                  <td class="row-menu-cell">
+                    <span class="kebab-btn"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="cell-name">Thivya Rajendran</td>
+                  <td class="cell-email">thivya.rajendran@rocell.com</td>
+                  <td><span class="badge badge-staff">Staff</span></td>
+                  <td><span class="badge badge-active">Active</span></td>
+                  <td class="cell-login">2 days ago</td>
+                  <td class="row-menu-cell">
+                    <span class="kebab-btn"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+                    <div class="menu">
+                      <div class="menu-item">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10.5-10.5a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4 16v4Z"/></svg>
+                        Edit
+                      </div>
+                      <div class="menu-divider"></div>
+                      <div class="menu-item destructive">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 8l8 8M16 8l-8 8"/></svg>
+                        Deactivate
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
