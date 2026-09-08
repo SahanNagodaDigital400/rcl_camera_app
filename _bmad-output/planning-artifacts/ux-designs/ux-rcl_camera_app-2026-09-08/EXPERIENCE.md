@@ -1,5 +1,5 @@
 ---
-status: draft
+status: final
 created: 2026-09-08
 updated: 2026-09-08
 name: Rocell Tile Scanner
@@ -37,7 +37,7 @@ Two roles shape navigation, not just permissions: **Staff** sees only Scan and S
 
 Bottom tab bar on mobile (Scan / History, plus Admin sections collapsed into a "More" tab for Admins — a phone-width nav can't hold 6 top-level items). Sidebar nav on desktop/tablet widths, all sections visible flat. No drawer on mobile; the tab bar is the whole nav. Modal/sheet stacks one level deep — Crop is a full-screen sheet over Scan, never a sheet-over-a-sheet.
 
-→ Composition reference: mockups produced at Finalize. Spine wins on conflict.
+→ Composition reference: [`mockups/key-scan.html`](mockups/key-scan.html) (Scan — camera + framing guide, capture and upload-fallback controls), [`mockups/key-crop.html`](mockups/key-crop.html) (Crop — full-screen sheet, pre-filled selector with drag handles), [`mockups/key-results.html`](mockups/key-results.html) (Results — three ranked Candidates, best-match treatment), [`mockups/key-user-list.html`](mockups/key-user-list.html) (User List — dense desktop admin table, row-end menu open). **These illustrate; this spine wins on conflict.** Every other surface is built from the tables in this file and `DESIGN.md` alone.
 
 ## Voice and Tone
 

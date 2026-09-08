@@ -1,5 +1,5 @@
 ---
-status: draft
+status: final
 created: 2026-09-08
 updated: 2026-09-08
 name: Rocell Tile Scanner
@@ -198,6 +198,8 @@ One level of elevation, used sparingly: cards sit on the page with a soft, navy-
 `{rounded.sm}` (8px) for buttons and inputs, `{rounded.md}` (12px) for cards, `{rounded.lg}` (16px) reserved for full-screen sheets (the crop tool, a mobile bottom sheet). `{rounded.full}` for badges and status pills only — never for buttons, which would read too consumer/playful for this register. This keeps "Bold" from tipping into "friendly consumer app."
 
 ## Components
+
+Rendered reference for the components below: [`mockups/key-scan.html`](mockups/key-scan.html), [`mockups/key-crop.html`](mockups/key-crop.html), [`mockups/key-results.html`](mockups/key-results.html), [`mockups/key-user-list.html`](mockups/key-user-list.html). Those mocks illustrate; the tokens and rules in this file win on conflict.
 
 - **Button (primary)** — `{colors.accent}` fill, **navy** text (`accent-foreground`, verified 5.94:1 — white fails at 2.63:1), `{rounded.sm}`. Exactly one per screen.
 - **Button (secondary)** — navy outline, navy text, transparent fill. The default for every non-primary action (Edit, Cancel, Back).
