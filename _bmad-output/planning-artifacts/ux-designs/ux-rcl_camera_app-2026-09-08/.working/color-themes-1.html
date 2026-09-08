@@ -1,0 +1,686 @@
+<title>Rocell Color Themes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    color-scheme: light;
+  }
+  *,*::before,*::after{ box-sizing:border-box; }
+  html,body{
+    background:#F0F0EE;
+    margin:0;
+    font-family:'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- page chrome ---------- */
+  .page-wrap{ max-width:100%; padding:32px 32px 64px; }
+  .intro{ max-width:920px; margin:0 0 32px; }
+  .intro h1{ font-size:26px; font-weight:800; color:#131B5E; margin:0 0 8px; letter-spacing:-0.01em; }
+  .intro p{ font-size:14px; line-height:1.6; color:#565049; margin:0 0 4px; }
+  .intro .note{ display:inline-block; margin-top:10px; font-size:12px; font-weight:600; color:#8C8072; background:#fff; border:1px solid #E4DACB; padding:5px 10px; border-radius:999px; }
+
+  .themes-row{
+    display:flex;
+    gap:28px;
+    overflow-x:auto;
+    padding-bottom:24px;
+    align-items:flex-start;
+  }
+  .theme-col{
+    flex:0 0 560px;
+    background:var(--bg);
+    border:1px solid var(--border);
+    border-radius:16px;
+    padding:24px;
+  }
+
+  /* ---------- theme header ---------- */
+  .theme-head{ margin-bottom:18px; }
+  .theme-head .name{ font-size:19px; font-weight:800; color:var(--navy); margin:0 0 4px; letter-spacing:-0.01em; }
+  .theme-head .register{ font-size:12.5px; color:var(--muted); margin:0; font-weight:600; }
+
+  /* ---------- token chip strip ---------- */
+  .chip-strip{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:22px; }
+  .chip{
+    display:flex; align-items:center; gap:8px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:6px 10px 6px 6px;
+    min-width:118px;
+  }
+  .chip .swatch{ width:22px; height:22px; border-radius:6px; flex-shrink:0; border:1px solid rgba(0,0,0,0.08); }
+  .chip .chip-label{ font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); line-height:1.3; }
+  .chip .chip-hex{ font-size:11.5px; font-weight:700; color:var(--text); font-family:ui-monospace,'SF Mono',Menlo,monospace; line-height:1.3; }
+
+  .section-label{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin:22px 0 10px; }
+  .section-label:first-of-type{ margin-top:4px; }
+
+  /* ================= MOBILE SCAN RESULT MOCK ================= */
+  .phone-mock{
+    width:100%;
+    max-width:340px;
+    background:var(--surface);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow);
+    border:1px solid var(--border);
+    overflow:hidden;
+  }
+  .app-bar{
+    display:flex; align-items:center; gap:8px;
+    padding:14px 16px;
+    font-weight:800; font-size:14px;
+    background:var(--app-bar-bg);
+    color:var(--app-bar-color);
+    border-bottom:var(--app-bar-border, none);
+  }
+  .app-bar .dot{ width:8px; height:8px; border-radius:50%; background:var(--orange); flex-shrink:0; }
+  .mobile-content{ padding:16px; }
+  .result-heading{ font-size:15px; font-weight:800; color:var(--text); margin-bottom:12px; display:flex; align-items:center; gap:8px; }
+  .count-badge{
+    display:inline-flex; align-items:center; justify-content:center;
+    min-width:20px; height:20px; padding:0 6px;
+    border-radius:999px; font-size:12px; font-weight:800;
+    background:var(--count-bg); color:var(--count-color);
+  }
+
+  .candidate-card{
+    display:flex; gap:12px; align-items:flex-start;
+    padding:12px; margin-bottom:10px;
+    border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+    background:var(--surface);
+    position:relative;
+  }
+  .candidate-card:last-child{ margin-bottom:0; }
+  .candidate-card.best{
+    border:1.5px solid var(--best-border);
+    box-shadow:var(--best-shadow, none);
+  }
+  .tile-swatch{ width:60px; height:60px; border-radius:8px; flex-shrink:0; border:1px solid var(--border); background-color:var(--surface); }
+  .tile-swatch.pattern-a{ background-image:repeating-linear-gradient(45deg, var(--border) 0 4px, var(--surface) 4px 12px); }
+  .tile-swatch.pattern-b{ background-image:repeating-linear-gradient(-45deg, var(--muted) 0 3px, var(--surface) 3px 14px); opacity:0.75; }
+  .tile-swatch.pattern-c{ background-image:radial-gradient(var(--muted) 1.4px, transparent 1.4px); background-size:8px 8px; }
+
+  .candidate-info{ flex:1; min-width:0; }
+  .badge-best{
+    display:inline-block; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:0.03em;
+    background:var(--best-badge-bg); color:var(--best-badge-color);
+    padding:2px 7px; border-radius:5px; margin-bottom:6px;
+  }
+  .candidate-code{ font-size:13px; font-weight:700; color:var(--text); font-family:ui-monospace,'SF Mono',Menlo,monospace; margin-bottom:3px; overflow-wrap:anywhere; }
+  .candidate-meta{ font-size:12px; color:var(--muted); font-weight:600; margin-bottom:6px; }
+  .match-score{ font-size:12px; font-weight:800; color:var(--score-color); }
+
+  .btn-primary{
+    display:inline-block; width:100%; text-align:center;
+    background:var(--orange); color:#fff; border:none;
+    font-family:inherit; font-weight:700; font-size:13px;
+    padding:11px 16px; border-radius:var(--radius-sm);
+    margin-top:14px; cursor:pointer;
+  }
+
+  /* ================= DESKTOP ADMIN MOCK ================= */
+  .admin-mock{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow);
+    overflow:hidden;
+  }
+  .admin-toolbar{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 16px; border-bottom:1px solid var(--border);
+  }
+  .admin-title{ font-size:14px; font-weight:800; color:var(--text); }
+  .admin-toolbar .btn-primary{ width:auto; margin-top:0; padding:8px 14px; font-size:12.5px; }
+
+  .filter-tabs{ display:flex; gap:4px; padding:8px 16px 0; border-bottom:1px solid var(--border); }
+  .filter-tab{
+    font-size:12px; font-weight:700; color:var(--muted);
+    padding:8px 10px; border-bottom:2px solid transparent; cursor:pointer;
+  }
+  .filter-tab.active{ color:var(--tab-active-color); border-bottom:2px solid var(--tab-active-border); background:var(--tab-active-bg); border-radius:6px 6px 0 0; }
+
+  .table-scroll{ overflow-x:auto; }
+  .admin-table{ width:100%; border-collapse:collapse; min-width:520px; font-size:12.5px; }
+  .admin-table th{
+    text-align:left; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;
+    color:var(--muted); padding:10px 16px; border-bottom:1px solid var(--border);
+  }
+  .admin-table td{ padding:11px 16px; border-bottom:1px solid var(--border); color:var(--text); font-weight:600; vertical-align:middle; }
+  .admin-table tr:last-child td{ border-bottom:none; }
+  .cell-email{ color:var(--muted); font-weight:500; }
+
+  .badge-role, .badge-status{
+    display:inline-block; font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; border:1px solid transparent; white-space:nowrap;
+  }
+  .badge-role.admin{ background:var(--role-admin-bg); color:var(--role-admin-color); border-color:var(--role-admin-border); }
+  .badge-role.staff{ background:var(--role-staff-bg); color:var(--role-staff-color); border-color:var(--role-staff-border); }
+  .badge-status.active{ background:var(--bg); color:var(--text); border-color:var(--border); }
+  .badge-status.deactivated{ background:rgba(227,4,37,0.08); color:var(--red); border-color:rgba(227,4,37,0.28); }
+
+  .row-actions{ display:flex; gap:6px; }
+  .btn-secondary, .btn-destructive{
+    font-family:inherit; font-size:11.5px; font-weight:700; padding:6px 11px;
+    border-radius:var(--radius-sm); cursor:pointer; white-space:nowrap;
+  }
+  .btn-secondary{ background:var(--surface); border:1px solid var(--border); color:var(--text); }
+  .btn-destructive{ background:var(--red); border:1px solid var(--red); color:#fff; }
+
+  /* =====================================================
+     THEME 1 — ROCELL WARM
+     ===================================================== */
+  .theme-warm{
+    --bg:#F7F2EA; --surface:#FFFFFF; --navy:#131B5E; --orange:#F58025; --red:#E30425;
+    --border:#E4DACB; --text:#2B241C; --muted:#8C8072;
+    --radius:16px; --radius-sm:10px;
+    --shadow:0 8px 22px rgba(43,36,28,0.08);
+    --app-bar-bg:var(--navy); --app-bar-color:#fff; --app-bar-border:none;
+    --count-bg:rgba(19,27,94,0.08); --count-color:var(--navy);
+    --best-border:var(--orange); --best-shadow:0 6px 16px rgba(245,128,37,0.16);
+    --best-badge-bg:var(--orange); --best-badge-color:#fff;
+    --score-color:var(--orange);
+    --tab-active-color:var(--navy); --tab-active-border:var(--navy); --tab-active-bg:transparent;
+    --role-admin-bg:rgba(19,27,94,0.08); --role-admin-color:var(--navy); --role-admin-border:rgba(19,27,94,0.15);
+    --role-staff-bg:var(--bg); --role-staff-color:var(--muted); --role-staff-border:var(--border);
+  }
+
+  /* =====================================================
+     THEME 2 — ROCELL COOL DASHBOARD
+     ===================================================== */
+  .theme-cool{
+    --bg:#EEF2F7; --surface:#FFFFFF; --navy:#131B5E; --orange:#F58025; --red:#E30425;
+    --border:#D6DEE8; --text:#1B2430; --muted:#67788C;
+    --radius:10px; --radius-sm:6px;
+    --shadow:0 1px 3px rgba(27,36,48,0.08);
+    --app-bar-bg:var(--surface); --app-bar-color:var(--navy); --app-bar-border:1px solid var(--border);
+    --count-bg:rgba(19,27,94,0.08); --count-color:var(--navy);
+    --best-border:var(--orange); --best-shadow:0 4px 10px rgba(245,128,37,0.14);
+    --best-badge-bg:var(--orange); --best-badge-color:#fff;
+    --score-color:var(--orange);
+    --tab-active-color:var(--navy); --tab-active-border:var(--navy); --tab-active-bg:transparent;
+    --role-admin-bg:rgba(19,27,94,0.08); --role-admin-color:var(--navy); --role-admin-border:rgba(19,27,94,0.15);
+    --role-staff-bg:#F3F6F9; --role-staff-color:var(--muted); --role-staff-border:var(--border);
+  }
+  .theme-cool .theme-col, .theme-cool.theme-col{ border-radius:10px; }
+  .theme-cool .admin-table th{ background:#F7FAFC; }
+
+  /* =====================================================
+     THEME 3 — ROCELL BOLD
+     ===================================================== */
+  .theme-bold{
+    --bg:#FAFAF8; --surface:#FFFFFF; --navy:#131B5E; --orange:#F58025; --red:#E30425;
+    --border:#ECE6DB; --text:#181830; --muted:#736F82;
+    --radius:14px; --radius-sm:9px;
+    --shadow:0 10px 24px rgba(19,27,94,0.14);
+    --app-bar-bg:var(--navy); --app-bar-color:#fff; --app-bar-border:3px solid var(--orange);
+    --count-bg:var(--orange); --count-color:#fff;
+    --best-border:var(--orange); --best-shadow:0 8px 18px rgba(245,128,37,0.22);
+    --best-badge-bg:var(--orange); --best-badge-color:#fff;
+    --score-color:var(--orange);
+    --tab-active-color:var(--navy); --tab-active-border:var(--orange); --tab-active-bg:rgba(245,128,37,0.14);
+    --role-admin-bg:var(--navy); --role-admin-color:#fff; --role-admin-border:var(--navy);
+    --role-staff-bg:rgba(19,27,94,0.06); --role-staff-color:var(--navy); --role-staff-border:rgba(19,27,94,0.12);
+  }
+  .theme-bold .theme-head .name{ font-weight:800; }
+  .theme-bold .app-bar{ font-weight:800; }
+  .theme-bold .result-heading{ font-weight:800; font-size:16px; }
+  .theme-bold .admin-title{ font-weight:800; }
+
+  /* =====================================================
+     THEME 4 — ROCELL QUIET
+     ===================================================== */
+  .theme-quiet{
+    --bg:#FFFFFF; --surface:#FBFBFA; --navy:#131B5E; --orange:#F58025; --red:#E30425;
+    --border:#E4E4E2; --text:#1A1A1A; --muted:#8F8F8C;
+    --radius:8px; --radius-sm:6px;
+    --shadow:0 1px 2px rgba(0,0,0,0.03);
+    --app-bar-bg:var(--surface); --app-bar-color:var(--text); --app-bar-border:1px solid var(--border);
+    --count-bg:var(--bg); --count-color:var(--text);
+    --best-border:var(--navy); --best-shadow:none;
+    --best-badge-bg:var(--navy); --best-badge-color:#fff;
+    --score-color:var(--muted);
+    --tab-active-color:var(--text); --tab-active-border:var(--text); --tab-active-bg:transparent;
+    --role-admin-bg:var(--bg); --role-admin-color:var(--text); --role-admin-border:var(--border);
+    --role-staff-bg:var(--bg); --role-staff-color:var(--muted); --role-staff-border:var(--border);
+  }
+  .theme-quiet .theme-col{ border-radius:10px; }
+  .theme-quiet .app-bar .dot{ background:var(--navy); }
+  .theme-quiet .candidate-card{ box-shadow:none; }
+  .theme-quiet .section-label{ letter-spacing:0.09em; }
+</style>
+
+<div class="page-wrap">
+
+  <div class="intro">
+    <h1>Rocell Tile Scanner — Color Theme Options</h1>
+    <p>Four palette-and-register directions for the internal staff PWA, each built from the same two real screens: a phone-width scan result and a desktop admin user-list row. Every theme uses all three brand colors — navy as chrome/primary, orange as the single accent/CTA color, red reserved strictly for destructive/deactivated states — over a different neutral base and register. Scroll horizontally to compare.</p>
+    <span class="note">Light mode only — no dark theme in scope for this tool</span>
+  </div>
+
+  <div class="themes-row">
+
+    <!--
+      THEME 1 — ROCELL WARM
+      Background:        #F7F2EA  (warm cream, echoes beige tile photography)
+      Surface / Card:     #FFFFFF
+      Primary / Navy:     #131B5E
+      Accent / Orange:    #F58025
+      Destructive / Red:  #E30425
+      Border:             #E4DACB  (warm gray)
+      Text:               #2B241C
+      Muted text:         #8C8072
+      Register: warm, premium, calm — closest to the real Rocell site.
+    -->
+    <div class="theme-col theme-warm">
+      <div class="theme-head">
+        <div class="name">1 · Rocell Warm</div>
+        <div class="register">Warm, premium, calm — closest to the real Rocell website's feel</div>
+      </div>
+
+      <div class="chip-strip">
+        <div class="chip"><span class="swatch" style="background:#F7F2EA"></span><div><div class="chip-label">Background</div><div class="chip-hex">#F7F2EA</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><div><div class="chip-label">Surface</div><div class="chip-hex">#FFFFFF</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#131B5E"></span><div><div class="chip-label">Navy</div><div class="chip-hex">#131B5E</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#F58025"></span><div><div class="chip-label">Orange</div><div class="chip-hex">#F58025</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#E30425"></span><div><div class="chip-label">Red</div><div class="chip-hex">#E30425</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#E4DACB"></span><div><div class="chip-label">Border</div><div class="chip-hex">#E4DACB</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#2B241C"></span><div><div class="chip-label">Text</div><div class="chip-hex">#2B241C</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#8C8072"></span><div><div class="chip-label">Muted text</div><div class="chip-hex">#8C8072</div></div></div>
+      </div>
+
+      <div class="section-label">Mobile · Scan Result</div>
+      <div class="phone-mock">
+        <div class="app-bar"><span class="dot"></span>Rocell Scanner</div>
+        <div class="mobile-content">
+          <div class="result-heading"><span class="count-badge">3</span>Matches Found</div>
+
+          <div class="candidate-card best">
+            <div class="tile-swatch pattern-a"></div>
+            <div class="candidate-info">
+              <span class="badge-best">Best Match</span>
+              <div class="candidate-code">RP.CMA.0001DJ.SM.0T</div>
+              <div class="candidate-meta">45X90 · CREMA MARMOL</div>
+              <div class="match-score">96% match</div>
+            </div>
+          </div>
+          <div class="candidate-card">
+            <div class="tile-swatch pattern-b"></div>
+            <div class="candidate-info">
+              <div class="candidate-code">RP.CMA.0008DJ.SM.0T</div>
+              <div class="candidate-meta">45X90 · CREMA MARMOL</div>
+              <div class="match-score">89% match</div>
+            </div>
+          </div>
+          <div class="candidate-card">
+            <div class="tile-swatch pattern-c"></div>
+            <div class="candidate-info">
+              <div class="candidate-code">RP.AST.0004TK.SM.0T</div>
+              <div class="candidate-meta">60X60 · ASTORIA</div>
+              <div class="match-score">82% match</div>
+            </div>
+          </div>
+          <button class="btn-primary">Scan Another Tile</button>
+        </div>
+      </div>
+
+      <div class="section-label">Desktop · Admin User List</div>
+      <div class="admin-mock">
+        <div class="admin-toolbar">
+          <div class="admin-title">User Management</div>
+          <button class="btn-primary">+ Add User</button>
+        </div>
+        <div class="filter-tabs">
+          <div class="filter-tab active">All</div>
+          <div class="filter-tab">Staff</div>
+          <div class="filter-tab">Administrators</div>
+          <div class="filter-tab">Deactivated</div>
+        </div>
+        <div class="table-scroll">
+          <table class="admin-table">
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Priyantha Silva</td><td class="cell-email">priyantha.silva@rocell.com</td>
+                <td><span class="badge-role admin">Administrator</span></td>
+                <td><span class="badge-status active">Active</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-destructive">Deactivate</button></div></td>
+              </tr>
+              <tr>
+                <td>Nadeesha Perera</td><td class="cell-email">nadeesha.perera@rocell.com</td>
+                <td><span class="badge-role staff">Staff</span></td>
+                <td><span class="badge-status active">Active</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-destructive">Deactivate</button></div></td>
+              </tr>
+              <tr>
+                <td>Kasun Fernando</td><td class="cell-email">kasun.fernando@rocell.com</td>
+                <td><span class="badge-role staff">Staff</span></td>
+                <td><span class="badge-status deactivated">Deactivated</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-secondary">Reactivate</button></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+
+    <!--
+      THEME 2 — ROCELL COOL DASHBOARD
+      Background:        #EEF2F7  (cool slate/blue-gray)
+      Surface / Card:     #FFFFFF
+      Primary / Navy:     #131B5E
+      Accent / Orange:    #F58025
+      Destructive / Red:  #E30425
+      Border:             #D6DEE8  (cool slate gray)
+      Text:               #1B2430
+      Muted text:         #67788C
+      Register: crisp, technical, familiar enterprise-SaaS.
+    -->
+    <div class="theme-col theme-cool">
+      <div class="theme-head">
+        <div class="name">2 · Rocell Cool Dashboard</div>
+        <div class="register">Crisp, technical, familiar enterprise-SaaS feel</div>
+      </div>
+
+      <div class="chip-strip">
+        <div class="chip"><span class="swatch" style="background:#EEF2F7"></span><div><div class="chip-label">Background</div><div class="chip-hex">#EEF2F7</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><div><div class="chip-label">Surface</div><div class="chip-hex">#FFFFFF</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#131B5E"></span><div><div class="chip-label">Navy</div><div class="chip-hex">#131B5E</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#F58025"></span><div><div class="chip-label">Orange</div><div class="chip-hex">#F58025</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#E30425"></span><div><div class="chip-label">Red</div><div class="chip-hex">#E30425</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#D6DEE8"></span><div><div class="chip-label">Border</div><div class="chip-hex">#D6DEE8</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#1B2430"></span><div><div class="chip-label">Text</div><div class="chip-hex">#1B2430</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#67788C"></span><div><div class="chip-label">Muted text</div><div class="chip-hex">#67788C</div></div></div>
+      </div>
+
+      <div class="section-label">Mobile · Scan Result</div>
+      <div class="phone-mock">
+        <div class="app-bar"><span class="dot"></span>Rocell Scanner</div>
+        <div class="mobile-content">
+          <div class="result-heading"><span class="count-badge">3</span>Matches Found</div>
+
+          <div class="candidate-card best">
+            <div class="tile-swatch pattern-a"></div>
+            <div class="candidate-info">
+              <span class="badge-best">Best Match</span>
+              <div class="candidate-code">RP.CMA.0001DJ.SM.0T</div>
+              <div class="candidate-meta">45X90 · CREMA MARMOL</div>
+              <div class="match-score">96% match</div>
+            </div>
+          </div>
+          <div class="candidate-card">
+            <div class="tile-swatch pattern-b"></div>
+            <div class="candidate-info">
+              <div class="candidate-code">RP.CMA.0008DJ.SM.0T</div>
+              <div class="candidate-meta">45X90 · CREMA MARMOL</div>
+              <div class="match-score">89% match</div>
+            </div>
+          </div>
+          <div class="candidate-card">
+            <div class="tile-swatch pattern-c"></div>
+            <div class="candidate-info">
+              <div class="candidate-code">RP.AST.0004TK.SM.0T</div>
+              <div class="candidate-meta">60X60 · ASTORIA</div>
+              <div class="match-score">82% match</div>
+            </div>
+          </div>
+          <button class="btn-primary">Scan Another Tile</button>
+        </div>
+      </div>
+
+      <div class="section-label">Desktop · Admin User List</div>
+      <div class="admin-mock">
+        <div class="admin-toolbar">
+          <div class="admin-title">User Management</div>
+          <button class="btn-primary">+ Add User</button>
+        </div>
+        <div class="filter-tabs">
+          <div class="filter-tab active">All</div>
+          <div class="filter-tab">Staff</div>
+          <div class="filter-tab">Administrators</div>
+          <div class="filter-tab">Deactivated</div>
+        </div>
+        <div class="table-scroll">
+          <table class="admin-table">
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Priyantha Silva</td><td class="cell-email">priyantha.silva@rocell.com</td>
+                <td><span class="badge-role admin">Administrator</span></td>
+                <td><span class="badge-status active">Active</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-destructive">Deactivate</button></div></td>
+              </tr>
+              <tr>
+                <td>Nadeesha Perera</td><td class="cell-email">nadeesha.perera@rocell.com</td>
+                <td><span class="badge-role staff">Staff</span></td>
+                <td><span class="badge-status active">Active</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-destructive">Deactivate</button></div></td>
+              </tr>
+              <tr>
+                <td>Kasun Fernando</td><td class="cell-email">kasun.fernando@rocell.com</td>
+                <td><span class="badge-role staff">Staff</span></td>
+                <td><span class="badge-status deactivated">Deactivated</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-secondary">Reactivate</button></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+
+    <!--
+      THEME 3 — ROCELL BOLD
+      Background:        #FAFAF8  (near-white warm-neutral)
+      Surface / Card:     #FFFFFF
+      Primary / Navy:     #131B5E
+      Accent / Orange:    #F58025  (used prominently — active nav tint, header rule, count badge)
+      Destructive / Red:  #E30425
+      Border:             #ECE6DB
+      Text:               #181830  (navy-tinted dark)
+      Muted text:         #736F82
+      Register: confident, showroom-energy — still restrained overall, but more brand energy.
+    -->
+    <div class="theme-col theme-bold">
+      <div class="theme-head">
+        <div class="name">3 · Rocell Bold</div>
+        <div class="register">Confident, showroom-energy — navy chrome with orange used more prominently</div>
+      </div>
+
+      <div class="chip-strip">
+        <div class="chip"><span class="swatch" style="background:#FAFAF8"></span><div><div class="chip-label">Background</div><div class="chip-hex">#FAFAF8</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><div><div class="chip-label">Surface</div><div class="chip-hex">#FFFFFF</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#131B5E"></span><div><div class="chip-label">Navy</div><div class="chip-hex">#131B5E</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#F58025"></span><div><div class="chip-label">Orange</div><div class="chip-hex">#F58025</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#E30425"></span><div><div class="chip-label">Red</div><div class="chip-hex">#E30425</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#ECE6DB"></span><div><div class="chip-label">Border</div><div class="chip-hex">#ECE6DB</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#181830"></span><div><div class="chip-label">Text</div><div class="chip-hex">#181830</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#736F82"></span><div><div class="chip-label">Muted text</div><div class="chip-hex">#736F82</div></div></div>
+      </div>
+
+      <div class="section-label">Mobile · Scan Result</div>
+      <div class="phone-mock">
+        <div class="app-bar"><span class="dot"></span>Rocell Scanner</div>
+        <div class="mobile-content">
+          <div class="result-heading"><span class="count-badge">3</span>Matches Found</div>
+
+          <div class="candidate-card best">
+            <div class="tile-swatch pattern-a"></div>
+            <div class="candidate-info">
+              <span class="badge-best">Best Match</span>
+              <div class="candidate-code">RP.CMA.0001DJ.SM.0T</div>
+              <div class="candidate-meta">45X90 · CREMA MARMOL</div>
+              <div class="match-score">96% match</div>
+            </div>
+          </div>
+          <div class="candidate-card">
+            <div class="tile-swatch pattern-b"></div>
+            <div class="candidate-info">
+              <div class="candidate-code">RP.CMA.0008DJ.SM.0T</div>
+              <div class="candidate-meta">45X90 · CREMA MARMOL</div>
+              <div class="match-score">89% match</div>
+            </div>
+          </div>
+          <div class="candidate-card">
+            <div class="tile-swatch pattern-c"></div>
+            <div class="candidate-info">
+              <div class="candidate-code">RP.AST.0004TK.SM.0T</div>
+              <div class="candidate-meta">60X60 · ASTORIA</div>
+              <div class="match-score">82% match</div>
+            </div>
+          </div>
+          <button class="btn-primary">Scan Another Tile</button>
+        </div>
+      </div>
+
+      <div class="section-label">Desktop · Admin User List</div>
+      <div class="admin-mock">
+        <div class="admin-toolbar">
+          <div class="admin-title">User Management</div>
+          <button class="btn-primary">+ Add User</button>
+        </div>
+        <div class="filter-tabs">
+          <div class="filter-tab active">All</div>
+          <div class="filter-tab">Staff</div>
+          <div class="filter-tab">Administrators</div>
+          <div class="filter-tab">Deactivated</div>
+        </div>
+        <div class="table-scroll">
+          <table class="admin-table">
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Priyantha Silva</td><td class="cell-email">priyantha.silva@rocell.com</td>
+                <td><span class="badge-role admin">Administrator</span></td>
+                <td><span class="badge-status active">Active</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-destructive">Deactivate</button></div></td>
+              </tr>
+              <tr>
+                <td>Nadeesha Perera</td><td class="cell-email">nadeesha.perera@rocell.com</td>
+                <td><span class="badge-role staff">Staff</span></td>
+                <td><span class="badge-status active">Active</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-destructive">Deactivate</button></div></td>
+              </tr>
+              <tr>
+                <td>Kasun Fernando</td><td class="cell-email">kasun.fernando@rocell.com</td>
+                <td><span class="badge-role staff">Staff</span></td>
+                <td><span class="badge-status deactivated">Deactivated</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-secondary">Reactivate</button></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+
+    <!--
+      THEME 4 — ROCELL QUIET
+      Background:        #FFFFFF
+      Surface / Card:     #FBFBFA
+      Primary / Navy:     #131B5E  (text/icon use only — no navy fills except the "Best Match" pill)
+      Accent / Orange:    #F58025  (appears ONLY on the single primary action per screen: "Scan Another Tile" / "+ Add User")
+      Destructive / Red:  #E30425  (Deactivated badge + Deactivate button only)
+      Border:             #E4E4E2  (grayscale hairline)
+      Text:               #1A1A1A
+      Muted text:         #8F8F8C
+      Register: minimal, quiet, editorial — maximally restrained.
+    -->
+    <div class="theme-col theme-quiet">
+      <div class="theme-head">
+        <div class="name">4 · Rocell Quiet</div>
+        <div class="register">Minimal, quiet, editorial — orange only on the one primary action per screen</div>
+      </div>
+
+      <div class="chip-strip">
+        <div class="chip"><span class="swatch" style="background:#FFFFFF;border-color:#ccc"></span><div><div class="chip-label">Background</div><div class="chip-hex">#FFFFFF</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#FBFBFA"></span><div><div class="chip-label">Surface</div><div class="chip-hex">#FBFBFA</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#131B5E"></span><div><div class="chip-label">Navy</div><div class="chip-hex">#131B5E</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#F58025"></span><div><div class="chip-label">Orange</div><div class="chip-hex">#F58025</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#E30425"></span><div><div class="chip-label">Red</div><div class="chip-hex">#E30425</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#E4E4E2"></span><div><div class="chip-label">Border</div><div class="chip-hex">#E4E4E2</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#1A1A1A"></span><div><div class="chip-label">Text</div><div class="chip-hex">#1A1A1A</div></div></div>
+        <div class="chip"><span class="swatch" style="background:#8F8F8C"></span><div><div class="chip-label">Muted text</div><div class="chip-hex">#8F8F8C</div></div></div>
+      </div>
+
+      <div class="section-label">Mobile · Scan Result</div>
+      <div class="phone-mock">
+        <div class="app-bar"><span class="dot"></span>Rocell Scanner</div>
+        <div class="mobile-content">
+          <div class="result-heading"><span class="count-badge">3</span>Matches Found</div>
+
+          <div class="candidate-card best">
+            <div class="tile-swatch pattern-a"></div>
+            <div class="candidate-info">
+              <span class="badge-best">Best Match</span>
+              <div class="candidate-code">RP.CMA.0001DJ.SM.0T</div>
+              <div class="candidate-meta">45X90 · CREMA MARMOL</div>
+              <div class="match-score">96% match</div>
+            </div>
+          </div>
+          <div class="candidate-card">
+            <div class="tile-swatch pattern-b"></div>
+            <div class="candidate-info">
+              <div class="candidate-code">RP.CMA.0008DJ.SM.0T</div>
+              <div class="candidate-meta">45X90 · CREMA MARMOL</div>
+              <div class="match-score">89% match</div>
+            </div>
+          </div>
+          <div class="candidate-card">
+            <div class="tile-swatch pattern-c"></div>
+            <div class="candidate-info">
+              <div class="candidate-code">RP.AST.0004TK.SM.0T</div>
+              <div class="candidate-meta">60X60 · ASTORIA</div>
+              <div class="match-score">82% match</div>
+            </div>
+          </div>
+          <button class="btn-primary">Scan Another Tile</button>
+        </div>
+      </div>
+
+      <div class="section-label">Desktop · Admin User List</div>
+      <div class="admin-mock">
+        <div class="admin-toolbar">
+          <div class="admin-title">User Management</div>
+          <button class="btn-primary">+ Add User</button>
+        </div>
+        <div class="filter-tabs">
+          <div class="filter-tab active">All</div>
+          <div class="filter-tab">Staff</div>
+          <div class="filter-tab">Administrators</div>
+          <div class="filter-tab">Deactivated</div>
+        </div>
+        <div class="table-scroll">
+          <table class="admin-table">
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Priyantha Silva</td><td class="cell-email">priyantha.silva@rocell.com</td>
+                <td><span class="badge-role admin">Administrator</span></td>
+                <td><span class="badge-status active">Active</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-destructive">Deactivate</button></div></td>
+              </tr>
+              <tr>
+                <td>Nadeesha Perera</td><td class="cell-email">nadeesha.perera@rocell.com</td>
+                <td><span class="badge-role staff">Staff</span></td>
+                <td><span class="badge-status active">Active</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-destructive">Deactivate</button></div></td>
+              </tr>
+              <tr>
+                <td>Kasun Fernando</td><td class="cell-email">kasun.fernando@rocell.com</td>
+                <td><span class="badge-role staff">Staff</span></td>
+                <td><span class="badge-status deactivated">Deactivated</span></td>
+                <td><div class="row-actions"><button class="btn-secondary">Edit</button><button class="btn-secondary">Reactivate</button></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
