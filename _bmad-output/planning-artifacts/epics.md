@@ -6,13 +6,19 @@ inputDocuments:
   - _bmad-output/planning-artifacts/architecture/architecture-rcl_camera_app-2026-08-30/ARCHITECTURE-SPINE.md
   - _bmad-output/planning-artifacts/prds/prd-rcl_camera_app-2026-08-25/prd.md
   - poc/README.md
+  - _bmad-output/planning-artifacts/ux-designs/ux-rcl_camera_app-2026-09-08/DESIGN.md
+  - _bmad-output/planning-artifacts/ux-designs/ux-rcl_camera_app-2026-09-08/EXPERIENCE.md
 ---
 
 # Rocell Tile Identification App - Epic Breakdown
 
 ## Overview
 
-This document provides the complete epic and story breakdown for the Rocell Tile Identification App, decomposing the requirements from `SPEC.md` (primary, cross-checked against the raw PRD) and the architecture spine into implementable stories. No UX design contract exists (`bmad-ux` was not run) — flow shape comes from the PRD's User Journeys; UI detail is an assumption until/unless that skill runs.
+This document provides the complete epic and story breakdown for the Rocell Tile Identification App, decomposing the requirements from `SPEC.md` (primary, cross-checked against the raw PRD), the architecture spine, and the UX design contract into implementable stories.
+
+**UI/UX contract (binding).** The design contract is the `DESIGN.md` + `EXPERIENCE.md` spine pair at `_bmad-output/planning-artifacts/ux-designs/ux-rcl_camera_app-2026-09-08/`. `DESIGN.md` owns how it looks (tokens, component visual specs); `EXPERIENCE.md` owns how it works (IA, component behavior, state patterns, interaction primitives, accessibility floor, key flows). The four rendered mockups in that run's `mockups/` folder illustrate four surfaces — **the spines win on conflict with any mockup**. Every UI story below is built against those two files, not against a developer's own visual judgment.
+
+**Whoever implements a UI story must invoke the `ui-ux-pro-max` skill** before and during that work — it carries the searchable UX/accessibility rule database, stack-specific implementation guidance, and the pre-delivery checklist (touch targets, focus states, contrast, icon discipline, reduced-motion, responsive breakpoints). It has already earned its place on this project: its checklist caught a 36px touch target in a mockup that violated this spine's own ≥44×44px accessibility floor. Run its `--design-system` and `--domain ux` searches against the relevant surface, then run the pre-delivery checklist before calling a UI story done. It supplements the spine pair — it never overrides it; where the two differ, `DESIGN.md`/`EXPERIENCE.md` win.
 
 ## Requirements Inventory
 
@@ -67,7 +73,50 @@ NFR8 (Data protection): Staff PII limited to name/email/role; scanned images ret
 
 ### UX Design Requirements
 
-None. `bmad-ux` has not been run — no design contract exists. Story-level UI/interaction detail (exact crop-UI behavior, framing-guide presentation, admin screen layouts) will be reasonable assumptions grounded in the PRD's User Journeys until/unless that skill runs.
+Extracted from `DESIGN.md` + `EXPERIENCE.md`. Each is specific enough to carry testable acceptance criteria. Implement every one of these against the spine pair, with the `ui-ux-pro-max` skill applied per the Overview.
+
+**Foundation — design tokens and type**
+
+UX-DR1: Implement the full `DESIGN.md` token set as the single styling source (11 color tokens, 6 typography roles, 4 radii + `full`, 10-step spacing scale, navy-tinted elevation `0 2px 8px rgba(19,27,94,0.08)`). No raw hex values in components — every color reference resolves to a token.
+UX-DR2: Load Plus Jakarta Sans (weights 400/500/600/700/800) for all six type roles, and JetBrains Mono for the `code` role used by product Codes, each with a declared fallback stack.
+UX-DR3: Adopt Phosphor icons at `regular` (outline) weight, 20–24px, throughout. No filled/duotone icons, no emoji as icons.
+
+**Reusable components — visual spec in `DESIGN.md.Components`, behavior in `EXPERIENCE.md.Component Patterns`**
+
+UX-DR4: `button-primary` (accent fill, **navy** foreground — never white, see UX-DR17), `button-secondary` (navy outline/text, transparent fill), `button-destructive` (red fill, white text). Exactly one primary button per screen.
+UX-DR5: `app-bar` — navy fill, white content, 3–4px accent stripe along the bottom edge. Present on every authenticated screen.
+UX-DR6: `card` and `candidate-card-best-match` — the top-ranked Candidate takes a 2px accent border instead of the neutral hairline.
+UX-DR7: `badge-role-admin`, `badge-role-staff`, `badge-status-deactivated` — display-only, never interactive, never a button.
+UX-DR8: `data-table-row` (dense desktop admin table: surface bg, hover bg, hairline separators, no card wrapper/shadow), `audit-log-row` (identical treatment, zero row-end actions), `flagged-activity-row` (audit row + an accent flag glyph).
+UX-DR9: `framing-guide-overlay` — accent outline rectangle over the live viewfinder, transparent fill, doesn't block the shutter control.
+UX-DR10: `crop-selector` — accent border, white handles with accent border sized to satisfy the 44px touch floor, dark scrim over the deselected area, free-form (no fixed aspect ratio).
+UX-DR11: `retake-prompt` — inline surface-colored banner directly above the primary action. Never a modal.
+UX-DR12: `force-password-change-form` — single-field form, no surrounding nav chrome, destructive-colored inline errors naming the failed rule.
+UX-DR13: `confirmation-dialog` — sheet over a scrim, names the object and its consequence in body text, confirm action styled `button-destructive` when the action is destructive.
+UX-DR14: `upload-report-row` — per-row result with navy success / red failure / orange flagged-for-review indicators.
+UX-DR15: `save-indicator` — muted at rest, shifts to navy on `Saved.`; inline near its triggering action, never a corner toast. Never orange.
+
+**Behavior, states, and accessibility**
+
+UX-DR16: Implement every one of the 13 state patterns in `EXPERIENCE.md.State Patterns` — not just happy paths. Specifically includes: camera-permission-not-granted (with always-visible upload fallback), processing, no-confident-match, submission/matching failure (distinct from no-match, preserving the crop), scan rate-limited, session-expired mid-flow, empty catalogue search, empty scan history, deactivated-account login, login lockout, bulk-upload-in-progress, weak/mismatched password, and live role-change mid-session.
+UX-DR17: Accessibility floor — ≥44×44px touch targets on every mobile surface (including candidate cards and crop handles), visible focus states with a keyboard path on all admin surfaces, no color-only signaling on destructive actions (label + icon, not red alone), and the verified contrast pairs from `DESIGN.md` (navy-on-orange at 5.94:1 for the primary button — **white-on-orange fails at 2.63:1 and must not be used**).
+UX-DR18: Responsive behavior — bottom tab bar on mobile (Scan / History, Admin sections behind a "More" tab), sidebar nav at desktop/tablet widths, with the spacing density shifting at the same breakpoint. No drawer on mobile; modal/sheet depth never exceeds one level.
+UX-DR19: Microcopy follows `EXPERIENCE.md.Voice and Tone` verbatim where quoted ("Best match" never a percentage; "Fill the frame with the tile face."; plain factual errors; no exclamation marks, no gamified language).
+
+### UX-DR Coverage Map
+
+UX-DRs are covered inside the epics that first need them — no separate design-system epic, consistent with this document's "build only what the story needs" discipline.
+
+UX-DR1, UX-DR2, UX-DR3: Epic 1, Story 1.1 — the token layer, fonts, and icon set land with the first UI ever rendered (login), then serve every later story.
+UX-DR4, UX-DR5, UX-DR13, UX-DR15: Epic 1, Stories 1.1–1.9 — buttons, app bar, confirmation dialog (first needed by Story 1.9's deactivate), save indicator (first needed by Story 1.6).
+UX-DR12: Epic 1, Story 1.2 — force password change form.
+UX-DR7, UX-DR8: Epic 1, Stories 1.7 and 1.10–1.11 — role/status badges and the data-table/audit-log row treatments.
+UX-DR14: Epic 2, Story 2.4 — per-row bulk upload report.
+UX-DR6: Epic 3, Story 3.4 — card and best-match candidate card.
+UX-DR9: Epic 3, Story 3.1 — framing guide overlay.
+UX-DR10: Epic 3, Story 3.2 — crop selector.
+UX-DR11: Epic 3, Story 3.3 — retake prompt.
+UX-DR16, UX-DR17, UX-DR18, UX-DR19: cross-cutting — every story that renders UI carries the state, accessibility, responsive, and microcopy obligations for its own surface. These are acceptance criteria on each UI story, not a separate cleanup story at the end.
 
 ### FR Coverage Map
 
@@ -113,6 +162,8 @@ Staff can photograph an unidentified tile, crop it to the tile face, and get up 
 ## Epic 1: Access & Account Management
 
 Staff and Administrators can be provisioned with secure, admin-controlled accounts; every account and access event is immutably logged and visible to Administrators.
+
+**UI contract:** build against `DESIGN.md` + `EXPERIENCE.md` (ux-rcl_camera_app-2026-09-08); invoke the `ui-ux-pro-max` skill and run its pre-delivery checklist before calling any UI story here done. Covers UX-DR1–5, 7, 8, 12, 13, 15.
 
 **Ordering note:** Login (1.1) comes before Create User (1.6) — the first Administrator account is seeded via a deployment migration (a Dev Note, not a story), so login doesn't circularly depend on the create-user feature it will later gate.
 
@@ -263,6 +314,8 @@ So that I can review access history without needing database access.
 
 Administrators can build and maintain the tile Catalogue directly — adding, editing, removing, and bulk-loading Products and Reference Images — with changes searchable immediately and no developer involvement.
 
+**UI contract:** build against `DESIGN.md` + `EXPERIENCE.md` (ux-rcl_camera_app-2026-09-08); invoke the `ui-ux-pro-max` skill and run its pre-delivery checklist before calling any UI story here done. Covers UX-DR14 plus the cross-cutting UX-DR16–19.
+
 **Story-shaping note:** FR-19 (automatic re-index) has no independent user action of its own — it's a property of every other operation in this epic — so it's folded as an acceptance criterion into Stories 2.1–2.4 rather than given its own story.
 
 **POC-informed additions (architecture AD-13, AD-15, AD-17):** every Reference Image now produces up to 16 embeddings, not one, and a served reference image is a pre-generated capped derivative, never the original file. Both are implementation mechanics of "add/edit a Reference Image," not separate stories — folded into 2.1/2.2's acceptance criteria below.
@@ -337,6 +390,8 @@ So that I can find an entry quickly.
 ## Epic 3: Tile Scanning & Identification
 
 Staff can photograph an unidentified tile, crop it to the tile face, and get up to three visually-verifiable candidate matches in seconds — with the scanning capability itself defended against abuse.
+
+**UI contract:** build against `DESIGN.md` + `EXPERIENCE.md` (ux-rcl_camera_app-2026-09-08) — this epic owns the product's hero surfaces, and [`mockups/key-scan.html`](ux-designs/ux-rcl_camera_app-2026-09-08/mockups/key-scan.html), [`key-crop.html`](ux-designs/ux-rcl_camera_app-2026-09-08/mockups/key-crop.html) and [`key-results.html`](ux-designs/ux-rcl_camera_app-2026-09-08/mockups/key-results.html) render three of them (illustrative; the spines win on conflict). Invoke the `ui-ux-pro-max` skill and run its pre-delivery checklist before calling any UI story here done. Covers UX-DR6, 9, 10, 11 plus the cross-cutting UX-DR16–19.
 
 **POC-informed additions (architecture AD-13, AD-14, AD-15, AD-16):** matching now searches multiple embeddings per Reference Image and takes the best score (max-pool), the index refuses to search a stale generation, a Scan's own color profile is corrected the same way a Reference Image's is, and inference is serialized server-side — all implementation mechanics of Story 3.4's "matching completes," not new user-facing stories.
 
