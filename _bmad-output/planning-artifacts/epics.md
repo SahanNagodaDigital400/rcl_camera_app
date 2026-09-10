@@ -107,10 +107,13 @@ UX-DR19: Microcopy follows `EXPERIENCE.md.Voice and Tone` verbatim where quoted 
 
 UX-DRs are covered inside the epics that first need them — no separate design-system epic, consistent with this document's "build only what the story needs" discipline.
 
-UX-DR1, UX-DR2, UX-DR3: Epic 1, Story 1.1 — the token layer, fonts, and icon set land with the first UI ever rendered (login), then serve every later story.
-UX-DR4, UX-DR5, UX-DR13, UX-DR15: Epic 1, Stories 1.1–1.9 — buttons, app bar, confirmation dialog (first needed by Story 1.9's deactivate), save indicator (first needed by Story 1.6).
-UX-DR12: Epic 1, Story 1.2 — force password change form.
-UX-DR7, UX-DR8: Epic 1, Stories 1.7 and 1.10–1.11 — role/status badges and the data-table/audit-log row treatments.
+UX-DR1, UX-DR2, UX-DR3: Epic 1, Story 1.1 — the token layer, fonts, and icon set are that story's entire point; every later UI story consumes them.
+UX-DR4, UX-DR5: Epic 1, Stories 1.1 and 1.3 — buttons and the app bar, first rendered in the scaffold's app shell and first used in anger on login.
+UX-DR12: Epic 1, Story 1.4 — force password change form.
+UX-DR15: Epic 1, Story 1.8 — save indicator, first needed when an Administrator creates a user.
+UX-DR7: Epic 1, Story 1.9 — role and status badges on the user list.
+UX-DR13: Epic 1, Story 1.11 — confirmation dialog, first needed by deactivate.
+UX-DR8: Epic 1, Stories 1.9 and 1.12–1.13 — the data-table row treatment, then the audit-log row variant.
 UX-DR14: Epic 2, Story 2.4 — per-row bulk upload report.
 UX-DR6: Epic 3, Story 3.4 — card and best-match candidate card.
 UX-DR9: Epic 3, Story 3.1 — framing guide overlay.
@@ -165,9 +168,40 @@ Staff and Administrators can be provisioned with secure, admin-controlled accoun
 
 **UI contract:** build against `DESIGN.md` + `EXPERIENCE.md` (ux-rcl_camera_app-2026-09-08); invoke the `ui-ux-pro-max` skill and run its pre-delivery checklist before calling any UI story here done. Covers UX-DR1–5, 7, 8, 12, 13, 15.
 
-**Ordering note:** Login (1.1) comes before Create User (1.6) — the first Administrator account is seeded via a deployment migration (a Dev Note, not a story), so login doesn't circularly depend on the create-user feature it will later gate.
+**Ordering note:** the first three stories are the foundation the rest of the product stands on, split out deliberately. Scaffold and tokens (1.1) come first because every UI story needs them; the user schema and its seeded Administrator (1.2) come next because login has nothing to authenticate against without them; login (1.3) follows. That ordering is also why login doesn't circularly depend on Create User (1.8) — the first Administrator arrives by migration, not through the UI it will later gate.
 
-### Story 1.1: Admin-Provisioned Login
+### Story 1.1: Project Scaffold & Design Token Foundation
+
+As a developer on this project,
+I want the monorepo structure and the design token layer in place,
+So that every later story builds on one agreed structure and one styling source instead of inventing its own.
+
+**Acceptance Criteria:**
+
+**Given** a clean checkout
+**When** this story is complete
+**Then** the repo carries the six directories from the architecture spine's Structural Seed (`apps/web`, `apps/api`, `shared/vision`, `shared/schema`, `infra`, `scripts/ingest`), each with a runnable skeleton — no starter-template generator exists for this stack, so this is built by hand
+**And** `apps/web` renders an app shell styled entirely from the `DESIGN.md` token set (11 colors, 6 type roles, radii, spacing scale, navy-tinted elevation) with no raw hex values in components (UX-DR1), Plus Jakarta Sans and JetBrains Mono loading with declared fallback stacks (UX-DR2), and Phosphor icons wired at `regular` weight (UX-DR3)
+**And** `make lint` and `make test` exist and pass against the empty skeleton, so every later story starts from a green baseline.
+
+### Story 1.2: User Schema & Seeded Administrator
+
+As an Administrator,
+I want my own account to exist before anyone can sign in,
+So that the system has a first way in without ever opening a public sign-up path.
+
+**Acceptance Criteria:**
+
+**Given** a clean database
+**When** migrations run
+**Then** the `User` table exists with the fields the architecture spine's ERD names — role, active, `must_change_password`, `temp_credential_expires_at`
+**And** exactly one Administrator account is seeded by a migration — not by application code, not through any UI — making it the only account in the product's lifetime that exists without an Administrator having created it
+**And** that seeded account is created in the `must_change_password` state, so even the very first sign-in is gated by Story 1.4
+**And** re-running migrations is idempotent — a second run never produces a second seeded Administrator.
+
+**Note:** with a single Administrator seeded, Story 1.11's last-active-Administrator guard will correctly refuse to deactivate it until a second Administrator is created. That is the rule working, not a defect.
+
+### Story 1.3: Admin-Provisioned Login
 
 As a Staff or Administrator with an account,
 I want to log in with my email and password,
@@ -175,12 +209,12 @@ So that I can access the app I'm authorized to use.
 
 **Acceptance Criteria:**
 
-**Given** an account was created by an Administrator (the first Administrator is seeded via a deployment migration, not this story)
+**Given** an account exists — either the Administrator seeded in Story 1.2, or one an Administrator later created
 **When** the user submits the correct email and password
 **Then** they are authenticated and issued a session
 **And** no matching account or wrong password rejects login without revealing which field was invalid, and no registration endpoint or UI exists anywhere in the product.
 
-### Story 1.2: Forced Password Change on First Login
+### Story 1.4: Forced Password Change on First Login
 
 As a new user signing in with an admin-issued temporary password,
 I want to be required to set my own password before doing anything else,
@@ -193,7 +227,7 @@ So that the temporary password doesn't linger as a standing risk.
 **Then** they can reach only the password-change screen, and any attempt to navigate elsewhere redirects back to it
 **And** an unclaimed temporary credential stops working after 72 hours and must be reissued by an Administrator.
 
-### Story 1.3: Session Persistence & Expiry
+### Story 1.5: Session Persistence & Expiry
 
 As a signed-in Staff or Administrator,
 I want my session to persist through a normal shift and end safely when appropriate,
@@ -206,7 +240,7 @@ So that I'm not interrupted but also not left exposed.
 **Then** no re-authentication is required
 **And** a session older than 7 days is rejected regardless of activity, and the session token is never accessible to client-side JavaScript or browser storage — HTTP-only, Secure, SameSite=Strict cookie only, stored hashed at rest.
 
-### Story 1.4: Login Rate Limiting
+### Story 1.6: Login Rate Limiting
 
 As the system,
 I want to slow down and eventually block repeated failed login attempts against one account,
@@ -219,7 +253,7 @@ So that credential-guessing attacks are impractical.
 **Then** a measurable delay is introduced before it's processed
 **And** the 10th cumulative failed attempt locks the account, blocking further attempts, visible to Administrators on that user's status.
 
-### Story 1.5: Self-Service Password Reset
+### Story 1.7: Self-Service Password Reset
 
 As a signed-in Staff or Administrator,
 I want to change my own password at any time,
@@ -232,7 +266,7 @@ So that I can update it without needing an Administrator.
 **Then** the password updates immediately
 **And** no self-service option exists for a signed-out user — no reset email is sent by the app; they must go through an Administrator.
 
-### Story 1.6: Create User Account
+### Story 1.8: Create User Account
 
 As an Administrator,
 I want to create a new Staff or Administrator account with an initial temporary password,
@@ -242,10 +276,10 @@ So that I can grant access without waiting on a developer.
 
 **Given** I am an authenticated Administrator
 **When** I submit a name, email, role, and initial temporary password
-**Then** the account is created and immediately usable to log in, gated by Story 1.2
+**Then** the account is created and immediately usable to log in, gated by Story 1.4
 **And** no option to email the credential exists — I communicate it manually; a Staff user attempting this action is refused server-side regardless of what the UI shows.
 
-### Story 1.7: View User List
+### Story 1.9: View User List
 
 As an Administrator,
 I want to see every user's status and last login,
@@ -258,7 +292,7 @@ So that I can audit who has access.
 **Then** I see every account with its active/deactivated status and last-login timestamp
 **And** a deactivated user's status is visually distinct, with no separate screen needed to check it.
 
-### Story 1.8: Edit User
+### Story 1.10: Edit User
 
 As an Administrator,
 I want to edit a user's name, email, or role,
@@ -271,7 +305,7 @@ So that account details and access levels stay accurate.
 **Then** the change takes effect on that user's very next request, not only at their next login
 **And** a non-Administrator attempting this action is refused server-side regardless of what the UI hides.
 
-### Story 1.9: Deactivate or Delete User
+### Story 1.11: Deactivate or Delete User
 
 As an Administrator,
 I want to deactivate or delete a user,
@@ -284,7 +318,7 @@ So that someone who's left immediately loses access.
 **Then** their session token is rejected on their very next request, not just at next login
 **And** deactivating or deleting the last remaining active Administrator account is refused — at least two active Administrator accounts must always exist.
 
-### Story 1.10: Immutable Audit Log (write path)
+### Story 1.12: Immutable Audit Log (write path)
 
 As the system,
 I want every login, failed login, and user-account change recorded permanently,
@@ -297,7 +331,7 @@ So that Rocell has a trustworthy access record.
 **Then** an audit entry is written recording who, what, when, and source IP
 **And** no update or delete path against that entry exists anywhere — enforced at the database-role level, not just application code — and `source_ip` is captured only from the trusted reverse-proxy header, never a raw client-supplied one.
 
-### Story 1.11: View Audit Log
+### Story 1.13: View Audit Log
 
 As an Administrator,
 I want to view the audit log within the app,
@@ -432,9 +466,10 @@ So that I don't waste a submission on an image that can't match well.
 **Acceptance Criteria:**
 
 **Given** I've confirmed a crop (Story 3.2)
-**When** the cropped region is materially blurry or poorly framed
+**When** the cropped region scores below the configured blur/framing bound
 **Then** I'm prompted to retake it before matching proceeds
-**And** this check runs on the cropped region only, never the pre-crop full frame.
+**And** this check runs on the cropped region only, never the pre-crop full frame
+**And** that bound is a named, configurable value with a documented provisional default — never a literal buried in the check. PRD OQ-13 defers the final number to Foundation build and Phase 2 pilot calibration, so this story ships the mechanism and a tunable default, and "done" means the threshold can be changed without a code edit.
 
 ### Story 3.4: Ranked Candidate Results with Images
 
@@ -472,10 +507,11 @@ So that a compromised or misused account can't be used to scrape the catalogue a
 
 **Acceptance Criteria:**
 
-**Given** a user submits scans above a defined threshold within a bounded window
-**When** the threshold is crossed
+**Given** a user submits scans above the configured rate within the configured window
+**When** that rate is crossed
 **Then** further submissions are throttled or blocked
-**And** this is enforced via a single atomic increment-and-check operation in the database, never a stale read-then-write a concurrent burst could outrun.
+**And** this is enforced via a single atomic increment-and-check operation in the database, never a stale read-then-write a concurrent burst could outrun
+**And** both the rate and the window are named, configurable values with documented provisional defaults (PRD OQ-13 defers the final numbers to Foundation build and Phase 2 pilot) — a test must be able to drive them to a low value and observe the throttle fire.
 
 ### Story 3.7: Anomaly Flagging
 
@@ -485,6 +521,7 @@ So that I can catch misuse a hard rate limit alone wouldn't stop.
 
 **Acceptance Criteria:**
 
-**Given** a login or scanning pattern falls outside a user's established baseline
+**Given** a login or scanning pattern falls outside a user's established baseline by more than the configured deviation
 **When** it's detected
-**Then** a flag is raised for Administrator review, distinct from and in addition to Story 3.6's hard throttle.
+**Then** a flag is raised for Administrator review, distinct from and in addition to Story 3.6's hard throttle
+**And** the baseline window and the deviation that counts as anomalous are named, configurable values with documented provisional defaults (PRD OQ-13 defers the final numbers) — a test must be able to seed a baseline, drive a deviation past it, and observe the flag.
