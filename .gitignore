@@ -15,6 +15,7 @@ poc/certs/
 # apps/web
 apps/web/node_modules/
 apps/web/dist/
+apps/web/*.tsbuildinfo
 
 # Python (root workspace + all members)
 .venv/
