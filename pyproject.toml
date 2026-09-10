@@ -8,6 +8,7 @@ dependencies = [
     "shared-vision",
     "shared-schema",
     "rcl-ingest",
+    "rcl-infra",
 ]
 
 [tool.uv.workspace]
@@ -16,6 +17,7 @@ members = [
     "shared/vision",
     "shared/schema",
     "scripts/ingest",
+    "infra",
 ]
 
 [tool.uv.sources]
@@ -23,6 +25,7 @@ rcl-api = { workspace = true }
 shared-vision = { workspace = true }
 shared-schema = { workspace = true }
 rcl-ingest = { workspace = true }
+rcl-infra = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -34,7 +37,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["apps/api", "shared/vision", "shared/schema", "scripts/ingest"]
+src = ["apps/api", "shared/vision", "shared/schema", "scripts/ingest", "infra"]
 extend-exclude = [".agents", ".claude", "_bmad", "_bmad-output", "poc", ".bmad-loop"]
 
 [tool.ruff.lint]
@@ -47,4 +50,5 @@ testpaths = [
     "shared/vision/tests",
     "shared/schema/tests",
     "scripts/ingest/tests",
+    "infra/tests",
 ]
