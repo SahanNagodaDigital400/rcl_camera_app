@@ -1,0 +1,50 @@
+[project]
+name = "rcl-camera-app"
+version = "0.1.0"
+description = "Rocell Tile Identification App -- workspace root"
+requires-python = ">=3.12"
+dependencies = [
+    "rcl-api",
+    "shared-vision",
+    "shared-schema",
+    "rcl-ingest",
+]
+
+[tool.uv.workspace]
+members = [
+    "apps/api",
+    "shared/vision",
+    "shared/schema",
+    "scripts/ingest",
+]
+
+[tool.uv.sources]
+rcl-api = { workspace = true }
+shared-vision = { workspace = true }
+shared-schema = { workspace = true }
+rcl-ingest = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14",
+    "pytest>=8.0",
+    "httpx>=0.28",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["apps/api", "shared/vision", "shared/schema", "scripts/ingest"]
+extend-exclude = [".agents", ".claude", "_bmad", "_bmad-output", "poc", ".bmad-loop"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+testpaths = [
+    "apps/api/tests",
+    "shared/vision/tests",
+    "shared/schema/tests",
+    "scripts/ingest/tests",
+]

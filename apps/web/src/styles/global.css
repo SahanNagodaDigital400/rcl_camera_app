@@ -1,0 +1,95 @@
+/*
+ * Base element + shell-component styles. References tokens.css custom
+ * properties only -- no raw hex, px radius/spacing, or font value of
+ * its own. See tokens.css for the single source of truth.
+ */
+
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background);
+  color: var(--color-text);
+  font-family: var(--font-family-body);
+  font-size: var(--font-body-size);
+  font-weight: var(--font-body-weight);
+  line-height: var(--font-body-line-height);
+}
+
+code,
+.font-code {
+  font-family: var(--font-family-code);
+  font-size: var(--font-code-size);
+  font-weight: var(--font-code-weight);
+  line-height: var(--font-code-line-height);
+}
+
+h1,
+.text-display {
+  font-family: var(--font-family-display);
+  font-size: var(--font-display-size);
+  font-weight: var(--font-display-weight);
+  line-height: var(--font-display-line-height);
+  letter-spacing: var(--font-display-letter-spacing);
+  margin: 0;
+}
+
+/* App bar -- navy fill, white content, accent stripe along the bottom edge */
+.app-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4);
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  border-bottom: 4px solid var(--color-accent);
+}
+
+.app-bar__title {
+  font-family: var(--font-family-display);
+  font-size: var(--font-heading-size);
+  font-weight: var(--font-heading-weight);
+  line-height: var(--font-heading-line-height);
+  color: var(--color-primary-foreground);
+  margin: 0;
+}
+
+.app-bar__icon {
+  color: var(--color-primary-foreground);
+  flex-shrink: 0;
+}
+
+/* Button (primary) -- accent fill, navy text. Exactly one per screen. */
+.button-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-family: var(--font-family-body);
+  font-size: var(--font-label-size);
+  font-weight: var(--font-label-weight);
+  line-height: var(--font-label-line-height);
+  padding: var(--space-3) var(--space-6);
+  min-height: 44px;
+  min-width: 44px;
+  cursor: pointer;
+}
+
+.button-primary:hover {
+  filter: brightness(0.97);
+}
+
+.button-primary:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}

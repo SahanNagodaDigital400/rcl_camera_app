@@ -1,0 +1,20 @@
+[project]
+name = "rcl-ingest"
+version = "0.1.0"
+description = "Drive -> index batch ingestion (pre-launch only)"
+requires-python = ">=3.12"
+dependencies = [
+    "shared-vision",
+    "shared-schema",
+]
+
+[tool.uv.sources]
+shared-vision = { workspace = true }
+shared-schema = { workspace = true }
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ingest*"]

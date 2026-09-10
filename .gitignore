@@ -11,3 +11,12 @@ __pycache__/
 .pytest_cache/
 poc/Tiles-prepared/
 poc/certs/
+
+# apps/web
+apps/web/node_modules/
+apps/web/dist/
+
+# Python (root workspace + all members)
+.venv/
+*.egg-info/
+
