@@ -8,11 +8,14 @@ help:
 	@echo "  make index       build the vector index (runs prep first)"
 	@echo "  make thumbs      regenerate candidate + reference images (no re-embedding)"
 	@echo "  make serve       run the demo at http://localhost:8000"
+	@echo "                   TILEMATCH_SHOW_SCORE=0 hides the match percentage"
+	@echo "                   TILEMATCH_FLOOR=0.8 raises the match bar"
 	@echo "  make lan         reachable from a phone on the LAN (http; use the"
 	@echo "                   'Choose / take photo' button, not the live preview)"
 	@echo "  make lan-https   same but HTTPS, so the live camera preview works too"
 	@echo "  make match IMG=path/to/photo.jpg"
 	@echo "  make eval        synthetic leave-one-out accuracy"
+	@echo "  make eval-size   same, with each query restricted to its own size"
 	@echo "  make eval-sanity pipeline wiring check (expect ~100%)"
 	@echo "  make eval-real   accuracy on real photos in queries/"
 	@echo "  make test        unit tests (includes the AD-1 symmetry check)"
@@ -55,6 +58,9 @@ eval:
 eval-sanity:
 	$(PY) -m tilematch.evaluate --mode sanity --limit 40
 
+eval-size:
+	$(PY) -m tilematch.evaluate --mode synthetic --size-filter --report index/eval-synthetic-size.json
+
 eval-real:
 	$(PY) -m tilematch.evaluate --mode real --report index/eval-real.json
 
@@ -64,4 +70,4 @@ test:
 clean:
 	rm -rf index/vectors.npz index/meta.json index/thumbs index/refs index/*.jpg index/*.json
 
-.PHONY: help setup model prep index thumbs serve lan lan-https match eval eval-sanity eval-real test clean
+.PHONY: help setup model prep index thumbs serve lan lan-https match eval eval-size eval-sanity eval-real test clean

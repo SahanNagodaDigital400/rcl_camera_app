@@ -63,11 +63,18 @@ Once these exist: run `make lint` and `make test` before considering any change 
 
 Get these right — they are not interchangeable.
 
-- **Design** — a pattern name, e.g. `CREMA MARMOL`, `ASTORIA`. A folder in the source Drive.
-- **Size** — e.g. `45X90`, `60X60`. The parent folder.
-- **Product** — a `size + design` pair. The unit of identity. `45X90 / CREMA MARMOL`.
-- **Face** — one manufactured surface variation within a product. Shade-varying ranges have many; only some are photographed. Face numbers are non-contiguous (0001, 0002, 0008).
-- **Code** — the file name, cleaned. `RP.CMA.0001DJ.SM.0T`.
+- **Size** — e.g. `45X90`, `60X60`. The top-level folder.
+- **Category** — a range or pattern name, e.g. `CREMA MARMOL`, `ASTORIA`, `POLISH`. The second-level folder. Previously called "design"; the field in `meta.json` is still `design`/`product` for index compatibility.
+- **Tile** — **one file. The unit of identity.** Every file inside a category folder is a different tile, and each tile has exactly one reference image.
+- **Code** — the file name, cleaned. `RP.CMA.0001DJ.SM.0T`. This identifies the tile, and it is the answer the app returns.
+
+The tree is exactly three levels deep: `<SIZE>/<CATEGORY>/<file>`. 381 files = 381 tiles in 76 category folders; 96% of files live in folders holding 2–26 siblings.
+
+**The varying numeric segment in a code (`0011`, `0013`, `0014` in `45X90/POLISH`) distinguishes different tiles, not faces of one tile.** Earlier revisions of this file described a "Face — one manufactured surface variation within a product" and defined Product as `size + design`. That was wrong, confirmed against the source tree and with Rocell. Do not reintroduce it:
+
+- Never treat two files in one folder as the same thing.
+- Never deduplicate or group candidates by `size + category` — that hides correct answers.
+- An eval that scores `size + category` as the truth is counting "found a different tile from the same range" as correct. Score against the exact file.
 
 ## Source data quirks
 
@@ -80,7 +87,7 @@ The reference set comes from a Google Drive tree with real inconsistencies. The 
   - `Copy of 1Jk.jpg` / `Copy of 61M.jpg` — bare face number, no code
   - `Copy of 279.jpg` — bare integer
   - `Copy of 6LD.MA Quarry Stone Natural.jpg` — free text trailing the code
-  - Dash-delimited names (`RC-001-OHA-156-MA-J2`) carry **no recoverable face number** — return `None` rather than guessing; the Code is still kept.
+  - Dash-delimited names (`RC-001-OHA-156-MA-J2`) carry **no recoverable trailing number** — return `None` rather than guessing; the Code is still kept, and the Code alone identifies the tile.
 - File extensions include `.tif` alongside `.jpg` — not mentioned in earlier planning docs, confirmed present in the real source tree.
 - Strip the `Copy of ` prefix and the extension before storing or displaying.
 - Reference images range **384 KB to 96 MB** (up to 19276×9638 px) — not "2–6.5 MB," which understated the real range by more than an order of magnitude; decode to a capped long edge (2048px) before any further processing. Query images are phone photos. This domain gap is the main accuracy risk — apply aggressive augmentation at index time (lighting, white balance, blur, perspective).
@@ -92,7 +99,7 @@ The reference set comes from a Google Drive tree with real inconsistencies. The 
 
 **Always show the reference image with each candidate.** Staff cannot verify a code they don't recognise; they can verify a picture instantly. The image is what makes the result usable.
 
-**Always show size and design alongside the file name.** Where the file name is only a face number (`1Jk`), the folder-derived size and design is the only meaningful identifier.
+**Always show size and category alongside the file name.** Where the file name is only a short code (`1Jk`), the folder-derived size and category is what makes it readable — but the file name is still the tile's identity, not a label on a shared product.
 
 ## Security
 
@@ -102,6 +109,7 @@ Non-negotiable requirements — see `AGENTS.md` Policy for the full list (passwo
 
 - The accuracy eval harness (`make eval`) runs against a held-out set of **real staff phone photos**, not studio assets. Studio-to-studio accuracy is meaningless and will flatter any change.
 - Report both top-1 and top-3 accuracy. Top-3 is the metric that reflects real usefulness.
+- **Score against the exact tile — the file.** A candidate from the right category folder but the wrong file is a miss. There is no leave-one-out option: a tile has one reference image, so removing it deletes the only correct answer rather than forcing generalisation. That makes `make eval` a robustness upper bound, and `make eval-real` the only number that decides anything.
 - Any change to `shared/vision/` requires an eval run. Preprocessing changes invalidate the existing index — a re-index is required, and this must be stated in the PR.
 - Security-relevant code paths (auth, authz, upload handling) need tests for the failure case, not just the happy path.
 
@@ -111,4 +119,4 @@ See `AGENTS.md` — Conventions that differ from defaults.
 
 ## Scope boundaries
 
-See `AGENTS.md` — Policy. v1 excludes offline scanning, price/stock/spec data, customer/dealer access, app-sent email, and roles beyond `staff`/`admin`. Don't build a `size + design → product code` mapping — the file name is the answer.
+See `AGENTS.md` — Policy. v1 excludes offline scanning, price/stock/spec data, customer/dealer access, app-sent email, and roles beyond `staff`/`admin`. Don't build a `size + category → code` mapping — the file name is the answer, and it is the tile's identity.

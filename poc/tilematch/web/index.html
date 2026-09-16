@@ -23,14 +23,34 @@
   main { max-width:760px; margin:0 auto; padding:20px; }
   .stage { background:var(--card); border:1px solid var(--line); border-radius:14px;
            overflow:hidden; }
-  #view { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; background:#000; }
+  /* Square on purpose: object-fit:cover in a 1:1 box shows the centre square of
+     the frame's short edge, which is exactly what #shoot crops and uploads — and
+     what vision.preprocess keeps anyway. What staff frame is what the model sees. */
+  #view { width:100%; aspect-ratio:1/1; object-fit:cover; display:block; background:#000; }
   #view.hide { display:none; }
-  #drop { aspect-ratio:4/3; display:flex; flex-direction:column; align-items:center;
+  #drop { aspect-ratio:1/1; display:flex; flex-direction:column; align-items:center;
           justify-content:center; gap:8px; color:var(--muted); text-align:center;
           padding:24px; border:2px dashed var(--line); border-radius:14px; margin:0; }
   #drop.hide { display:none; }
   #drop.over { border-color:var(--accent); color:var(--accent); }
   .bar { display:flex; gap:10px; padding:12px; flex-wrap:wrap; }
+  /* Size is the one thing the scan cannot recover and the person holding the
+     tile always knows, so it sits with the capture controls, not in a settings
+     screen — it has to be set before the shot, not after. */
+  .sizebar { display:flex; align-items:center; gap:10px; padding:0 12px 12px; flex-wrap:wrap; }
+  .sizebar label { font-size:12.5px; color:var(--muted); flex:0 0 auto; }
+  select { flex:1; min-width:160px; padding:11px 12px; border-radius:10px;
+           border:1px solid var(--line); background:var(--card); color:var(--ink);
+           font:inherit; font-weight:550; }
+  select:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  .sizehint { flex-basis:100%; font-size:11.5px; color:var(--muted); margin:0; }
+  .empty { background:var(--card); border:1px solid var(--line); border-radius:12px;
+           padding:18px 16px; margin:16px 0 0; }
+  .empty h2 { margin:0 0 6px; font-size:14px; }
+  .empty p { margin:0 0 12px; font-size:12.5px; color:var(--muted); }
+  .empty ul { margin:0 0 12px; padding-left:18px; font-size:12.5px; color:var(--muted); }
+  .empty button { width:100%; flex:none; }
+  .empty.hide { display:none; }
   button, .filebtn { flex:1; min-width:130px; padding:12px 16px; border-radius:10px;
       border:1px solid var(--line); background:var(--card); color:var(--ink);
       font:inherit; font-weight:550; cursor:pointer; text-align:center; }
@@ -68,7 +88,8 @@
           word-break:break-all; }
   .prod { font-size:12.5px; color:var(--muted); margin-top:3px; }
   .rank { font-size:12px; color:var(--muted); }
-  .score { font-variant-numeric:tabular-nums; font-size:13px; color:var(--ok); font-weight:600; }
+  .score { font-variant-numeric:tabular-nums; font-size:15px; color:var(--ok); font-weight:600;
+           margin-top:2px; }
   .warn { color:var(--accent); font-size:11.5px; }
   canvas { display:none; }
   /* Lightbox: staff verify against the picture, so it needs to be big. */
@@ -113,17 +134,40 @@
       <label class="filebtn" for="pick">Choose / take photo</label>
       <input id="pick" type="file" accept="image/*" capture="environment">
     </div>
+    <div class="sizebar">
+      <label for="size">Tile size</label>
+      <select id="size"><option value="">All sizes</option></select>
+      <p class="sizehint" id="sizehint">Measure the tile and pick its size — it rules
+         out every other size before matching, which is the single biggest
+         accuracy gain available here.</p>
+    </div>
   </div>
 
   <div class="status" id="status"></div>
   <ol class="results" id="results"></ol>
   <button id="more" class="hide"></button>
 
+  <div class="empty hide" id="empty">
+    <h2>No close match</h2>
+    <p id="emptyWhy"></p>
+    <ul>
+      <li>Fill the frame with the tile face — no grout lines, edges or floor.</li>
+      <li>Even, indirect light. Avoid glare on polished and glossy finishes.</li>
+      <li>Hold square to the surface, not at an angle.</li>
+      <li>Check the size selection above is right, or set it back to All sizes.</li>
+    </ul>
+    <button id="anyway">Show the closest matches anyway</button>
+  </div>
+
   <p class="note">
-    Three candidates are always returned, never one. Size and finish are not
-    recoverable from a photo — <strong>MONO COLOUR GLOSSY</strong> and
-    <strong>MONO COLOUR MATT</strong> are visually identical. Verify against the
-    reference image before quoting a code.
+    <span id="scoreNote" hidden>The percentage is visual similarity,
+    <strong>not</strong> a probability that the match is right — on this
+    catalogue a wrong answer medians 91% and a correct one 92%. Use it to compare
+    candidates against each other, never as confidence in any one of them. </span>
+    Candidates below the match bar are hidden, so fewer than three may appear.
+    Finish is not recoverable from a photo — <strong>MONO COLOUR GLOSSY</strong>
+    and <strong>MONO COLOUR MATT</strong> are visually identical. Always verify
+    against the reference image before quoting a code.
   </p>
 </main>
 
@@ -141,11 +185,48 @@ const $ = s => document.querySelector(s);
 const view = $('#view'), drop = $('#drop'), status = $('#status'), results = $('#results');
 let stream = null;
 
+// Remembered across scans: staff work through a rack of one size at a time, so
+// re-picking it for every photo would be the fastest way to get it ignored.
+const SIZE_KEY = 'tilematch.size';
+const sizeSel = $('#size');
+
+// Mirrors server.SHOW_SCORE. Read from /api/info at load and re-read from every
+// scan response, so flipping TILEMATCH_SHOW_SCORE and restarting takes effect on
+// the next scan rather than needing a reload.
+let showScore = true;
+
 fetch('/api/info').then(r => r.json()).then(d => {
   $('#info').textContent = d.ready
-    ? `${d.images} reference images · ${d.products} products · ${d.vectors} vectors · build ${d.build}`
+    ? `${d.tiles} tiles · ${d.categories} categories · ${d.vectors} vectors · build ${d.build}`
     : `index not ready — ${d.error}`;
+  if (d.ready) { showScore = d.show_score !== false; fillSizes(d.sizes || []); }
 }).catch(() => $('#info').textContent = 'server unreachable');
+
+function fillSizes(sizes) {
+  // Built from the index, never hard-coded: the catalogue decides what is
+  // offered, so a new size appears without touching this page.
+  for (const e of sizes) {
+    const o = document.createElement('option');
+    o.value = e.size;
+    o.textContent = `${e.size}  (${e.tiles} tiles)`;
+    sizeSel.appendChild(o);
+  }
+  let saved = null;
+  try { saved = localStorage.getItem(SIZE_KEY); } catch (e) { /* private mode */ }
+  if (saved && sizes.some(e => e.size === saved)) sizeSel.value = saved;
+  sizeHint();
+}
+
+sizeSel.onchange = () => {
+  try { localStorage.setItem(SIZE_KEY, sizeSel.value); } catch (e) { /* ignore */ }
+  sizeHint();
+};
+
+function sizeHint() {
+  $('#sizehint').textContent = sizeSel.value
+    ? `Searching ${sizeSel.value} only. Wrong size selected means the right tile cannot be found at all — set it back to All sizes if unsure.`
+    : 'Measure the tile and pick its size — it rules out every other size before matching, which is the single biggest accuracy gain available here.';
+}
 
 // The phone has no reachable console, so anything that goes wrong client-side is
 // invisible while testing over a tunnel. Beacon it into the server log instead.
@@ -183,10 +264,17 @@ $('#cam').onclick = async () => {
 
 $('#shoot').onclick = () => {
   const c = $('#canvas');
-  c.width = view.videoWidth; c.height = view.videoHeight;
-  c.getContext('2d').drawImage(view, 0, 0);
-  // Full frame here; shrink() below is the single place that downscales, so the
-  // camera and the file picker take exactly the same path.
+  // Centre square of the short edge — the same region the 1:1 preview shows, so
+  // nothing outside what the user framed reaches the model. Cropping here rather
+  // than server-side keeps shared vision untouched (no re-index), and spends the
+  // upload's 1024px on the tile instead of on pixels preprocess would discard.
+  // The file picker is not cropped: a gallery photo was framed elsewhere.
+  const vw = view.videoWidth, vh = view.videoHeight, side = Math.min(vw, vh);
+  c.width = side; c.height = side;
+  c.getContext('2d').drawImage(view, (vw - side) / 2, (vh - side) / 2, side, side,
+                               0, 0, side, side);
+  // shrink() below is the single place that downscales, so the camera and the
+  // file picker take exactly the same path from here.
   c.toBlob(b => send(b, 'capture.jpg'), 'image/jpeg', 0.95);
 };
 
@@ -327,7 +415,7 @@ async function send(blob, name) {
   // and the page was dead until reload. That is the "works once" bug.
   const t = performance.now();
   try {
-    results.innerHTML = ''; $('#more').classList.add('hide');
+    results.innerHTML = ''; $('#more').classList.add('hide'); $('#empty').classList.add('hide');
     const before = blob.size;
     say('preparing…');
     blob = await shrink(blob);
@@ -336,12 +424,18 @@ async function send(blob, name) {
 
     const fd = new FormData();
     fd.append('file', blob, blob.type === 'image/jpeg' ? 'scan.jpg' : name);
+    if (sizeSel.value) fd.append('size', sizeSel.value);
 
     const d = await upload(fd, ctrl, blob.size);
     if (d.queue_ms > 100) console.debug(`waited ${d.queue_ms} ms in the server queue`);
-    const shown = Math.min(d.top_k ?? 3, d.candidates.length);
-    say(`${note}top ${shown} of ${d.candidates.length} · ${d.elapsed_ms} ms server · ${Math.round(performance.now()-t)} ms round trip`);
-    render(d.candidates, d.top_k ?? 3);
+    last = d;
+    showScore = d.show_score !== false;
+    const scope = d.size ? `${d.size} only, ${d.searched} references` : `all ${d.searched} references`;
+    const shown = Math.min(d.top_k ?? 3, d.above_floor ?? 0);
+    say(shown
+      ? `${note}${scope} · showing ${shown} · ${d.elapsed_ms} ms server · ${Math.round(performance.now()-t)} ms round trip`
+      : `${note}${scope} · nothing close enough · ${d.elapsed_ms} ms server`);
+    render(d);
   } catch (e) {
     if (ctrl.signal.reason === 'superseded') return;      // a newer scan replaced this one
     const msg = (e && e.message) || String(e);
@@ -357,9 +451,49 @@ async function send(blob, name) {
   }
 }
 
-const MORE_FLOOR = 0.4;   // only offer candidates at least this similar
+// The last scan, kept so "show the closest anyway" can re-render the same
+// candidates without another upload and another 650 ms of inference.
+let last = null;
 
-function render(cands, topK) {
+// Rendering is driven entirely by the server's match bar. Nothing below it is
+// painted, so a scan can legitimately produce two candidates, one, or none —
+// that is the point of the bar, and padding the list back to three would undo it.
+function render(d) {
+  const cands = d.candidates || [];
+  const topK = d.top_k ?? 3;
+  const above = d.above_floor ?? cands.length;
+  const shown = Math.min(topK, above);
+  const empty = $('#empty');
+
+  if (!shown) {
+    results.innerHTML = '';
+    $('#more').classList.add('hide');
+    $('#emptyWhy').textContent = d.size
+      ? `No ${d.size} reference was close enough to this photo. If the tile is a different size, change the selection above.`
+      : 'No reference in the catalogue was close enough to this photo.';
+    empty.classList.remove('hide');
+    return;
+  }
+  empty.classList.add('hide');
+  paint(cands.slice(0, above), shown);
+}
+
+// Bypass for the bar, on an explicit tap only. When nothing clears it the
+// closest three are still the best information available, and hiding them
+// outright turns a weak answer into no answer — but it stays the user's call,
+// not the default, so a marginal match is never mistaken for a confident one.
+$('#anyway').onclick = () => {
+  if (!last) return;
+  $('#empty').classList.add('hide');
+  const topK = last.top_k ?? 3;
+  paint(last.candidates.slice(0, topK), topK);
+  say(`below the match bar — closest ${Math.min(topK, last.candidates.length)} shown, treat as a hint only`, true);
+};
+
+function paint(cands, topK) {
+  // The explanatory sentence only makes sense while the number is on screen.
+  $('#scoreNote').hidden = !showScore;
+
   results.innerHTML = cands.map((c, i) => `
     <li class="cand${i >= topK ? ' extra' : ''}" tabindex="0" role="button" data-ref="${c.ref_id}"
         data-code="${esc(c.code)}" data-prod="${esc(c.size + ' · ' + c.design)}"
@@ -373,21 +507,17 @@ function render(cands, topK) {
       </div>
       <div style="text-align:right">
         <div class="rank">#${c.rank}</div>
-        <div class="score">${c.score.toFixed(3)}</div>
+        ${showScore ? `<div class="score">${Math.round(c.score * 100)}%</div>` : ''}
       </div>
     </li>`).join('');
 
-  // Beyond the top three, only offer what clears the floor. Scores here are not
-  // calibrated probabilities - 0.4 is close to the median similarity between any
-  // two tiles in this catalogue - so this trims the tail rather than filtering.
-  const extra = cands.slice(topK).filter(c => c.score >= MORE_FLOOR).length;
+  // Everything handed to paint() already clears the bar, so the overflow is
+  // simply what did not fit in the first three.
+  const extra = Math.max(0, cands.length - topK);
   const btn = $('#more');
   btn.classList.toggle('hide', extra === 0);
   btn.dataset.open = '';
-  btn.textContent = `show ${extra} more above ${MORE_FLOOR.toFixed(2)}`;
-  results.querySelectorAll('.cand.extra').forEach((el, i) => {
-    if (i >= extra) el.remove();
-  });
+  btn.textContent = `show ${extra} more`;
 
   // A dropped thumbnail request used to leave a silent blank square. Retry once
   // past the cache, then say so rather than showing nothing.
@@ -458,9 +588,7 @@ $('#more').onclick = () => {
   btn.dataset.open = open ? '' : '1';
   const extras = results.querySelectorAll('.cand.extra');
   extras.forEach(el => el.classList.toggle('on', !open));
-  btn.textContent = open
-    ? `show ${extras.length} more above ${MORE_FLOOR.toFixed(2)}`
-    : 'show fewer';
+  btn.textContent = open ? `show ${extras.length} more` : 'show fewer';
 };
 
 $('#boxX').onclick = closeRef;

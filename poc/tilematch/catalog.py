@@ -1,4 +1,4 @@
-"""Walk the reference tree and derive Product / Face / Code metadata.
+"""Walk the reference tree and derive Size / Category / Code metadata.
 
 The source tree is a Google Drive export with real inconsistencies, so this
 validates rather than assumes (per CLAUDE.md). Every file that cannot be parsed
@@ -7,8 +7,11 @@ or read is reported, never silently dropped.
 Domain vocabulary (these are not interchangeable):
     Size    - parent folder, e.g. "45X90"
     Design  - child folder, e.g. "CREMA MARMOL"
-    Product - a size + design pair; the unit of identity
-    Face    - one manufactured surface variation within a product
+    Tile     - one FILE; the unit of identity. Every file in a category folder
+               is a different tile, and each tile has exactly one reference
+               image. `category` below is a grouping, never an identity.
+    Category - the second-level folder (`POLISH`, `CREMA MARMOL`). Stored under
+               the legacy keys `design` / `product` so existing indexes load.
     Code    - the cleaned file name; this IS the answer a scan returns
 """
 
@@ -58,7 +61,9 @@ def clean_code(filename: str) -> str:
     return stem.strip().strip(".").strip()
 
 
-# Five naming conventions coexist in this tree. Face extraction tries each in
+# Five naming conventions coexist in this tree. The trailing-number extraction
+# below is a display hint only — it does NOT identify a face of a shared
+# product, because each file is already its own tile. Each convention is tried in
 # the order most-specific-first, and returns None rather than guessing.
 FACE_PATTERNS = (
     re.compile(r"^RP\.[A-Z]{3}\.(\d{3,4})[A-Z]{2}\.", re.IGNORECASE),  # RP.CMA.0001DJ.SM.0T
@@ -91,7 +96,12 @@ class Reference:
 
     @property
     def product(self) -> str:
-        """size + design — the granularity accuracy is scored at (PRD OQ-12)."""
+        """`size / category` — a GROUPING, not the unit of identity.
+
+        Named `product` for meta.json compatibility only. Accuracy is scored
+        against the exact file, never against this: two files sharing it are two
+        different tiles. See CLAUDE.md, Domain vocabulary.
+        """
         return f"{self.size} / {self.design}"
 
     def as_dict(self) -> dict:

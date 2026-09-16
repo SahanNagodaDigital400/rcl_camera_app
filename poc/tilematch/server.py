@@ -14,17 +14,18 @@ import hashlib
 import io
 import itertools
 import logging
+import os
 import subprocess
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, UnidentifiedImageError
 
 from . import vision
-from .search import DEFAULT_INDEX, TOP_K, IndexMismatch, Matcher
+from .search import DEFAULT_INDEX, TOP_K, IndexMismatch, Matcher, UnknownSize
 
 POC_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -49,6 +50,35 @@ IMMUTABLE = {"Cache-Control": "public, max-age=86400"}
 # accuracy number into a top-10 one.
 DISPLAY_K = 3
 MAX_CANDIDATES = 20
+
+# Similarity a candidate must reach to be put in front of staff at all.
+#
+# Read this as a tail trim, not as confidence. These are raw cosine similarities
+# between DINOv2 embeddings, not calibrated probabilities, and on the synthetic
+# eval the correct answer scores a median 0.918 against 0.907 for the wrong one —
+# the two distributions almost completely overlap. At 0.80 the bar keeps 91% of
+# correct top-1 answers and 92% of the wrong ones; at the 0.50 default it trims
+# nothing at all on this catalogue. It makes the list shorter and stops
+# obviously-unrelated tiles appearing; it does not make what remains more likely
+# to be right. See README, "What the match bar does".
+#
+# Overridable so the bar can be moved and demoed without a code edit — it is a
+# display decision, not part of the pipeline, so changing it does not invalidate
+# the index the way anything in vision.py would.
+MATCH_FLOOR = float(os.environ.get("TILEMATCH_FLOOR", "0.50"))
+
+# Whether each candidate card shows its similarity as a percentage.
+#
+# On by default, off with TILEMATCH_SHOW_SCORE=0. It is a toggle rather than a
+# deletion because the number cuts both ways: it is genuinely useful for
+# comparing the three candidates against each other, and genuinely misleading as
+# confidence in any one of them — a wrong answer medians 91% against 92% for a
+# right one. Which risk dominates depends on who is holding the phone, so it is
+# a setting, not a decision baked into the markup.
+#
+# Display only: the score is always in the API response and the server log, so
+# turning it off hides it from staff without blinding anyone debugging a scan.
+SHOW_SCORE = os.environ.get("TILEMATCH_SHOW_SCORE", "1") == "1"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,7 +113,8 @@ def build_stamp() -> str:
     missed it would report "current" while the user looked at something else.
     """
     h = hashlib.sha256((WEB_DIR / "index.html").read_bytes())
-    h.update(f"|display_k={DISPLAY_K}|max={MAX_CANDIDATES}".encode())
+    h.update(f"|display_k={DISPLAY_K}|max={MAX_CANDIDATES}|floor={MATCH_FLOOR}"
+             f"|score={SHOW_SCORE}".encode())
     return h.hexdigest()[:7]
 
 
@@ -109,10 +140,24 @@ def info() -> dict:
         "build": build_stamp(),
         "images": m.n_images,
         "vectors": int(m.vectors.shape[0]),
-        "products": len({r["product"] for r in m.references}),
+        "tiles": m.n_images,
+        "categories": len({r["product"] for r in m.references}),
         "pipeline_version": m.meta.get("pipeline_version"),
         "built_at": m.meta.get("built_at"),
+        "match_floor": MATCH_FLOOR,
+        "show_score": SHOW_SCORE,
+        "sizes": m.sizes(),
     }
+
+
+@app.get("/api/sizes")
+def sizes() -> dict:
+    """Sizes the index actually holds, for the picker on the scan screen."""
+    try:
+        m = get_matcher()
+    except (FileNotFoundError, IndexMismatch) as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"sizes": m.sizes()}
 
 
 @app.get("/thumbs/{name}")
@@ -171,7 +216,7 @@ def reference(ref_id: int) -> FileResponse:
 
 
 @app.post("/api/scan")
-async def scan(file: UploadFile = File(...)) -> JSONResponse:
+async def scan(file: UploadFile = File(...), size: str = Form("")) -> JSONResponse:
     rid = next(_request_ids)
     arrived = time.perf_counter()
     # Logged on arrival, not on completion. A request that never finished used to
@@ -195,6 +240,16 @@ async def scan(file: UploadFile = File(...)) -> JSONResponse:
         log.error("[%04d] index unavailable: %s", rid, exc)
         raise HTTPException(503, str(exc)) from exc
 
+    # Validated against the index, never taken on trust: an unrecognised size
+    # would otherwise silently return nothing and read as "no match found".
+    size = size.strip().upper() or ""
+    if size:
+        known = {e["size"] for e in m.sizes()}
+        if size not in known:
+            log.warning("[%04d] rejected: unknown size %r", rid, size)
+            raise HTTPException(400, f"unknown size {size!r}")
+        log.info("[%04d] size filter: %s", rid, size)
+
     queued = time.perf_counter()
     if _scan_slot.locked():
         log.info("[%04d] queued behind a running scan", rid)
@@ -202,10 +257,11 @@ async def scan(file: UploadFile = File(...)) -> JSONResponse:
         wait_ms = (time.perf_counter() - queued) * 1000
         if wait_ms > 50:
             log.info("[%04d] started after %.0f ms in the queue", rid, wait_ms)
-        return await _run_scan(rid, m, raw, wait_ms)
+        return await _run_scan(rid, m, raw, wait_ms, size or None)
 
 
-async def _run_scan(rid: int, m: Matcher, raw: bytes, wait_ms: float) -> JSONResponse:
+async def _run_scan(rid: int, m: Matcher, raw: bytes, wait_ms: float,
+                    size: str | None = None) -> JSONResponse:
     started = time.perf_counter()
     try:
         # Content is sniffed by the shared intake path, never trusted from the
@@ -223,22 +279,37 @@ async def _run_scan(rid: int, m: Matcher, raw: bytes, wait_ms: float) -> JSONRes
     # loop it stalls every other request for that whole window, which showed up
     # as thumbnails intermittently failing to load while a scan was in flight.
     timings: dict[str, float] = {}
-    cands = await run_in_threadpool(m.search, img, MAX_CANDIDATES, None, timings)
+    try:
+        cands = await run_in_threadpool(
+            m.search, img, MAX_CANDIDATES, None, timings, size)
+    except UnknownSize as exc:
+        raise HTTPException(400, str(exc)) from exc
     total_ms = (time.perf_counter() - started) * 1000
+
+    # Candidates are ranked, so everything at or above the bar is a prefix. The
+    # server reports the count and returns the full list; how many the page
+    # actually paints stays a display decision, as with DISPLAY_K.
+    above = sum(1 for c in cands if c.score >= MATCH_FLOOR)
 
     # Phase breakdown, because "slow" has three very different causes here and a
     # single total cannot tell them apart: a big upload, a heavyweight decode
     # (some references are CMYK and need an ICC transform), or inference.
     log.info(
         "[%04d] done %.0f ms  =  queue %.0f ms | decode %.0f ms | embed %.0f ms "
-        "(%d views, %.0f ms/view) | rank %.1f ms  ->  %s %s (%.3f)",
+        "(%d views, %.0f ms/view) | rank %.1f ms  ->  %s %s (%.3f) | %d above %.2f",
         rid, total_ms + wait_ms, wait_ms, decode_ms,
         timings.get("embed_ms", 0), int(timings.get("views", 0)),
         timings.get("embed_ms", 0) / max(timings.get("views", 1), 1),
         timings.get("rank_ms", 0),
-        cands[0].size if cands else "-", cands[0].design if cands else "-",
-        cands[0].score if cands else 0.0,
+        cands[0].size if cands else "-", cands[0].code if cands else "-",
+        cands[0].score if cands else 0.0, above, MATCH_FLOOR,
     )
+    if not above:
+        # Worth seeing in the log: either the tile genuinely is not in the
+        # catalogue, or the photo is poor. Both are actionable, and neither is
+        # visible from an empty results screen.
+        log.info("[%04d] nothing cleared the %.2f bar (best %.3f)",
+                 rid, MATCH_FLOOR, cands[0].score if cands else 0.0)
     if total_ms + wait_ms > 3000:
         log.warning("[%04d] exceeded the 3 s capture-to-result budget (%.0f ms)",
                     rid, total_ms + wait_ms)
@@ -249,6 +320,11 @@ async def _run_scan(rid: int, m: Matcher, raw: bytes, wait_ms: float) -> JSONRes
         "timings": {k: round(v, 1) for k, v in timings.items()},
         "decode_ms": round(decode_ms, 1),
         "top_k": DISPLAY_K,
+        "match_floor": MATCH_FLOOR,
+        "show_score": SHOW_SCORE,
+        "above_floor": above,
+        "size": size,
+        "searched": int((m.ref_sizes == size).sum()) if size else m.n_images,
         "candidates": [c.as_dict() for c in cands],
     })
 
@@ -269,7 +345,7 @@ def warm_up() -> None:
     except (FileNotFoundError, IndexMismatch) as exc:
         log.error("index unavailable: %s", exc)
         return
-    log.info("index loaded: %d images, %d vectors, %d products, pipeline %s (%.0f ms)",
+    log.info("index loaded: %d tiles, %d vectors, %d categories, pipeline %s (%.0f ms)",
              m.n_images, int(m.vectors.shape[0]),
              len({r["product"] for r in m.references}),
              m.meta.get("pipeline_version"), (time.perf_counter() - t) * 1000)

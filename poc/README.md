@@ -6,6 +6,33 @@ in the product is ordinary work; this is the part that could fail.
 
 Runs entirely locally. No auth, no cloud, no Postgres.
 
+## The unit of identity is the file
+
+`Tiles/<SIZE>/<CATEGORY>/<file>` — exactly three levels. **Every file inside a
+category folder is a different tile, and each tile has exactly one reference
+image.** 381 files = 381 tiles, in 76 category folders; 96% of them sit in
+folders holding 2 to 26 siblings.
+
+This corrects an earlier model in which `size + category` was the "product" and
+the files inside were "faces" of it. Consequences, because they reach further
+than they look:
+
+- **Accuracy is scored against the exact file.** A candidate from the right
+  folder but the wrong file is a miss. The old scoring counted it as a hit and
+  overstated top-3 by about 9 points.
+- **There is no leave-one-out eval.** A tile has one reference image, so
+  removing it deletes the only correct answer rather than forcing
+  generalisation. `make eval` is now a robustness upper bound, not a
+  generalisation test — and that makes `make eval-real` the only number that
+  decides anything.
+- **Candidates are never deduplicated by category.** Three candidates from
+  `45X90/POLISH` are three distinct tiles competing on merit. Collapsing them
+  hides correct answers.
+
+`tests/test_search_filters.py::TestTileIsTheUnitOfIdentity` is the regression
+guard. Numbers recorded before this correction are not comparable to anything
+below.
+
 ## Run it
 
 ```bash
@@ -106,7 +133,10 @@ POC choices are the de facto production spec until someone argues otherwise.
 | Views per reference | 16 (4 clean rotations + 12 randomized crops) | See below. |
 | Rotation invariance | baked into the **index** | Both places work; index cost is one-time and offline, query cost is per-scan and user-facing. |
 | Query views | **1** (full frame) | A second centre-zoom view measured *worse* and doubled latency — see below. |
-| Candidates shown | **10** (`server.DISPLAY_K`), 20 returned, rest behind an expander | Independent of `search.TOP_K`, which stays 3 — see below. |
+| Candidates shown | **3** (`server.DISPLAY_K`) that clear the match bar, 20 returned, rest above the bar behind an expander | Independent of `search.TOP_K`, which stays 3 — see below. |
+| Match bar | **0.50** (`server.MATCH_FLOOR`, `TILEMATCH_FLOOR` to override) | Trims the tail off the results screen; inert at 0.50 on this catalogue. Not a confidence signal — the correct and wrong score distributions overlap almost entirely. See below. |
+| Match percentage | **shown** (`server.SHOW_SCORE`, `TILEMATCH_SHOW_SCORE=0` to hide) | Display only; the score is always in the API and the log. See below. |
+| Size filter | staff-selectable, default **All sizes** | The one attribute a photo cannot carry and the person holding the tile knows. Largest measured accuracy lever in the POC. |
 | Reference view | 1280px q82, **pre-generated**, 300 KB budget | Building on demand meant decoding a 93 MB original — 1–3.5 s of spinner. |
 | Decode cap | long edge 2048 | Deterministic, applied identically on both paths so it cannot become an asymmetry. |
 | Pipeline stamp | `PIPELINE_VERSION` + config hash in `meta.json` | Search refuses an index built with different preprocessing. See open questions. |
@@ -284,10 +314,98 @@ against this catalogue of 131 references:
 most of the catalogue and buries the answer. The scores are ranking signals, not
 calibrated probabilities, and the absolute value drifts with the query.
 
-So the API returns the top 20, the UI shows 10, and an expander reveals the rest
-that clear 0.4 — the tail gets trimmed, the ranking still decides. If a
-calibrated threshold is ever wanted, it has to be fitted against real photos and
-expressed relative to the top score, not as an absolute.
+So the API returns the top 20, the UI shows up to three that clear the match
+bar, and an expander reveals the rest above it — the tail gets trimmed, the
+ranking still decides. If a calibrated threshold is ever wanted, it has to be
+fitted against real photos and expressed relative to the top score, not as an
+absolute.
+
+### What the match bar does
+
+`server.MATCH_FLOOR` hides candidates below it from the results screen. **The
+default is currently 0.50**, which on this catalogue trims nothing at all — every
+scan still shows three. Read the bar as a tail trim, not as confidence, because
+on the 381-tile synthetic eval the two score distributions are almost
+indistinguishable:
+
+| top-1 candidate | p10 | median | p90 |
+|---|---|---|---|
+| correct (n=212) | 0.806 | **0.918** | 0.966 |
+| wrong (n=169) | 0.814 | **0.907** | 0.988 |
+
+The wrong answers' p10 is *higher* than the correct ones', and their p90 is
+higher too. What the bar costs and buys at each setting:
+
+| bar | correct answers kept | wrong answers still shown | scans left with nothing |
+|---|---|---|---|
+| **0.50** (default) | **100%** | **100%** | **0%** |
+| 0.70 | 98% | 99% | 1% |
+| 0.80 | 91% | 92% | 9% |
+| 0.90 | 64% | 54% | 40% |
+
+At 0.50 the bar is inert on this catalogue — nothing scores below it, so the
+screen always shows three. At 0.80 it keeps 91% of correct answers and 92% of
+wrong ones, which is still very nearly a no-op on the ranking. That is what a bar
+does here: it shortens the list and keeps obviously-unrelated tiles off the
+screen, but it does **not** make what remains more likely to be right, and it
+must never be presented to staff as though it did. Raising it begins to
+discriminate — at 0.90 the wrong-answer rate finally drops faster than the
+correct one — but it costs 36% of all correct answers to get there.
+
+Set `TILEMATCH_FLOOR` to move it without a code edit — `TILEMATCH_FLOOR=0.9 make
+serve` — which is also how to try a setting before changing the default. It is a display decision, not a pipeline one, so changing it does **not**
+invalidate the index the way anything in `vision.py` would.
+
+The sharpest demonstration that the bar is not a confidence signal: a JPEG of
+pure random noise, which is not a tile at all, still returns two candidates above
+0.80 (best 0.826). The bar cannot tell "wrong tile" from "not a tile".
+
+The same caveat applies to the percentage on each candidate card, which is the
+cosine similarity rounded — 92% and 91% are the medians of the *correct* and
+*wrong* distributions above, so the number separates candidates from each other
+and says nothing about whether any of them is right. The note under the results
+says so on screen, because a bare percentage next to a tile code will otherwise
+be read as confidence.
+
+**The percentage is a toggle**, `server.SHOW_SCORE`, on by default:
+
+```bash
+TILEMATCH_SHOW_SCORE=0 make serve     # hide it
+TILEMATCH_SHOW_SCORE=1 make serve     # show it (default)
+```
+
+It is a setting rather than a decision because the number cuts both ways — useful
+for comparing the three candidates against each other, misleading as confidence
+in any one of them — and which risk dominates depends on who is holding the
+phone. Turning it off also hides the explanatory sentence under the results,
+since that sentence only exists to qualify the number.
+
+Display only: the score stays in the API response and the server log either way,
+so hiding it from staff does not blind anyone debugging a scan. Like
+`MATCH_FLOOR`, the toggle is folded into `build_stamp()` — a stamp that missed it
+would report "current" while the page showed something else.
+
+Because a bar can legitimately leave nothing on screen, the empty state offers
+**Show the closest matches anyway** as an explicit tap. It is opt-in rather than
+automatic: CLAUDE.md's rule is *never one confident answer*, and silently
+back-filling three would turn "nothing was close" into "here are three", which
+is the failure mode the rule exists to prevent.
+
+### Choosing the size before the scan
+
+The scan screen has a size picker, defaulting to All sizes and remembered in
+`localStorage` between scans. Choosing one restricts scoring to references of
+that size before ranking — a hard filter in `Matcher.score_images`, not a
+re-rank, because a 60X30 tile is never the answer to a scan declared 45X90.
+
+This is the largest accuracy lever in the POC, and it is not a model change: it
+is the one attribute a photo cannot carry and the person holding the tile always
+knows. See "Accuracy" below for the measured effect.
+
+The cost is symmetrical. A *mis*-declared size makes the true product
+unreachable — no amount of ranking recovers from it — which is why the hint text
+tells staff to set it back to All sizes when unsure, and why the eval flag
+`--size-filter` is documented as an upper bound rather than a prediction.
 
 **`server.DISPLAY_K` and `search.TOP_K` are deliberately separate.** `TOP_K`
 stays at 3 because `evaluate.py` scores against it; raising it to match the
@@ -318,22 +436,30 @@ Deliberate, and each one is a POC-scope call rather than a disagreement:
    procedural ("state the re-index in the PR"). This POC stamps
    `PIPELINE_VERSION` and a config hash into the index and refuses to search a
    mismatched one; production should carry the same stamp on the row.
-3. **`30X90/ARKE` has no usable image.** Both of its files are zero-byte, so the
-   product does not exist in the index at all — 36 products, not 37. Someone
+3. **`30X90/ARKE` has no usable image.** Both of its files are zero-byte, so
+   those tiles do not exist in the index at all — 36 categories, not 37. Someone
    needs to re-export it.
-4. **`30X90/Untitled folder` has no design name.** Its 11 tiles are indexed with
-   design `UNKNOWN` and flagged in the ingest report. Face numbers 279 and 281
+4. **`30X90/Untitled folder` has no category name.** Its 11 tiles are indexed
+   with category `UNKNOWN` and flagged in the ingest report. Codes 279 and 281
    also appear in `ARKE`, which suggests a link, but that is an inference the
    data does not state — so nothing infers it.
-5. **15 files have no recoverable face number** (the dash-delimited `FLUTE`
-   convention, e.g. `RC-001-OHA-156-MA-J2`). The code is kept and returned; only
-   the face field is null.
+5. **15 files have no recoverable trailing number** (the dash-delimited `FLUTE`
+   convention, e.g. `RC-001-OHA-156-MA-J2`). The code is kept and returned, and
+   the code alone identifies the tile, so nothing is lost — only the `face`
+   display hint is null.
+6. **Are any two files ever the same physical tile?** Rocell confirmed each file
+   is a different tile, which is what this POC now implements. If that ever turns
+   out to have exceptions — the same tile scanned twice, say — the eval will
+   score those as misses when the app was right. Nothing in the file names would
+   reveal it; it needs a person who knows the catalogue.
 
 ## What the source data actually is
 
 Worth recording, because `CLAUDE.md` is wrong about some of it:
 
-- 133 files, **131 usable**, 36 products across 3 size folders.
+- 133 files, **131 usable** — i.e. 131 tiles — in 36 category folders across 3
+  size folders. (The current index is a later, larger export: 381 tiles in 76
+  category folders across 4 sizes.)
 - 123 `.jpg` + **10 `.tif`**. TIFF is not mentioned anywhere in the planning docs.
 - 384 KB to **96 MB**; 672×672 up to **14457×4819**. `CLAUDE.md` says
   "2–6.5 MB" — wrong by more than an order of magnitude.
@@ -343,20 +469,26 @@ Worth recording, because `CLAUDE.md` is wrong about some of it:
   invariance is not optional.
 - **Five** filename conventions coexist, not the two `CLAUDE.md` describes.
   All five are pinned in `tests/test_catalog.py`.
-- Face counts are lopsided: `45X90/POLISH` has 22, 11 products have exactly 1.
+- Folder sizes are lopsided: `45X90/POLISH` holds 22 tiles, 11 categories hold
+  exactly 1. This is why "one image per tile" was easy to mistake for "many faces
+  per product" — a 22-file folder looks like a range until you check the codes.
 
 ### Accuracy falls as the catalogue grows
 
 The clearest scaling signal so far, measured on the same pipeline as the
 catalogue roughly doubled:
 
-| catalogue | products | top-1 | top-3 |
+| catalogue | categories | top-1 | top-3 |
 |---|---|---|---|
 | 131 images | 36 | 65.6% | **79.5%** |
 | 381 images | 76 | 56.3% | **70.0%** |
 
-Nothing about the pipeline changed between these — only the number of things it
-has to tell apart. Doubling the catalogue cost ~9 points of top-3.
+⚠ **Both rows were produced by the old leave-one-out harness with loose
+`size + category` scoring, and cannot be reproduced.** The trend is probably
+real — nothing about the pipeline changed between them, only the number of
+things it has to tell apart — but the magnitude is not trustworthy, and there is
+no honest way to recompute the 131-image row without rebuilding that catalogue.
+Treat this as a flag to re-measure at scale, not as a result.
 
 Production targets a far larger catalogue, so this is the number to watch, and
 it is an argument for measuring against real photos at realistic scale before
@@ -364,6 +496,58 @@ committing to the approach. A 224px global embedding may simply not have the
 capacity to separate thousands of near-identical textures; if that holds, the
 answer is higher input resolution or local-feature re-ranking on the top-N, not
 more augmentation.
+
+### Declaring the size recovers most of that loss
+
+`make eval-size` runs the same 381 queries with each one restricted to its own
+size, which is what the size picker does when staff get it right. Exact-tile
+scoring:
+
+| | top-1 | top-3 |
+|---|---|---|
+| all sizes | 55.6% | 78.7% |
+| size declared | **59.1%** | **81.9%** |
+
+**+3.2 points of top-3.** Worth having — it is free at scan time, costs no model
+change, no re-index and no extra inference — but it is a modest gain, not the
+transformation an earlier draft of this file claimed. That draft reported +9.8,
+and almost all of the difference was the loose `size + category` scoring, not the
+filter.
+
+The gain tracks how much of the catalogue the filter removes from contention:
+
+| size | tiles | top-3 all sizes | top-3 size declared | delta |
+|---|---|---|---|---|
+| 60X30 | 250 | 80.0% | 81.2% | +1.2 |
+| 45X90 | 75 | 78.7% | 86.7% | **+8.0** |
+| 40X40 | 36 | 77.8% | 83.3% | +5.6 |
+| 30X90 | 20 | 65.0% | 70.0% | +5.0 |
+
+60X30 is two thirds of this catalogue, so declaring it rules out almost nothing
+and buys almost nothing — which is the thing to carry into production. **The
+lever is catalogue narrowing, not size as such.** Any attribute staff can supply
+at scan time and the photo cannot carry pays out in proportion to how much of the
+catalogue it eliminates: size first, then finish (matt/gloss/polished), then room
+or collection. Once 60X30 alone runs to thousands of tiles, size will buy as
+little there as it does here, and a second filter will be needed.
+
+This is an upper bound on the feature, not a prediction. It assumes the declared
+size is correct; a mis-declaration makes the true tile unreachable rather than
+merely lower-ranked, and no re-ranking recovers from it. That asymmetry is why
+the picker defaults to All sizes and says so on screen.
+
+### Why candidates are never deduplicated (OQ-12, settled)
+
+An earlier draft measured "fill the three slots with three distinct products
+instead of three top-ranked images" and reported +5.4 points. **That measurement
+was an artefact of the wrong identity model and has been removed.** Under the
+correct model those "products" are category folders, and collapsing candidates
+by folder would merge distinct tiles — discarding correct answers, not
+duplicates. Three candidates from `45X90/POLISH` are three different tiles, and
+all three deserve a slot.
+
+This settles PRD OQ-12 in the POC: do not deduplicate. `search.Matcher.search`
+says so, and `TestTileIsTheUnitOfIdentity` enforces it.
 
 ## Findings
 
@@ -424,7 +608,9 @@ first fix passed its own green-cast test while still being badly wrong.
 ### What the synthetic eval can and cannot see
 
 Correcting the colour moved synthetic accuracy *down* slightly, from 82.0% to
-79.5% top-3 — three queries, inside the noise band.
+79.5% top-3 — three queries, inside the noise band. (Both figures predate the
+identity correction and the harness that produced them is gone; the reasoning
+below is unaffected, since it turns on what the eval can see, not on the value.)
 
 That is not evidence against the fix, because **the synthetic eval is structurally
 blind to colour correctness**. Query and reference are derived from the same
@@ -536,21 +722,35 @@ Three modes, in ascending order of how much they mean:
 
 | Mode | What it proves |
 |---|---|
-| `make eval-sanity` | The pipeline is wired up. Query is in the index. Should be ~100%. **Never quote this as accuracy.** |
-| `make eval` | Generalisation across faces — the query image's vectors are removed before searching, so a hit means a *different* face of the same product was retrieved. Still a warped studio asset, not a photo. |
+| `make eval-sanity` | The pipeline is wired up. Query is the unmodified reference. Should be ~100%. **Never quote this as accuracy.** |
+| `make eval` | Robustness: the reference image degraded by `synthesize_query` — lighting, white balance, blur, perspective, JPEG — then matched against an index that still holds it. A **loose upper bound**, because a warp of image X is far closer to X than any photo of the physical tile. |
+| `make eval-size` | The same, with each query restricted to its own size. |
 | `make eval-real` | The only number that decides anything. |
 
-Correctness is scored at **Product** (size + design) granularity, per the PRD: a
-scan counts as correct if any of the three candidates matches the true product,
-even when another candidate is a different face of it. Both top-1 and top-3 are
-reported; top-3 is the one that reflects real usefulness.
+**There is no leave-one-out mode, and its absence is the point.** A tile has
+exactly one reference image, so excluding it removes the only correct answer
+rather than forcing generalisation. Nothing in the synthetic modes tests
+generalisation to an unseen view of a tile any more — only `make eval-real` can.
+
+Correctness is scored against **the exact tile — the file**. A candidate from the
+right category folder but the wrong file is a miss. The harness also prints a
+`same-folder` number for contrast; it is a diagnostic showing how much looser the
+old scoring was, and must never be quoted as accuracy. Both top-1 and top-3 are
+reported; top-3 is the one that reflects real usefulness, since staff verify
+against the reference image.
 
 To run the real eval, drop phone photos in as:
 
 ```
-queries/<SIZE>/<DESIGN>/<anything>.jpg
-queries/45X90/CREMA MARMOL/IMG_0042.jpg
+queries/<SIZE>/<CATEGORY>/<CODE>/<anything>.jpg
+queries/45X90/CREMA MARMOL/RP.CMA.0001DJ.SM.0T/IMG_0042.jpg
 ```
+
+The `<CODE>` level is required, and is what makes strict scoring possible —
+without it a photo only says which folder it came from. It is the reference file
+name with `Copy of ` and the extension stripped: exactly what the scan screen
+shows as the answer. Photos left at the old three-level depth are skipped with a
+warning rather than silently mis-scored.
 
 Both eval modes also write `index/failures-<mode>.jpg` — each miss as a row of
 query beside its three candidates. These textures are subtle enough that a miss

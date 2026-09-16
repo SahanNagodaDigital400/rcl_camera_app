@@ -39,12 +39,24 @@ TOP_K = 3
 QUERY_ZOOMS = (1.0,)
 
 
+class UnknownSize(ValueError):
+    """A size filter that matches nothing in the index."""
+
+
 class IndexMismatch(RuntimeError):
     pass
 
 
 @dataclass
 class Candidate:
+    """One reference image, which is one tile.
+
+    The file IS the unit of identity — `Tiles/<SIZE>/<CATEGORY>/<file>` holds one
+    image per tile, and every file in a category folder is a different tile.
+    `category` is therefore a grouping (`45X90 / POLISH`), not a product: the 22
+    files in that folder are 22 tiles, not 22 faces of one.
+    """
+
     rank: int
     ref_id: int
     score: float
@@ -52,7 +64,7 @@ class Candidate:
     size: str
     design: str
     face: str | None
-    product: str
+    category: str
     thumb: str
     relpath: str
     design_unknown: bool
@@ -66,7 +78,7 @@ class Candidate:
             "size": self.size,
             "design": self.design,
             "face": self.face,
-            "product": self.product,
+            "category": self.category,
             "thumb": self.thumb,
             "design_unknown": self.design_unknown,
         }
@@ -101,6 +113,30 @@ class Matcher:
         self.owners: np.ndarray = data["owners"]
         self.n_images = len(self.references)
 
+        # Size is the one attribute a photo cannot carry but a human in front of
+        # the tile always knows, so it is the cheapest accuracy lever available:
+        # declaring it removes every reference of another size from contention
+        # before ranking. Held as an array so filtering is a mask, not a loop.
+        self.ref_sizes = np.array([r["size"] for r in self.references])
+
+    def sizes(self) -> list[dict]:
+        """Sizes present in the index, largest catalogue first.
+
+        Drives the picker in the UI — hard-coding a list would drift from the
+        index the moment the catalogue changes.
+        """
+        counts: dict[str, dict] = {}
+        for r in self.references:
+            # meta.json's "product" key predates the correction that each file is
+            # its own tile. The stored name is kept so existing indexes still
+            # load; everything above this line calls it what it is, a category.
+            e = counts.setdefault(r["size"], {"size": r["size"], "tiles": 0, "categories": set()})
+            e["tiles"] += 1
+            e["categories"].add(r["product"])
+        out = [{"size": e["size"], "tiles": e["tiles"], "categories": len(e["categories"])}
+               for e in counts.values()]
+        return sorted(out, key=lambda e: (-e["tiles"], e["size"]))
+
     def embed_query(self, img: Image.Image) -> np.ndarray:
         """Photo -> (V, 1536). Same preprocess+embed as indexing; only the
         framing differs, which is TTA, not a second pipeline."""
@@ -117,6 +153,7 @@ class Matcher:
         img: Image.Image,
         exclude: set[int] | None = None,
         timings: dict[str, float] | None = None,
+        size: str | None = None,
     ) -> np.ndarray:
         """Per-reference-image similarity, max-pooled over query views and the
         multiple stored vectors of each reference.
@@ -124,6 +161,11 @@ class Matcher:
         Pass `timings` to have the embed and rank phases recorded in ms — the
         two costs are wildly different (embedding is ~99% of a scan) and a single
         total hides that.
+
+        `size` restricts scoring to references of that size. It is a hard filter,
+        not a re-rank: a 60X30 tile is never the answer to a scan the user has
+        declared to be 45X90, and leaving those references in the running only
+        gives them a chance to outrank the truth.
         """
         t = time.perf_counter()
         qv = self.embed_query(img)
@@ -138,6 +180,11 @@ class Matcher:
         scores = np.full(self.n_images, -np.inf, dtype=np.float32)
         np.maximum.at(scores, self.owners, best_per_vector)
 
+        if size is not None:
+            keep = self.ref_sizes == size
+            if not keep.any():
+                raise UnknownSize(f"no references of size {size!r} in this index")
+            scores[~keep] = -np.inf
         if exclude:
             scores[list(exclude)] = -np.inf
         if timings is not None:
@@ -150,15 +197,19 @@ class Matcher:
         k: int = TOP_K,
         exclude: set[int] | None = None,
         timings: dict[str, float] | None = None,
+        size: str | None = None,
     ) -> list[Candidate]:
         """Top k candidates, ranked purely by similarity.
 
-        Not deduplicated by product (PRD OQ-12): two or three candidates may be
-        different faces of the same product, and for a shade-varying range like
-        45X90/POLISH that is the useful answer, not a bug.
+        Never deduplicated by category. Each file in a category folder is a
+        different tile, so three candidates from 45X90/POLISH are three distinct
+        answers competing on merit — collapsing them would hide correct ones.
+
+        Fewer than k come back when the index cannot supply k — a size filter
+        that leaves only two references must return two, never two plus padding.
         """
-        scores = self.score_images(img, exclude, timings)
-        order = np.argsort(-scores)[:k]
+        scores = self.score_images(img, exclude, timings, size)
+        order = [i for i in np.argsort(-scores)[:k] if np.isfinite(scores[i])]
         out = []
         for rank, idx in enumerate(order, 1):
             r = self.references[int(idx)]
@@ -171,7 +222,7 @@ class Matcher:
                     size=r["size"],
                     design=r["design"],
                     face=r.get("face"),
-                    product=r["product"],
+                    category=r["product"],
                     thumb=r["thumb"],
                     relpath=r["relpath"],
                     design_unknown=r.get("design_unknown", False),
@@ -179,12 +230,13 @@ class Matcher:
             )
         return out
 
-    def search_path(self, path: str | Path, k: int = TOP_K) -> list[Candidate]:
-        return self.search(vision.load_image(path), k)
+    def search_path(self, path: str | Path, k: int = TOP_K,
+                    size: str | None = None) -> list[Candidate]:
+        return self.search(vision.load_image(path), k, size=size)
 
 
 def format_candidates(cands: list[Candidate], elapsed: float | None = None) -> str:
-    lines = ["", "  top 3 candidates", "  " + "─" * 68]
+    lines = ["", f"  top {len(cands)} candidate(s)", "  " + "─" * 68]
     for c in cands:
         design = c.design + ("  ⚠ unclassified" if c.design_unknown else "")
         lines.append(f"   {c.rank}.  {c.score:.4f}   {c.size:<7} {design}")
@@ -204,11 +256,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("image", type=Path)
     p.add_argument("--index", type=Path, default=DEFAULT_INDEX)
     p.add_argument("--json", action="store_true")
+    p.add_argument("--size", default=None,
+                   help="restrict to one size, e.g. 45X90 — use when the tile is "
+                        "in hand and the size is known")
     a = p.parse_args(argv)
 
     m = Matcher(a.index)
+    if a.size:
+        known = [e["size"] for e in m.sizes()]
+        if a.size not in known:
+            p.error(f"unknown size {a.size!r}; index has {', '.join(known)}")
     t = time.time()
-    cands = m.search_path(a.image)
+    cands = m.search_path(a.image, size=a.size)
     elapsed = time.time() - t
 
     if a.json:
