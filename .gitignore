@@ -1,15 +1,41 @@
+# Agent tooling
 .bmad-loop/runs/
 .bmad-loop/archive/
 .bmad-loop/cache/
 .bmad-loop/policy.toml
 _bmad/render/
+
+# Proof of concept (standalone, own venv and data)
 poc/Tiles/
+poc/Tiles-prepared/
 poc/index/
 poc/models/
 poc/queries/
+poc/certs/
 poc/.venv/
+
+# Python
 __pycache__/
 .pytest_cache/
-poc/Tiles-prepared/
-poc/certs/
+.ruff_cache/
+.venv/
+*.egg-info/
+
+# Node / front end
 node_modules/
+dist/
+coverage/
+
+# Secrets — AGENTS.md Policy: never commit or hardcode a secret, test fixtures
+# included. Environment or a secret store only.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Junk
+.DS_Store
+*.log

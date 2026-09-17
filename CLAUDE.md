@@ -46,18 +46,32 @@ infra/             IaC, migrations
 scripts/ingest/    Drive → index ingestion
 ```
 
-## Commands (planned — nothing below exists yet; no `Makefile` in the repo yet)
+## Commands
 
 ```bash
+make setup          # uv workspace venv + apps/web npm install
 make dev            # api + web with hot reload
-make test           # full suite
-make lint           # ruff + eslint + tsc
-make migrate        # apply migrations
-make ingest         # run catalogue ingestion
-make eval           # accuracy harness against held-out scans
+make lint           # ruff check + ruff format --check, oxlint, tsc --noEmit
+make format         # apply ruff's formatting and import fixes
+make test           # full suite (pytest workspace + apps/web vitest)
+make build          # production build of apps/web
 ```
 
-Once these exist: run `make lint` and `make test` before considering any change complete.
+Not implemented yet — each names the story or epic that delivers it and exits non-zero rather
+than reporting success:
+
+```bash
+make migrate        # apply migrations                    -- Story 1.2
+make ingest         # run catalogue ingestion             -- Epic 2
+make eval           # accuracy harness                    -- Epic 2
+```
+
+Run `make lint` and `make test` before considering any change complete.
+
+`make lint` runs **oxlint**, not ESLint: TypeScript 7.0.x no longer exports the compiler API
+`typescript-eslint` is built on, so ESLint cannot lint this stack at all. Full rationale in
+`README.md` ("A note on ESLint"). `poc/` has its own `Makefile` and venv and is outside this
+workspace — none of the targets above touch it.
 
 ## Domain vocabulary
 

@@ -1,0 +1,23 @@
+[project]
+name = "rocell-ingest"
+version = "0.1.0"
+description = "Drive → index batch ingestion (pre-launch write path)"
+requires-python = ">=3.12"
+dependencies = [
+    "shared-schema",
+    "shared-vision",
+]
+
+[project.scripts]
+rocell-ingest = "ingest.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ingest"]
+
+[tool.uv.sources]
+shared-schema = { workspace = true }
+shared-vision = { workspace = true }

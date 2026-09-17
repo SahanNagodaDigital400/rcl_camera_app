@@ -1,0 +1,89 @@
+/* The frame every later screen mounts inside: app bar, an optional nav slot,
+ * and the main region.
+ *
+ * The one breakpoint in the system (--breakpoint-md, 768px) is where the nav
+ * moves from a bottom tab bar to a sidebar and where table density shifts.
+ * CSS media queries cannot read a custom property, so the number is written
+ * out here and `--breakpoint-md` in tokens.css is its single reference —
+ * change both together.
+ *
+ * No nav is rendered yet: nav items are role-conditional and arrive with auth
+ * (Story 1.3+). This file establishes only the frame they slot into. */
+
+/* `position: relative` is load-bearing: `.skipLink` below is absolutely
+ * positioned and would otherwise resolve against the initial containing block,
+ * so it would drift the moment anything above it gained a position or a
+ * transform. */
+.shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  background: var(--color-background);
+}
+
+.body {
+  flex: 1;
+  display: grid;
+  /* Mobile: one column. The nav slot is the bottom tab bar, laid out as a row
+   * beneath `main` once it exists. */
+  grid-template-columns: 1fr;
+  grid-template-areas: 'main';
+}
+
+.main {
+  grid-area: main;
+  /* Mobile scan surfaces get the generous spacing tier. */
+  padding: var(--space-6) var(--space-4);
+}
+
+@media (min-width: 768px) {
+  .body {
+    /* Desktop/tablet: the sidebar slot takes the leading column. */
+    grid-template-columns: auto 1fr;
+    grid-template-areas: 'nav main';
+  }
+
+  .main {
+    /* Desktop admin surfaces get the denser tier. */
+    padding: var(--space-8) var(--space-6);
+  }
+}
+
+/* Skip link: parked out of sight until it takes keyboard focus, then it lands
+ * on the main region. The first tab stop on every screen. */
+/* The one link in the app that is an affordance rather than prose, so it opts
+ * into the touch-target floor global.css exposes as `.touchTarget`. */
+.skipLink {
+  composes: touchTarget from global;
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  /* index.html opts into viewport-fit=cover, so the shell's own box extends
+   * under the notch and the rounded corners. The app bar already offsets for
+   * that; this is the first tab stop on every screen and would otherwise land
+   * underneath the status bar the moment it takes focus. */
+  margin: calc(var(--space-2) + env(safe-area-inset-top)) var(--space-2) var(--space-2)
+    calc(var(--space-2) + env(safe-area-inset-left));
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-card);
+  color: var(--color-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  text-decoration: none;
+  transform: translateY(var(--offscreen-shift));
+}
+
+.skipLink:focus {
+  transform: translateY(0);
+}
+
+/* The skip link's target takes focus programmatically, so it must not paint a
+ * focus ring as though it were interactive. */
+.main:focus {
+  outline: none;
+}

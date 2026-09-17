@@ -1,0 +1,107 @@
+/*
+ * Base reset and base typography, wired entirely to src/styles/tokens.css.
+ * No component invents a base style; this file sets the floor and every
+ * component layers tokens on top of it.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--color-background);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  font-weight: var(--type-body-weight);
+  line-height: var(--type-body-line);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+}
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
+  font-size: var(--type-code-size);
+  font-weight: var(--type-code-weight);
+  line-height: var(--type-code-line);
+}
+
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Every interactive control clears the touch-target floor on BOTH axes — a
+ * min-height alone is a 44x1 target, which is not the constraint.
+ *
+ * min-height does not apply to a non-replaced inline box, so a control that is
+ * inline by default needs a block-ish display first.
+ *
+ * Deliberately NOT in this list:
+ *  - `a[href]`. It would catch every link in running prose, turning it into a
+ *    44px-tall inline-flex box that cannot wrap across lines. A link that is a
+ *    tap affordance rather than prose opts in with `.touchTarget` below.
+ *  - checkbox and radio inputs, which are drawn by the platform and would be
+ *    stretched rather than enlarged. They get their target from the label that
+ *    wraps them, which arrives with the first form (Story 1.3).
+ */
+button,
+[role='button'],
+select,
+summary,
+.touchTarget {
+  min-height: var(--touch-target-min);
+  min-width: var(--touch-target-min);
+  display: inline-flex;
+  align-items: center;
+}
+
+input:not([type='checkbox'], [type='radio'], [type='hidden']) {
+  min-height: var(--touch-target-min);
+}
+
+/* And carries a visible focus state — accent, never removed. */
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--color-accent);
+  outline-offset: var(--space-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

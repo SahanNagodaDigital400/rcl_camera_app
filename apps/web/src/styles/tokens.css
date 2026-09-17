@@ -1,0 +1,133 @@
+/*
+ * Design tokens — the single styling source for apps/web.
+ *
+ * UX-DR1: this is the ONLY file in apps/web/src that may hold a literal value.
+ * Every component references var(--…) and nothing else. A guard test
+ * (src/__tests__/no-raw-values.test.ts) fails the build on any colour literal
+ * found elsewhere, and src/__tests__/tokens.test.ts re-reads DESIGN.md and
+ * checks every value below against it, so a drift here is a failing test rather
+ * than a design review comment.
+ *
+ * Source of truth:
+ *   _bmad-output/planning-artifacts/ux-designs/ux-rcl_camera_app-2026-09-08/DESIGN.md
+ * Values are transcribed verbatim from its YAML frontmatter. Adding a token is
+ * fine; contradicting a DESIGN.md value is not.
+ */
+
+:root {
+  /* --- Colour (11) ---------------------------------------------------------
+   * Navy is chrome, orange is the single action per screen, red is destructive
+   * and nothing else. Never introduce a second accent hue.
+   */
+  --color-background: #FAFAF8;
+  --color-surface: #FFFFFF;
+  --color-primary: #131B5E;
+  --color-primary-foreground: #FFFFFF;
+  --color-accent: #F58025;
+  /* Navy on orange is 5.94:1 and passes AA. White on orange is 2.63:1 and
+   * fails — that is why this is navy, and it must never become white. */
+  --color-accent-foreground: #131B5E;
+  --color-destructive: #E30425;
+  --color-destructive-foreground: #FFFFFF;
+  --color-border: #ECE6DB;
+  --color-text: #181830;
+  /* 4.65:1 on --color-background — passes AA narrowly. Do not lighten this or
+   * darken the background without re-checking the pair. */
+  --color-muted-text: #736F82;
+
+  /* --- Font families -------------------------------------------------------
+   * Self-hosted via @fontsource (imported once in src/main.tsx). Each family
+   * declares a real fallback stack (UX-DR2) so the shell is legible before the
+   * web fonts land and if they never do.
+   */
+  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* --- Type roles (6) ------------------------------------------------------
+   * Consumed as a group: a component takes a whole role, never four loose
+   * values. `display` is for the single most important word or number on a
+   * screen; `code` is for Codes (RP.CMA.0001DJ.SM.0T), where 0/O and 1/I must
+   * not be confusable.
+   */
+  --type-display-size: 28px;
+  --type-display-weight: 800;
+  --type-display-line: 1.15;
+  --type-display-tracking: -0.01em;
+
+  --type-heading-size: 18px;
+  --type-heading-weight: 700;
+  --type-heading-line: 1.3;
+
+  --type-body-size: 16px;
+  --type-body-weight: 400;
+  --type-body-line: 1.5;
+
+  --type-label-size: 14px;
+  --type-label-weight: 600;
+  --type-label-line: 1.4;
+
+  --type-caption-size: 13px;
+  --type-caption-weight: 500;
+  --type-caption-line: 1.4;
+
+  --type-code-size: 14px;
+  --type-code-weight: 500;
+  --type-code-line: 1.4;
+
+  /* --- Radii ---------------------------------------------------------------
+   * sm: buttons and inputs. md: cards. lg: full-screen sheets. full: badges and
+   * status pills only — never a button, which would read consumer/playful.
+   */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+  /* DESIGN.md's DEFAULT is md. Referenced, not restated, so the two cannot be
+   * changed apart. */
+  --radius: var(--radius-md);
+
+  /* --- Spacing (4px scale) ------------------------------------------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* --- Elevation -----------------------------------------------------------
+   * One level, navy-tinted rather than grey. There is no second tier: a
+   * modal or sheet uses a scrim instead of a heavier shadow.
+   */
+  --elevation-card: 0 2px 8px rgba(19, 27, 94, 0.08);
+  --scrim: rgba(24, 24, 48, 0.55);
+
+  /* --- Derived tokens ------------------------------------------------------
+   * Not in DESIGN.md's frontmatter; derived from its prose so components still
+   * hold no literals. Adding is allowed, contradicting is not.
+   */
+
+  /* App bar's accent stripe: DESIGN.md specifies 3–4px. */
+  --app-bar-stripe-height: 4px;
+  /* Minimum interactive target. Non-negotiable floor for anything tappable. */
+  --touch-target-min: 44px;
+  /* Focus ring — accent, so it is unmistakably a focus state and not chrome. */
+  --focus-ring-width: 3px;
+  /* Phosphor icons ship at 20–24px, regular weight only (UX-DR3). */
+  --icon-size: 24px;
+  /* Comfortable reading measure for a block of prose. */
+  --measure-prose: 64ch;
+  /* Parks a skip link out of sight until it takes focus. */
+  --offscreen-shift: -200%;
+
+  /* The one breakpoint in the system: below it, mobile scan surfaces with
+   * generous spacing and a bottom tab bar; at and above it, desktop admin
+   * surfaces with a sidebar and denser table rows. CSS media queries cannot
+   * read a custom property, so `@media (min-width: 768px)` is written out in
+   * each module that needs it and this token is the reference (and what JS
+   * reads if it ever needs the same number). Change both together. */
+  --breakpoint-md: 768px;
+}

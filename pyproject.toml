@@ -1,0 +1,70 @@
+# Root of the Rocell Tile Scanner Python workspace.
+#
+# One virtualenv, one ruff configuration and one pytest configuration for every
+# Python member of the monorepo. `poc/` is deliberately NOT a member: it is a
+# standalone proof of concept with its own venv and its own toolchain pins, and
+# it stays untouched by this workspace.
+
+[project]
+name = "rocell-tile-scanner"
+version = "0.1.0"
+description = "Rocell Tile Scanner — monorepo workspace root"
+requires-python = ">=3.12"
+dependencies = [
+    "rocell-api",
+    "rocell-ingest",
+    "shared-schema",
+    "shared-vision",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28",
+    "pytest>=8.3",
+    "ruff>=0.16",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["apps/api", "scripts/ingest", "shared/schema", "shared/vision"]
+exclude = ["poc"]
+
+[tool.uv.sources]
+rocell-api = { workspace = true }
+rocell-ingest = { workspace = true }
+shared-schema = { workspace = true }
+shared-vision = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# `poc/` is a standalone proof of concept with its own toolchain; the rest are
+# vendored agent tooling and planning artifacts, not application code.
+extend-exclude = [
+    ".agents",
+    ".bmad-loop",
+    ".claude",
+    "_bmad",
+    "_bmad-output",
+    "apps/web",
+    "doc",
+    "poc",
+]
+
+[tool.ruff.lint]
+# E includes E722 (no bare `except`) — AGENTS.md Conventions.
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "apps/api/tests",
+    "scripts/ingest/tests",
+    "shared/schema/tests",
+    "shared/vision/tests",
+    "tests",
+]
+# importlib import mode: the five test directories have no __init__.py, so two
+# files sharing a basename would otherwise collide on sys.modules.
+addopts = "-q --import-mode=importlib --strict-markers --strict-config"

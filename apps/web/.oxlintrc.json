@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "env": {
+    "browser": true,
+    "es2024": true
+  },
+  "plugins": ["react", "typescript", "unicorn"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "rules": {
+    // The automatic JSX runtime (tsconfig "jsx": "react-jsx") compiles JSX
+    // without React in scope, so this rule reports on correct code.
+    "react/react-in-jsx-scope": "off",
+    "no-console": "warn",
+    "eqeqeq": "error"
+  },
+  "ignorePatterns": ["dist", "node_modules"]
+}

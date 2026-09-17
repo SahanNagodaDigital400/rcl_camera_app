@@ -36,7 +36,7 @@ tracking_system: file-system
 story_location: _bmad-output/implementation-artifacts
 development_status:
   epic-1: backlog
-  1-1-project-scaffold-design-token-foundation: backlog
+  1-1-project-scaffold-design-token-foundation: done
   1-2-user-schema-seeded-administrator: backlog
   1-3-admin-provisioned-login: backlog
   1-4-forced-password-change-on-first-login: backlog

@@ -1,0 +1,46 @@
+/* Navy fill, white foreground, accent stripe along the bottom edge — the
+ * "Rocell Bold" signature move. Present on every authenticated screen.
+ * Every value here comes from src/styles/tokens.css. */
+
+/* index.html asks for viewport-fit=cover, so on a notched phone — this
+ * product's primary device — the bar's own box extends under the status bar
+ * and the rounded corners. The safe-area insets are added to its padding so
+ * the content inside it does not. */
+.appBar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: calc(var(--space-4) + env(safe-area-inset-top, 0px));
+  padding-inline-start: calc(var(--space-4) + env(safe-area-inset-left, 0px));
+  padding-inline-end: calc(var(--space-4) + env(safe-area-inset-right, 0px));
+  padding-bottom: calc(var(--space-4) + var(--app-bar-stripe-height));
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.title {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+}
+
+.stripe {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: var(--app-bar-stripe-height);
+  background: var(--color-accent);
+}
