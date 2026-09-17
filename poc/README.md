@@ -133,9 +133,10 @@ POC choices are the de facto production spec until someone argues otherwise.
 | Views per reference | 16 (4 clean rotations + 12 randomized crops) | See below. |
 | Rotation invariance | baked into the **index** | Both places work; index cost is one-time and offline, query cost is per-scan and user-facing. |
 | Query views | **1** (full frame) | A second centre-zoom view measured *worse* and doubled latency — see below. |
-| Candidates shown | **3** (`server.DISPLAY_K`) that clear the match bar, 20 returned, rest above the bar behind an expander | Independent of `search.TOP_K`, which stays 3 — see below. |
+| Candidates shown | **3** (`server.DISPLAY_K`) that clear the match bar, **all** of them when more than three clear the expand bar, 20 returned, rest behind an expander | Independent of `search.TOP_K`, which stays 3 — see below. |
 | Match bar | **0.50** (`server.MATCH_FLOOR`, `TILEMATCH_FLOOR` to override) | Trims the tail off the results screen; inert at 0.50 on this catalogue. Not a confidence signal — the correct and wrong score distributions overlap almost entirely. See below. |
-| Match percentage | **shown** (`server.SHOW_SCORE`, `TILEMATCH_SHOW_SCORE=0` to hide) | Display only; the score is always in the API and the log. See below. |
+| Expand bar | **0.75** (`server.EXPAND_FLOOR`, `TILEMATCH_EXPAND` to override) | Above it, every candidate is shown rather than three. At 0.75 the median scan shows 19 of 20 — long, not selective. See below. |
+| Match percentage | **not shown** | Removed from the UI: a percentage beside a code reads as confidence, and it is not. Still in every API response and log line. See below. |
 | Size filter | staff-selectable, default **All sizes** | The one attribute a photo cannot carry and the person holding the tile knows. Largest measured accuracy lever in the POC. |
 | Reference view | 1280px q82, **pre-generated**, 300 KB budget | Building on demand meant decoding a 93 MB original — 1–3.5 s of spinner. |
 | Decode cap | long edge 2048 | Deterministic, applied identically on both paths so it cannot become an asymmetry. |
@@ -314,8 +315,8 @@ against this catalogue of 131 references:
 most of the catalogue and buries the answer. The scores are ranking signals, not
 calibrated probabilities, and the absolute value drifts with the query.
 
-So the API returns the top 20, the UI shows up to three that clear the match
-bar, and an expander reveals the rest above it — the tail gets trimmed, the
+So the API returns the top 20, the UI shows what `server.display_count` decides,
+and an expander reveals the rest above the match bar — the tail gets trimmed, the
 ranking still decides. If a calibrated threshold is ever wanted, it has to be
 fitted against real photos and expressed relative to the top score, not as an
 absolute.
@@ -360,36 +361,100 @@ The sharpest demonstration that the bar is not a confidence signal: a JPEG of
 pure random noise, which is not a tile at all, still returns two candidates above
 0.80 (best 0.826). The bar cannot tell "wrong tile" from "not a tile".
 
-The same caveat applies to the percentage on each candidate card, which is the
-cosine similarity rounded — 92% and 91% are the medians of the *correct* and
-*wrong* distributions above, so the number separates candidates from each other
-and says nothing about whether any of them is right. The note under the results
-says so on screen, because a bare percentage next to a tile code will otherwise
-be read as confidence.
+### Why the percentage is not on screen
 
-**The percentage is a toggle**, `server.SHOW_SCORE`, on by default:
+Each candidate card used to carry the cosine similarity as a percentage, behind a
+toggle (`TILEMATCH_SHOW_SCORE`) that defaulted to on. **It is now removed from
+the UI outright.**
 
-```bash
-TILEMATCH_SHOW_SCORE=0 make serve     # hide it
-TILEMATCH_SHOW_SCORE=1 make serve     # show it (default)
+The reason is the table above: 92% and 91% are the medians of the *correct* and
+*wrong* distributions. A number that is 92 when right and 91 when wrong carries
+essentially no information about whether the tile under it is the answer — but
+printed in large type beside a tile code, it is read as confidence regardless of
+what the caption underneath says. A toggle only moved that risk behind an
+environment variable; whoever is holding the phone still sees whatever the last
+person set. The reference image is what staff actually verify against, and the
+percentage competed with it for attention while adding nothing.
+
+**The score itself is untouched.** It still ranks candidates, still decides
+`above_floor` and `above_expand`, and is still in every `/api/scan` response and
+every server log line:
+
+```
+[0002] done 126 ms = ... -> 45X90 RP.RSS.0023ST.PL.0T (0.957) | 20 above 0.50, 20 above 0.75, showing 20
 ```
 
-It is a setting rather than a decision because the number cuts both ways — useful
-for comparing the three candidates against each other, misleading as confidence
-in any one of them — and which risk dominates depends on who is holding the
-phone. Turning it off also hides the explanatory sentence under the results,
-since that sentence only exists to qualify the number.
+So this removes the number from the staff-facing screen, not from the system —
+nobody debugging a scan is blinded, and `make match --json` prints it as before.
 
-Display only: the score stays in the API response and the server log either way,
-so hiding it from staff does not blind anyone debugging a scan. Like
-`MATCH_FLOOR`, the toggle is folded into `build_stamp()` — a stamp that missed it
-would report "current" while the page showed something else.
+### The expand bar
+
+`server.EXPAND_FLOOR` (default **0.75**, `TILEMATCH_EXPAND` to override) is the
+similarity at or above which the list stops being trimmed to three and every
+qualifying candidate is shown. With the percentage gone, this is the only way the
+score still reaches staff: as **list length** rather than as a number. A long list
+means many references look like the photo; a short one means few did.
+
+The whole rule lives in `server.display_count`, and the server sends the resulting
+count to the page as `show`. The page paints that number and never re-derives the
+rule, so the screen and the log cannot disagree about what staff saw.
+
+| condition | shown |
+|---|---|
+| nothing clears `MATCH_FLOOR` | 0 — the empty state, with the "show the closest anyway" tap |
+| fewer than 3 clear `MATCH_FLOOR` | however many do |
+| 3+ clear `MATCH_FLOOR`, ≤3 clear `EXPAND_FLOOR` | 3 |
+| more than 3 clear `EXPAND_FLOOR` | all of them, up to `MAX_CANDIDATES` (20) |
+
+**Be clear-eyed about what 0.75 does on this catalogue.** Sampling 12 synthetic
+queries against the real index, the median scan has **19 of its top 20 at or above
+0.75** (mean 14.6); two of three spot-checked scans showed all 20. That follows
+directly from the distributions above — 0.75 sits well below where correct and
+wrong separate, so the expanded list is usually long rather than selective. It
+says "much of this catalogue resembles your photo", which is true and rarely
+useful on its own.
+
+Move it without a code edit:
+
+```bash
+TILEMATCH_EXPAND=0.90 make serve      # roughly where the distributions start to separate
+TILEMATCH_EXPAND=1.01 make serve      # disable expansion; pin the screen at three
+```
+
+Reference-image prefetching is capped at the first 3 cards regardless of how many
+are shown — prefetching 20 references is several MB of mobile data for tiles the
+user will mostly never open. The rest load on tap.
+
+Like `MATCH_FLOOR`, both bars are display decisions, not pipeline ones: changing
+either does **not** invalidate the index. Both are folded into `build_stamp()` —
+a stamp that missed one would report "current" while the page showed something
+else.
 
 Because a bar can legitimately leave nothing on screen, the empty state offers
 **Show the closest matches anyway** as an explicit tap. It is opt-in rather than
 automatic: CLAUDE.md's rule is *never one confident answer*, and silently
 back-filling three would turn "nothing was close" into "here are three", which
 is the failure mode the rule exists to prevent.
+
+### Searching the catalogue by name
+
+The scan answers "what is this tile in my hand". A collapsed panel under the
+capture stage answers the different question "I have the code, show me the
+picture" — a half-remembered code, or a code on an order with no physical tile to
+photograph. `GET /api/lookup?q=` is substring matching over the file name, size
+and category, with **all terms required**, so `crema 0008` narrows rather than
+widens. Results are ordered by how well the *code* matched (exact, prefix,
+substring, then folder-only), because the code is the tile's identity.
+
+It runs no inference and touches no vector — it cannot drift from the scan
+pipeline, and it costs one small JSON round trip per keystroke (debounced 200 ms,
+with out-of-order responses discarded). A blank query returns nothing rather than
+the whole catalogue: 381 cards is not a search result, and paging it would be
+building a catalogue browser, which is out of POC scope.
+
+It is deliberately a disclosure rather than a second primary control. The camera
+is the feature; a search box given equal weight invites staff to type a code they
+are unsure of instead of photographing the tile in front of them.
 
 ### Choosing the size before the scan
 

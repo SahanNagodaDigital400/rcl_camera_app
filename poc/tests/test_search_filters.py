@@ -1,9 +1,10 @@
-"""Size filtering and the display match bar.
+"""Size filtering, the display rules, and catalogue search.
 
-These two are the only things standing between "the user declared 45X90" and a
-60X30 reference winning the scan, so they are tested against a synthetic index
-rather than the real one — the real index takes 20 minutes to build and its
-contents would make the assertions depend on the catalogue.
+The size filter and the match bar are the only things standing between "the user
+declared 45X90" and a 60X30 reference winning the scan, so they are tested
+against a synthetic index rather than the real one — the real index takes 20
+minutes to build and its contents would make the assertions depend on the
+catalogue.
 """
 
 import json
@@ -142,51 +143,164 @@ class TestTileIsTheUnitOfIdentity:
         assert s["same_folder_top3"] == 1, "the loose number stays available as a diagnostic"
 
 
-class TestDisplayToggles:
-    """The score toggle is display-only and must stay that way.
+class TestScoreIsNotOnScreen:
+    """The match percentage is gone from the UI and must stay gone.
 
-    Hiding the percentage from staff must never remove it from the API or the
-    log — that is the difference between a display setting and losing the ability
-    to debug a scan.
+    It was a toggle; it is now removed, because a bare percentage beside a tile
+    code reads as confidence whatever the caption says, and here it is not
+    confidence — a wrong top-1 medians 0.907 against 0.918 for a correct one.
+    Removing it from the screen must never remove it from the API or the log,
+    which is the difference between a display decision and losing the ability to
+    debug a scan.
     """
 
-    def test_show_score_defaults_on(self, monkeypatch):
-        import importlib
-
-        from tilematch import server
-
-        monkeypatch.delenv("TILEMATCH_SHOW_SCORE", raising=False)
-        assert importlib.reload(server).SHOW_SCORE is True
-
-    def test_show_score_off_by_env(self, monkeypatch):
-        import importlib
-
-        from tilematch import server
-
-        monkeypatch.setenv("TILEMATCH_SHOW_SCORE", "0")
-        reloaded = importlib.reload(server)
-        try:
-            assert reloaded.SHOW_SCORE is False
-        finally:
-            monkeypatch.delenv("TILEMATCH_SHOW_SCORE")
-            importlib.reload(server)
-
     def test_score_survives_in_the_payload(self, index, monkeypatch):
-        # Whatever the page shows, the candidate dict always carries the score.
         fake_query(index, 0, monkeypatch)
         assert "score" in index.search(None, k=1)[0].as_dict()
 
+    def test_no_score_toggle_remains(self):
+        # A leftover SHOW_SCORE would mean a second, contradictory source of
+        # truth for something that is now a flat decision.
+        assert not hasattr(server, "SHOW_SCORE")
+
+    def test_page_never_renders_a_percentage(self):
+        page = (server.WEB_DIR / "index.html").read_text()
+        assert "showScore" not in page
+        assert "c.score" not in page, "the card must not print the similarity"
+
     def test_build_stamp_tracks_display_config(self, monkeypatch):
-        # A stamp that missed the toggle would report "current" while the page
-        # showed something else.
+        # A stamp that missed a display knob would report "current" while the
+        # page showed something else.
         import importlib
 
-        from tilematch import server
-
         on = importlib.reload(server).build_stamp()
-        monkeypatch.setenv("TILEMATCH_SHOW_SCORE", "0")
+        monkeypatch.setenv("TILEMATCH_EXPAND", "0.99")
         try:
             assert importlib.reload(server).build_stamp() != on
         finally:
-            monkeypatch.delenv("TILEMATCH_SHOW_SCORE")
+            monkeypatch.delenv("TILEMATCH_EXPAND")
             importlib.reload(server)
+
+
+class TestDisplayCount:
+    """How many candidates the results screen paints.
+
+    Three that clear the match bar, unless more than three clear the expand bar —
+    then all of those. The server owns the rule and sends the count, so the page
+    cannot disagree with the log about what staff saw.
+    """
+
+    @staticmethod
+    def cands(*scores):
+        from tilematch.search import Candidate
+
+        return [
+            Candidate(rank=i, ref_id=i, score=s, code=f"C{i}", size="45X90",
+                      design="D", face=None, category="45X90 / D",
+                      thumb="t.jpg", relpath="r.jpg", design_unknown=False)
+            for i, s in enumerate(scores, 1)
+        ]
+
+    def test_three_when_nothing_clears_the_expand_bar(self):
+        got = server.display_count(self.cands(0.70, 0.68, 0.60, 0.55, 0.52),
+                                   floor=0.50, expand=0.75, k=3)
+        assert got == 3
+
+    def test_expand_bar_shows_every_candidate_above_it(self):
+        got = server.display_count(self.cands(0.92, 0.88, 0.81, 0.78, 0.76, 0.60),
+                                   floor=0.50, expand=0.75, k=3)
+        assert got == 5, "all five at or above 0.75 are shown, not just three"
+
+    def test_expand_bar_is_inclusive_of_its_own_value(self):
+        got = server.display_count(self.cands(0.90, 0.80, 0.75, 0.75),
+                                   floor=0.50, expand=0.75, k=3)
+        assert got == 4
+
+    def test_expand_bar_never_shortens_the_list_below_k(self):
+        # One candidate above 0.75 must not cut the list from three to one — the
+        # expand bar only ever lengthens what the match bar already allowed.
+        got = server.display_count(self.cands(0.80, 0.70, 0.65, 0.60),
+                                   floor=0.50, expand=0.75, k=3)
+        assert got == 3
+
+    def test_match_bar_still_caps_the_list(self):
+        got = server.display_count(self.cands(0.60, 0.40, 0.30),
+                                   floor=0.50, expand=0.75, k=3)
+        assert got == 1
+
+    def test_nothing_above_the_match_bar_shows_nothing(self):
+        got = server.display_count(self.cands(0.40, 0.30),
+                                   floor=0.50, expand=0.75, k=3)
+        assert got == 0, "the empty state exists precisely for this"
+
+    def test_defaults_are_a_sane_pair(self):
+        assert 0.0 < server.MATCH_FLOOR <= server.EXPAND_FLOOR < 1.0
+        assert server.EXPAND_FLOOR == 0.75
+
+    def test_expand_floor_is_overridable_without_a_code_edit(self, monkeypatch):
+        import importlib
+
+        monkeypatch.setenv("TILEMATCH_EXPAND", "0.9")
+        try:
+            assert importlib.reload(server).EXPAND_FLOOR == 0.9
+        finally:
+            monkeypatch.delenv("TILEMATCH_EXPAND")
+            importlib.reload(server)
+
+
+class TestLookup:
+    """Text search over the catalogue.
+
+    Secondary to the camera and deliberately dumb: substring matching over the
+    file name, size and category, with no vector anywhere near it.
+    """
+
+    def test_finds_a_tile_by_its_exact_code(self, index):
+        assert [h["code"] for h in index.lookup("C3")] == ["C3"]
+
+    def test_is_case_insensitive(self, index):
+        assert index.lookup("c3") == index.lookup("C3")
+
+    def test_matches_on_size(self, index):
+        assert {h["size"] for h in index.lookup("45X90")} == {"45X90"}
+        assert len(index.lookup("45X90")) == 2
+
+    def test_matches_on_category(self, index):
+        assert [h["code"] for h in index.lookup("D4")] == ["C4"]
+
+    def test_every_term_must_match(self, index):
+        # Narrowing, not widening: "60X30 D2" is one tile, not every 60X30 tile
+        # plus every D2 tile.
+        assert [h["code"] for h in index.lookup("60X30 D2")] == ["C2"]
+        assert index.lookup("45X90 D2") == [], "D2 is not a 45X90 tile"
+
+    def test_exact_code_outranks_a_folder_match(self, index):
+        # "C1" matches reference 1 by code; nothing should displace it from
+        # first, because the code is the tile's identity.
+        assert index.lookup("C1")[0]["code"] == "C1"
+
+    def test_blank_query_returns_nothing_not_everything(self, index):
+        assert index.lookup("") == []
+        assert index.lookup("   ") == []
+
+    def test_no_match_is_empty_not_an_error(self, index):
+        assert index.lookup("NOSUCHTILE") == []
+
+    def test_limit_is_honoured(self, index):
+        assert len(index.lookup("45X90", limit=1)) == 1
+
+    def test_results_carry_what_a_card_needs(self, index):
+        h = index.lookup("C0")[0]
+        # ref_id is what /reference/<id> is keyed on, so a hit with no ref_id is
+        # a row staff cannot open the picture from.
+        assert {"ref_id", "code", "size", "design", "thumb"} <= set(h)
+        assert index.references[h["ref_id"]]["code"] == h["code"]
+
+    def test_lookup_runs_no_inference(self, index, monkeypatch):
+        # The search path must never touch the model: it is a different question
+        # from a scan, and an accidental embed would make typing cost 650 ms.
+        def boom(*a, **kw):
+            raise AssertionError("lookup must not embed anything")
+
+        monkeypatch.setattr(Matcher, "embed_query", boom)
+        assert index.lookup("C0")

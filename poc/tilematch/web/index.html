@@ -88,10 +88,26 @@
           word-break:break-all; }
   .prod { font-size:12.5px; color:var(--muted); margin-top:3px; }
   .rank { font-size:12px; color:var(--muted); }
-  .score { font-variant-numeric:tabular-nums; font-size:15px; color:var(--ok); font-weight:600;
-           margin-top:2px; }
   .warn { color:var(--accent); font-size:11.5px; }
   canvas { display:none; }
+  /* Search is the secondary path — a disclosure under the scan stage, not a
+     second thing competing with the camera for the first tap. */
+  .find { margin-top:14px; background:var(--card); border:1px solid var(--line);
+          border-radius:12px; overflow:hidden; }
+  .find > summary { padding:12px 14px; cursor:pointer; font-size:13px; font-weight:550;
+                    list-style:none; }
+  .find > summary::-webkit-details-marker { display:none; }
+  .find > summary::before { content:"＋ "; color:var(--muted); }
+  .find[open] > summary::before { content:"− "; }
+  .find .body { padding:0 12px 12px; }
+  .find input[type=search] { width:100%; padding:11px 12px; border-radius:10px;
+      border:1px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; }
+  .find input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  .find .hint { font-size:11.5px; color:var(--muted); margin:8px 2px 0; }
+  ol.found { list-style:none; padding:0; margin:10px 0 0; display:grid; gap:8px;
+             max-height:52vh; overflow-y:auto; }
+  ol.found .cand { grid-template-columns:64px 1fr; }
+  ol.found .cand img, ol.found .thumb { width:64px; height:64px; }
   /* Lightbox: staff verify against the picture, so it needs to be big. */
   #box { position:fixed; inset:0; background:rgba(0,0,0,.92); display:none;
          flex-direction:column; z-index:50; }
@@ -143,6 +159,19 @@
     </div>
   </div>
 
+  <details class="find" id="find">
+    <summary>Search the catalogue by code, size or category</summary>
+    <div class="body">
+      <input type="search" id="q" placeholder="e.g. RP.CMA.0008 · POLISH · 45X90 crema"
+             autocomplete="off" autocapitalize="off" spellcheck="false"
+             aria-label="Search the catalogue">
+      <p class="hint" id="qhint">Type part of a code, a category or a size. All
+         terms must match, so <strong>crema 0008</strong> narrows the list. This
+         searches file names only — it does not look at the photo.</p>
+      <ol class="found" id="found"></ol>
+    </div>
+  </details>
+
   <div class="status" id="status"></div>
   <ol class="results" id="results"></ol>
   <button id="more" class="hide"></button>
@@ -160,13 +189,13 @@
   </div>
 
   <p class="note">
-    <span id="scoreNote" hidden>The percentage is visual similarity,
-    <strong>not</strong> a probability that the match is right — on this
-    catalogue a wrong answer medians 91% and a correct one 92%. Use it to compare
-    candidates against each other, never as confidence in any one of them. </span>
-    Candidates below the match bar are hidden, so fewer than three may appear.
-    Finish is not recoverable from a photo — <strong>MONO COLOUR GLOSSY</strong>
-    and <strong>MONO COLOUR MATT</strong> are visually identical. Always verify
+    Candidates are listed best-match first. Three are shown; more appear when
+    several references are close to the photo, and fewer when little clears the
+    match bar. The list is <strong>not</strong> ranked by confidence — on this
+    catalogue the best match is wrong roughly as often as it is right, and the
+    order only says which reference looks most like the photo. Finish is not
+    recoverable from a photo either: <strong>MONO COLOUR GLOSSY</strong> and
+    <strong>MONO COLOUR MATT</strong> are visually identical. Always verify
     against the reference image before quoting a code.
   </p>
 </main>
@@ -190,16 +219,11 @@ let stream = null;
 const SIZE_KEY = 'tilematch.size';
 const sizeSel = $('#size');
 
-// Mirrors server.SHOW_SCORE. Read from /api/info at load and re-read from every
-// scan response, so flipping TILEMATCH_SHOW_SCORE and restarting takes effect on
-// the next scan rather than needing a reload.
-let showScore = true;
-
 fetch('/api/info').then(r => r.json()).then(d => {
   $('#info').textContent = d.ready
     ? `${d.tiles} tiles · ${d.categories} categories · ${d.vectors} vectors · build ${d.build}`
     : `index not ready — ${d.error}`;
-  if (d.ready) { showScore = d.show_score !== false; fillSizes(d.sizes || []); }
+  if (d.ready) fillSizes(d.sizes || []);
 }).catch(() => $('#info').textContent = 'server unreachable');
 
 function fillSizes(sizes) {
@@ -429,9 +453,8 @@ async function send(blob, name) {
     const d = await upload(fd, ctrl, blob.size);
     if (d.queue_ms > 100) console.debug(`waited ${d.queue_ms} ms in the server queue`);
     last = d;
-    showScore = d.show_score !== false;
     const scope = d.size ? `${d.size} only, ${d.searched} references` : `all ${d.searched} references`;
-    const shown = Math.min(d.top_k ?? 3, d.above_floor ?? 0);
+    const shown = d.show ?? 0;
     say(shown
       ? `${note}${scope} · showing ${shown} · ${d.elapsed_ms} ms server · ${Math.round(performance.now()-t)} ms round trip`
       : `${note}${scope} · nothing close enough · ${d.elapsed_ms} ms server`);
@@ -455,14 +478,20 @@ async function send(blob, name) {
 // candidates without another upload and another 650 ms of inference.
 let last = null;
 
-// Rendering is driven entirely by the server's match bar. Nothing below it is
-// painted, so a scan can legitimately produce two candidates, one, or none —
-// that is the point of the bar, and padding the list back to three would undo it.
+// How many reference images to pre-load after a scan. See paint().
+const PREFETCH = 3;
+
+// How many to paint is decided by server.display_count and sent as `show`:
+// three that clear the match bar, or every candidate at or above the expand bar
+// when there are more than three of those. The page does not re-derive the rule
+// — one copy of it, on the server, is what keeps the log and the screen honest.
+//
+// A scan can still legitimately produce two candidates, one, or none. That is
+// the point of the match bar, and padding the list back to three would undo it.
 function render(d) {
   const cands = d.candidates || [];
-  const topK = d.top_k ?? 3;
+  const shown = d.show ?? 0;
   const above = d.above_floor ?? cands.length;
-  const shown = Math.min(topK, above);
   const empty = $('#empty');
 
   if (!shown) {
@@ -491,9 +520,6 @@ $('#anyway').onclick = () => {
 };
 
 function paint(cands, topK) {
-  // The explanatory sentence only makes sense while the number is on screen.
-  $('#scoreNote').hidden = !showScore;
-
   results.innerHTML = cands.map((c, i) => `
     <li class="cand${i >= topK ? ' extra' : ''}" tabindex="0" role="button" data-ref="${c.ref_id}"
         data-code="${esc(c.code)}" data-prod="${esc(c.size + ' · ' + c.design)}"
@@ -507,21 +533,38 @@ function paint(cands, topK) {
       </div>
       <div style="text-align:right">
         <div class="rank">#${c.rank}</div>
-        ${showScore ? `<div class="score">${Math.round(c.score * 100)}%</div>` : ''}
       </div>
     </li>`).join('');
 
-  // Everything handed to paint() already clears the bar, so the overflow is
-  // simply what did not fit in the first three.
+  // Everything handed to paint() already clears the match bar, so the overflow
+  // is simply what the display rule did not put on screen outright.
   const extra = Math.max(0, cands.length - topK);
   const btn = $('#more');
   btn.classList.toggle('hide', extra === 0);
   btn.dataset.open = '';
   btn.textContent = `show ${extra} more`;
 
+  wire(results);
+
+  // Warm the browser cache for the first few candidates while the user is still
+  // reading the list. Tapping one then paints from cache instead of waiting on a
+  // ~100-500 KB transfer that has not started yet.
+  //
+  // Capped at PREFETCH regardless of how many are shown: the expand bar can put
+  // twenty cards on screen, and prefetching twenty references is several MB of
+  // mobile data spent on tiles the user will mostly never open. The ones past
+  // the cap simply load on tap, which is the behaviour before this existed.
+  cands.slice(0, Math.min(topK, PREFETCH)).forEach(c => {
+    new Image().src = '/reference/' + c.ref_id;
+  });
+}
+
+// Shared by the results list and the search list: both are lists of tiles whose
+// whole point is the reference image behind the tap.
+function wire(listEl) {
   // A dropped thumbnail request used to leave a silent blank square. Retry once
   // past the cache, then say so rather than showing nothing.
-  results.querySelectorAll('.thumb img').forEach(img => {
+  listEl.querySelectorAll('.thumb img').forEach(img => {
     img.onerror = () => {
       if (img.dataset.retried) { img.parentElement.classList.add('failed'); return; }
       img.dataset.retried = '1';
@@ -529,17 +572,68 @@ function paint(cands, topK) {
     };
   });
 
-  // Warm the browser cache for the visible candidates while the user is still
-  // reading the list. Tapping one then paints from cache instead of waiting on a
-  // ~100-500 KB transfer that has not started yet.
-  cands.slice(0, topK).forEach(c => { new Image().src = '/reference/' + c.ref_id; });
-
-  results.querySelectorAll('.cand').forEach(el => {
+  listEl.querySelectorAll('.cand').forEach(el => {
     el.onclick = () => openRef(el.dataset.ref, el.dataset.code, el.dataset.prod, el.dataset.thumb);
     el.onkeydown = e => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); }
     };
   });
+}
+
+// Search: the fallback for "I have the code, show me the picture". It is a
+// disclosure rather than a second primary control — the camera is the feature,
+// and a search box given equal weight invites staff to type a code they are
+// unsure of instead of photographing the tile in their hand.
+//
+// No inference, no vectors: /api/lookup is substring matching over file names,
+// so it cannot drift from the scan pipeline and costs nothing to run per
+// keystroke beyond one small JSON round trip.
+const qBox = $('#q'), found = $('#found'), qHint = $('#qhint');
+const QHINT = qHint.textContent;
+let qTimer = null, qSeq = 0;
+
+qBox.oninput = () => {
+  clearTimeout(qTimer);
+  // Debounced: a phone keyboard fires this per character, and every one of them
+  // would otherwise be a request the next keystroke immediately invalidates.
+  qTimer = setTimeout(runLookup, 200);
+};
+qBox.onsearch = runLookup;          // the clear "x" in a search input
+
+async function runLookup() {
+  const q = qBox.value.trim();
+  const seq = ++qSeq;
+  if (!q) { found.innerHTML = ''; qHint.textContent = QHINT; return; }
+  try {
+    const r = await fetch('/api/lookup?q=' + encodeURIComponent(q));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    // A slow response for an older query must not overwrite a newer one.
+    if (seq !== qSeq) return;
+    paintFound(d.results || [], d.limit ?? 40);
+  } catch (e) {
+    if (seq !== qSeq) return;
+    report('lookup error', e.message || String(e));
+    qHint.textContent = 'search unavailable — ' + (e.message || e);
+  }
+}
+
+function paintFound(hits, limit) {
+  qHint.textContent = hits.length
+    ? `${hits.length}${hits.length >= limit ? '+' : ''} tile${hits.length === 1 ? '' : 's'} — tap one to see its reference image`
+    : 'No tile matches that. Every term has to appear in the code, size or category.';
+  found.innerHTML = hits.map(c => `
+    <li class="cand" tabindex="0" role="button" data-ref="${c.ref_id}"
+        data-code="${esc(c.code)}" data-prod="${esc(c.size + ' · ' + c.design)}"
+        data-thumb="/${c.thumb}">
+      <div class="thumb"><img src="/${c.thumb}" alt="${esc(c.design)}" loading="lazy"><span class="ph">image<br>unavailable</span></div>
+      <div>
+        <div class="code">${esc(c.code)}</div>
+        <div class="prod">${esc(c.size)} · ${esc(c.design)}${c.face ? ' · face ' + esc(c.face) : ''}</div>
+        ${c.design_unknown ? '<div class="warn">⚠ design folder unclassified</div>' : ''}
+      </div>
+    </li>`).join('');
+  wire(found);
 }
 
 function esc(v) {

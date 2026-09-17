@@ -51,6 +51,10 @@ IMMUTABLE = {"Cache-Control": "public, max-age=86400"}
 DISPLAY_K = 3
 MAX_CANDIDATES = 20
 
+# Cap on /api/lookup. Enough that a category name like POLISH (22 tiles) returns
+# in full, short of turning the endpoint into a catalogue dump.
+MAX_LOOKUP = 60
+
 # Similarity a candidate must reach to be put in front of staff at all.
 #
 # Read this as a tail trim, not as confidence. These are raw cosine similarities
@@ -67,18 +71,55 @@ MAX_CANDIDATES = 20
 # the index the way anything in vision.py would.
 MATCH_FLOOR = float(os.environ.get("TILEMATCH_FLOOR", "0.50"))
 
-# Whether each candidate card shows its similarity as a percentage.
+# Similarity at or above which the list stops being trimmed to DISPLAY_K and
+# every qualifying candidate is shown.
 #
-# On by default, off with TILEMATCH_SHOW_SCORE=0. It is a toggle rather than a
-# deletion because the number cuts both ways: it is genuinely useful for
-# comparing the three candidates against each other, and genuinely misleading as
-# confidence in any one of them — a wrong answer medians 91% against 92% for a
-# right one. Which risk dominates depends on who is holding the phone, so it is
-# a setting, not a decision baked into the markup.
+# The percentage itself is no longer on screen (see below), so this is the only
+# remaining way the score reaches staff: as list length rather than as a number.
+# Be clear-eyed about what that conveys. On the 381-tile synthetic eval the
+# median scan has 19 of its top 20 at or above 0.75, so at this setting a typical
+# expanded list is long, not selective — it says "lots of this catalogue looks
+# like your photo", which is usually true and rarely useful on its own.
 #
-# Display only: the score is always in the API response and the server log, so
-# turning it off hides it from staff without blinding anyone debugging a scan.
-SHOW_SCORE = os.environ.get("TILEMATCH_SHOW_SCORE", "1") == "1"
+# TILEMATCH_EXPAND moves it without a code edit. Raising it toward 0.90 is where
+# the correct and wrong distributions finally start to separate (README, "What
+# the match bar does"); setting it to 1.01 disables expansion entirely and pins
+# the screen at three.
+EXPAND_FLOOR = float(os.environ.get("TILEMATCH_EXPAND", "0.75"))
+
+# The match percentage is deliberately NOT rendered anywhere in the UI.
+#
+# It was a toggle (TILEMATCH_SHOW_SCORE), defaulting to on. It is now simply
+# gone from the page: a bare percentage beside a tile code reads as confidence no
+# matter what the caption underneath it says, and here it is not confidence at
+# all — on this catalogue a wrong top-1 answer medians 0.907 and a correct one
+# 0.918. Staff verify against the reference image; the number only ever competed
+# with the picture for their attention.
+#
+# The score itself is untouched: it still ranks candidates, still decides
+# `above_floor` and `above_expand`, and is still in every API response and log
+# line. This removes it from the staff-facing screen, not from the system.
+
+
+def display_count(cands: list, floor: float = MATCH_FLOOR,
+                  expand: float = EXPAND_FLOOR, k: int = DISPLAY_K) -> int:
+    """How many candidates the results screen paints.
+
+    The rule, and the single place it lives — the page paints `show` and does not
+    re-derive it, so the server and the phone can never disagree about what was
+    displayed:
+
+      * candidates below `floor` are never shown;
+      * normally at most `k` of what remains;
+      * but every candidate at or above `expand` is shown, however many that is.
+
+    Candidates arrive ranked, so both bars select a prefix and the two counts
+    compose by taking the longer one.
+    """
+    above_floor = sum(1 for c in cands if c.score >= floor)
+    above_expand = sum(1 for c in cands if c.score >= expand)
+    return max(min(k, above_floor), above_expand)
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -114,7 +155,7 @@ def build_stamp() -> str:
     """
     h = hashlib.sha256((WEB_DIR / "index.html").read_bytes())
     h.update(f"|display_k={DISPLAY_K}|max={MAX_CANDIDATES}|floor={MATCH_FLOOR}"
-             f"|score={SHOW_SCORE}".encode())
+             f"|expand={EXPAND_FLOOR}".encode())
     return h.hexdigest()[:7]
 
 
@@ -145,7 +186,7 @@ def info() -> dict:
         "pipeline_version": m.meta.get("pipeline_version"),
         "built_at": m.meta.get("built_at"),
         "match_floor": MATCH_FLOOR,
-        "show_score": SHOW_SCORE,
+        "expand_floor": EXPAND_FLOOR,
         "sizes": m.sizes(),
     }
 
@@ -158,6 +199,28 @@ def sizes() -> dict:
     except (FileNotFoundError, IndexMismatch) as exc:
         raise HTTPException(503, str(exc)) from exc
     return {"sizes": m.sizes()}
+
+
+@app.get("/api/lookup")
+def lookup(q: str = "", limit: int = 40) -> dict:
+    """Find a tile by typing, when there is no tile to photograph.
+
+    Secondary to the camera by design — it is the fallback for "I have the code,
+    show me the picture", not a second way to identify an unknown tile. It runs
+    no inference and touches no vector, so it costs nothing and cannot drift from
+    the scan pipeline.
+
+    A blank query returns nothing rather than the whole catalogue: 381 cards is
+    not a search result, and paging it would be building a catalogue browser,
+    which is out of POC scope.
+    """
+    try:
+        m = get_matcher()
+    except (FileNotFoundError, IndexMismatch) as exc:
+        raise HTTPException(503, str(exc)) from exc
+    limit = max(1, min(limit, MAX_LOOKUP))
+    hits = m.lookup(q, limit=limit)
+    return {"query": q, "count": len(hits), "limit": limit, "results": hits}
 
 
 @app.get("/thumbs/{name}")
@@ -286,23 +349,27 @@ async def _run_scan(rid: int, m: Matcher, raw: bytes, wait_ms: float,
         raise HTTPException(400, str(exc)) from exc
     total_ms = (time.perf_counter() - started) * 1000
 
-    # Candidates are ranked, so everything at or above the bar is a prefix. The
-    # server reports the count and returns the full list; how many the page
-    # actually paints stays a display decision, as with DISPLAY_K.
+    # Candidates are ranked, so everything at or above either bar is a prefix.
+    # The server returns the full list and the count to paint; the page never
+    # re-derives the rule, so the two cannot drift apart.
     above = sum(1 for c in cands if c.score >= MATCH_FLOOR)
+    above_expand = sum(1 for c in cands if c.score >= EXPAND_FLOOR)
+    show = display_count(cands)
 
     # Phase breakdown, because "slow" has three very different causes here and a
     # single total cannot tell them apart: a big upload, a heavyweight decode
     # (some references are CMYK and need an ICC transform), or inference.
     log.info(
         "[%04d] done %.0f ms  =  queue %.0f ms | decode %.0f ms | embed %.0f ms "
-        "(%d views, %.0f ms/view) | rank %.1f ms  ->  %s %s (%.3f) | %d above %.2f",
+        "(%d views, %.0f ms/view) | rank %.1f ms  ->  %s %s (%.3f) | "
+        "%d above %.2f, %d above %.2f, showing %d",
         rid, total_ms + wait_ms, wait_ms, decode_ms,
         timings.get("embed_ms", 0), int(timings.get("views", 0)),
         timings.get("embed_ms", 0) / max(timings.get("views", 1), 1),
         timings.get("rank_ms", 0),
         cands[0].size if cands else "-", cands[0].code if cands else "-",
-        cands[0].score if cands else 0.0, above, MATCH_FLOOR,
+        cands[0].score if cands else 0.0,
+        above, MATCH_FLOOR, above_expand, EXPAND_FLOOR, show,
     )
     if not above:
         # Worth seeing in the log: either the tile genuinely is not in the
@@ -321,8 +388,10 @@ async def _run_scan(rid: int, m: Matcher, raw: bytes, wait_ms: float,
         "decode_ms": round(decode_ms, 1),
         "top_k": DISPLAY_K,
         "match_floor": MATCH_FLOOR,
-        "show_score": SHOW_SCORE,
+        "expand_floor": EXPAND_FLOOR,
         "above_floor": above,
+        "above_expand": above_expand,
+        "show": show,
         "size": size,
         "searched": int((m.ref_sizes == size).sum()) if size else m.n_images,
         "candidates": [c.as_dict() for c in cands],

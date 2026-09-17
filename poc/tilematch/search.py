@@ -9,6 +9,7 @@ vector store would be theatre, and CLAUDE.md's "measure first" rule says so.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -136,6 +137,55 @@ class Matcher:
         out = [{"size": e["size"], "tiles": e["tiles"], "categories": len(e["categories"])}
                for e in counts.values()]
         return sorted(out, key=lambda e: (-e["tiles"], e["size"]))
+
+    def lookup(self, q: str, limit: int = 40) -> list[dict]:
+        """Plain text search over the catalogue — no photo, no inference.
+
+        A scan answers "what is this tile in my hand"; this answers "show me the
+        tile I already know the code of", which is a different question and not
+        one the camera can serve. Staff who half-remember a code, or who want to
+        pull up the reference image for a code on an order, currently have no way
+        to do either without photographing a tile they may not have.
+
+        Matching is substring over `code + size + category`, all tokens required,
+        so `crema 0008` narrows rather than widens. Ordering is by how well the
+        CODE matched — exact, then prefix, then substring, then folder-only —
+        because the code is the tile's identity and a code hit is what the user
+        was almost certainly reaching for. Never ranked by similarity: there is
+        no query vector here, and inventing one would be theatre.
+        """
+        tokens = [t for t in re.split(r"\s+", q.strip().upper()) if t]
+        if not tokens:
+            return []
+
+        out: list[tuple[int, str, dict]] = []
+        for idx, r in enumerate(self.references):
+            code = r["code"].upper()
+            hay = f"{code} {r['size']} {r['product']}".upper()
+            if not all(t in hay for t in tokens):
+                continue
+            whole = " ".join(tokens)
+            if code == whole:
+                tier = 0
+            elif code.startswith(whole):
+                tier = 1
+            elif all(t in code for t in tokens):
+                tier = 2
+            else:
+                tier = 3
+            out.append((tier, code, {
+                "ref_id": idx,
+                "code": r["code"],
+                "size": r["size"],
+                "design": r["design"],
+                "category": r["product"],
+                "face": r.get("face"),
+                "thumb": r["thumb"],
+                "design_unknown": r.get("design_unknown", False),
+            }))
+
+        out.sort(key=lambda e: (e[0], e[1]))
+        return [e[2] for e in out[:limit]]
 
     def embed_query(self, img: Image.Image) -> np.ndarray:
         """Photo -> (V, 1536). Same preprocess+embed as indexing; only the
