@@ -1,8 +1,9 @@
 # Rocell Tile Scanner — one entry point for every workflow in the monorepo.
 #
-# Python lives in a single uv workspace (apps/api, shared/vision, shared/schema,
-# scripts/ingest); the front end is npm in apps/web. `poc/` is a standalone
-# proof of concept with its own Makefile and venv and is never touched here.
+# Python lives in a single uv workspace (apps/api, infra, shared/vision,
+# shared/schema, scripts/ingest); the front end is npm in apps/web. `poc/` is a
+# standalone proof of concept with its own Makefile and venv and is never
+# touched here.
 
 UV  := uv
 WEB := npm --prefix apps/web
@@ -22,8 +23,16 @@ help:
 	@echo "  make build       production build of apps/web"
 	@echo "  make format      apply ruff's formatting and import fixes"
 	@echo ""
+	@echo "  database (needs DATABASE_URL; see infra/README.md):"
+	@echo "  make migrate     apply every unapplied migration (also SEED_ADMIN_*)"
+	@echo "  make reseed-admin"
+	@echo "                   reissue the seeded Administrator's temporary credential"
+	@echo ""
+	@echo "  no make target; run the runner directly:"
+	@echo "    uv run python -m rocell_infra.migrate status"
+	@echo "    uv run python -m rocell_infra.migrate down --yes"
+	@echo ""
 	@echo "  not implemented yet (each exits non-zero rather than reporting success):"
-	@echo "  make migrate     apply migrations            -- Story 1.2"
 	@echo "  make ingest      run catalogue ingestion     -- Epic 2"
 	@echo "  make eval        accuracy harness            -- Epic 2"
 
@@ -64,14 +73,21 @@ test:
 build:
 	$(WEB) run build
 
+# --- Database ----------------------------------------------------------------
+# DATABASE_URL is required by both and is never defaulted here: a migration
+# runner that guesses a connection string can migrate the wrong database.
+# Seeding the first Administrator additionally needs SEED_ADMIN_EMAIL and
+# SEED_ADMIN_PASSWORD (and optionally SEED_ADMIN_NAME) — see infra/README.md.
+
+migrate:
+	$(UV) run python -m rocell_infra.migrate up
+
+reseed-admin:
+	$(UV) run python -m rocell_infra.migrate reseed-admin
+
 # --- Not implemented yet -----------------------------------------------------
 # These fail loudly on purpose. A target that printed nothing and exited 0 would
 # let a later story mistake "did nothing" for "already done".
-
-migrate:
-	@echo "make migrate is not implemented yet: migrations arrive with Story 1.2"
-	@echo "(User Schema & Seeded Administrator). infra/migrations/ is empty by design."
-	@exit 1
 
 ingest:
 	@echo "make ingest is not implemented yet: catalogue ingestion arrives with Epic 2"
@@ -84,4 +100,4 @@ eval:
 	@echo "Until then, poc/ has the working harness (see poc/Makefile)."
 	@exit 1
 
-.PHONY: help setup dev lint format test build migrate ingest eval
+.PHONY: help setup dev lint format test build migrate reseed-admin ingest eval

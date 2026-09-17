@@ -117,3 +117,139 @@ source_spec: `spec-1-1-project-scaffold-design-token-foundation.md`
 severity: low
 reason: shared/schema/tests/test_errors.py and apps/web/src/__tests__/error-envelope.test.ts each encode the same closed shape separately, and README.md claims the two files "cannot drift apart unnoticed". No test feeds a Python-produced envelope through isErrorEnvelope or compares the two definitions, so the parity holds by review rather than by test. Closing it means running a JS runtime from pytest or fixturing generated bodies — a cross-language test harness decision.
 status: open
+
+### DW-16: `status` reports only the migrations it finds on disk, so a version recorded as applied whose `.sql` files were deleted or renamed is invisible in the one command an operator reaches for first.
+origin: spec-deferred c678823254b2
+location: infra/rocell_infra/migrate.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: infra/rocell_infra/migrate.py's status iterates the plan and reports each file's applied flag. `down` raises a hard error for exactly that condition, so the diagnostic command stays silent about the state the destructive command refuses on.
+status: open
+
+### DW-17: `updated_at` has a DEFAULT but no trigger, so every future writer (Stories 1.3, 1.5, 1.10, 1.11) has to remember to set it by hand and nothing catches the first one that forgets.
+origin: spec-deferred 06373583f408
+location: infra/migrations/20260917T1200_create_users.up.sql
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: medium
+reason: 20260917T1200_create_users.up.sql declares `updated_at timestamptz NOT NULL DEFAULT now()` with no BEFORE UPDATE trigger. Only the reseed path sets it explicitly today. Adding a trigger is a schema decision that touches every later write path, so it is better taken deliberately than as a drive-by.
+status: open
+
+### DW-18: The entire database-backed suite skips itself where PostgreSQL is absent, and no CI pipeline exists to guarantee it ever runs.
+origin: spec-deferred 5f792af9eacb
+location: infra/tests/conftest.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: medium
+reason: infra/tests/conftest.py falls back to `pytest.skip("no PostgreSQL available")` when TEST_DATABASE_URL is unset and initdb/pg_ctl are not on PATH. Every assertion about seeding, idempotency, the 72-hour expiry and the guarded `down` lives behind that fixture, so on such a machine a green `make test` proves none of them. It runs here (PostgreSQL 16.15 is on PATH). Story 1.1 already deferred the CI decision this depends on.
+status: open
+
+### DW-19: `verify_password` has no rehash path, so digests stay at the old cost forever if the pinned Argon2id parameters are ever raised.
+origin: spec-deferred 0d02ae33fa83
+location: shared/schema/shared_schema/passwords.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: shared/schema/shared_schema/passwords.py pins the parameters explicitly so a library upgrade cannot change them silently, but offers no `check_needs_rehash` equivalent. Who owns re-hashing on next login is a Story 1.3 decision, not a patch here.
+status: open
+
+### DW-20: The migrations directory is resolved relative to the installed package, so a non-editable install would ship the runner without any migrations.
+origin: spec-deferred a566173bbc49
+location: infra/rocell_infra/migrate.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: infra/pyproject.toml packages `rocell_infra` only; the runner resolves `migrations/` as a sibling of the package directory. That holds for the uv workspace's editable install and for `make migrate` here, and breaks for a wheel-based deployment. The deployment target is itself still undecided (architecture spine, Deferred).
+status: open
+
+### DW-21: The ledger stores no checksum, so editing an already-applied migration leaves two databases silently divergent.
+origin: spec-deferred 766c26e0fab9
+location: infra/rocell_infra/migrate.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: `schema_migrations` records version and applied_at only. AGENTS.md's "never edit an applied migration" is the stated control, and a checksum column would make a violation detectable rather than conventional.
+status: open
+
+### DW-22: A migration whose version sorts before an already-applied one is applied out of order with no warning.
+origin: spec-deferred 51c0ac767d8f
+location: infra/rocell_infra/migrate.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: `up` applies every unapplied file in lexicographic order regardless of what is already in the ledger, so a branch merged with a backdated timestamp lands after migrations it was written before. `down` now reverts in applied_at order, which contains the damage but does not prevent it. Refusing a backdated version is a workflow decision.
+status: open
+
+### DW-23: `users` constrains `role` and the case of `email`, but nothing stops an empty or malformed `name` or `email` at the database level.
+origin: spec-deferred 7ef00c0de205
+location: infra/migrations/20260917T1200_create_users.up.sql
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: 20260917T1200_create_users.up.sql carries CHECK (email = lower(email)) and the role CHECK, so the database holds its own copy of those rules. `''` passes both. The seed path is protected only because config.py validates the address before it gets there; Story 1.5's admin-created users have no such guard, and the file's own comment argues the database should not have to trust application code.
+status: open
+
+### DW-24: `verify_password` offers no constant-time path for an unknown email, so Story 1.3's login can leak account existence by timing.
+origin: spec-deferred f0f95424e456
+location: shared/schema/shared_schema/passwords.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: shared/schema/shared_schema/passwords.py exists precisely so the seed and the login verifier cannot drift apart, but exposes only hash_password and verify_password. A login endpoint that skips hashing when no user matches answers measurably faster for an unknown address. The usual fix is a dummy verify against a fixed decoy digest — and adding it in apps/api later would recreate the second-hasher problem this module prevents, so it belongs here. Story 1.3 owns the decision.
+status: open
+
+### DW-25: The seed migration's `down` deletes "the one unclaimed Administrator", which is not necessarily the one it created.
+origin: spec-deferred 122a525156a2
+location: infra/migrations/20260917T1210_seed_administrator.down.sql
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: 20260917T1210_seed_administrator.down.sql matches on role, unclaimed and exactly-one-admin rather than on an identity it recorded. If the seeded row is already gone and exactly one admin-created, still-unclaimed Administrator remains, `down` deletes that one. Recording the seeded id would need a marker the ledger does not carry today.
+status: open
+
+### DW-26: `down` prints "reverted <version>" even when the seed migration's down SQL deliberately deleted nothing.
+origin: spec-deferred 11a7383c1b1a
+location: infra/rocell_infra/migrate.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: main() reports the version `down` returns, and the seed down is a no-op on a live system by design (claimed account, or a second Administrator) — infra/tests/test_migrate.py asserts exactly that. The ledger row is still removed, so the report is not wrong, but the operator is told a revert happened when the product state is unchanged. Reporting affected rows per migration is a runner-wide output decision.
+status: open
+
+### DW-27: A `TEST_DATABASE_URL` whose role cannot CREATE DATABASE errors every test instead of skipping, unlike the ephemeral-cluster path.
+origin: spec-deferred c61584dd2ffd
+location: infra/tests/conftest.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: infra/tests/conftest.py's `database_url` fixture creates a database per test. When TEST_DATABASE_URL is set the fixture uses it unconditionally, so an InsufficientPrivilege surfaces as an error in every database test rather than the single honest skip the no-PostgreSQL path produces.
+status: open
+
+### DW-28: Putting the Argon2id hasher in `shared/schema` makes `argon2-cffi` a hard dependency of every consumer of the shared *type* contracts, including `shared/vision` and `scripts/ingest`, which will never
+origin: spec-deferred dc3be46e28f7
+location: shared/schema/shared_schema/passwords.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: medium
+reason: `shared_schema/__init__.py` re-exports `hash_password` / `verify_password`, so the import is eager and no consumer can opt out; `shared/schema/pyproject.toml` declares the dependency for the whole package. The intent requires one shared hashing module and `shared/*` is the only direction both callers may depend on, but it does not fix which shared package — a `shared/security` would carry it without widening the type package's dependency surface. Splitting it once `shared/vision` exists is cheaper than splitting it now against one caller.
+status: open
+
+### DW-29: The ephemeral test cluster runs `initdb --auth=trust` on a TCP listener, and a genuine `pg_ctl` misconfiguration is reported as "no PostgreSQL available", which is untrue.
+origin: spec-deferred effd1d9832d9
+location: infra/tests/conftest.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: infra/tests/conftest.py starts the cluster with `--auth=trust` on 127.0.0.1, so any local user can connect as `postgres` for the life of the run; and `give_up` turns every initdb/pg_ctl failure into `pytest.skip`, after up to five start attempts, so a broken environment reads as an absent one. Both are test-harness hardening that depends on the still-open CI decision (Story 1.1) for where these tests are expected to run.
+status: open
+
+### DW-30: The version prefix is validated as a shape but never parsed as an instant, and `discover_migrations` refuses any non-migration file, so `infra/migrations/README.md` cannot exist.
+origin: spec-deferred 449020ac972f
+location: infra/rocell_infra/migrate.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: VERSION_PATTERN is `^\d{8}T\d{4}_...`, so `99999999T9999_do_things` plans happily while two migrations written in the same minute cannot be ordered against each other. Separately, every file that is not `.up.sql`/`.down.sql` and not a dotfile raises, which keeps a stray `.DS_Store` from breaking `status` but also blocks the natural home for the naming rules the runner enforces. Both are workflow decisions about the migrations directory.
+status: open
+
+### DW-31: `schema_migrations` is created outside the migration set and has no `down`, so stepping every migration back leaves the ledger table behind.
+origin: spec-deferred 495071dae99e
+location: infra/rocell_infra/migrate.py
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: `ensure_ledger` creates it on demand and no migration owns it, so after `down --yes` twice `users` is gone and `schema_migrations` remains — verified live. "Reversible" therefore holds for what the migrations created, not for the runner's own bookkeeping. Whether the ledger should be a migration of its own is a runner-wide decision.
+status: open
+
+### DW-32: The two subprocess suites sit in the default `testpaths` with no marker, and `--strict-markers` means introducing one is itself a config change, so there is no way to run the fast suite alone.
+origin: spec-deferred 29565dac5187
+location: pyproject.toml
+source_spec: `spec-1-2-user-schema-seeded-administrator.md`
+severity: low
+reason: tests/test_make_targets.py and infra/tests/test_make_targets_database.py each spawn `make` then `uv run` with 300s timeouts, and several cases hash or verify 64 MiB Argon2 digests. `make test` is the command CLAUDE.md says to run before considering any change complete, so its cost matters; adding a `slow`/`db` marker also decides how CI will select tests, which Story 1.1 left open.
+status: open

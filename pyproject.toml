@@ -12,6 +12,7 @@ description = "Rocell Tile Scanner — monorepo workspace root"
 requires-python = ">=3.12"
 dependencies = [
     "rocell-api",
+    "rocell-infra",
     "rocell-ingest",
     "shared-schema",
     "shared-vision",
@@ -28,11 +29,12 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["apps/api", "scripts/ingest", "shared/schema", "shared/vision"]
+members = ["apps/api", "infra", "scripts/ingest", "shared/schema", "shared/vision"]
 exclude = ["poc"]
 
 [tool.uv.sources]
 rocell-api = { workspace = true }
+rocell-infra = { workspace = true }
 rocell-ingest = { workspace = true }
 shared-schema = { workspace = true }
 shared-vision = { workspace = true }
@@ -60,11 +62,12 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = [
     "apps/api/tests",
+    "infra/tests",
     "scripts/ingest/tests",
     "shared/schema/tests",
     "shared/vision/tests",
     "tests",
 ]
-# importlib import mode: the five test directories have no __init__.py, so two
+# importlib import mode: the six test directories have no __init__.py, so two
 # files sharing a basename would otherwise collide on sys.modules.
 addopts = "-q --import-mode=importlib --strict-markers --strict-config"

@@ -1,0 +1,1112 @@
+"""The migration runner against a real PostgreSQL.
+
+Every password here is generated at runtime with `secrets`. AGENTS.md Policy
+forbids a committed credential including in test fixtures, and a literal in
+this file would be one — `make migrate`'s own acceptance criteria say the
+seeded password must appear in no source file, test, fixture or migration.
+"""
+
+from __future__ import annotations
+
+import secrets
+from collections.abc import Iterator
+from datetime import timedelta
+from pathlib import Path
+
+import psycopg
+import pytest
+from psycopg import errors as pg_errors
+from rocell_infra import migrate, seed
+from rocell_infra.config import (
+    SEED_ADMIN_EMAIL,
+    SEED_ADMIN_NAME,
+    SEED_ADMIN_PASSWORD,
+    ConfigurationError,
+)
+from rocell_infra.migrate import MigrationError, discover_migrations, down, status, up
+from shared_schema.passwords import (
+    ARGON2ID_PREFIX,
+    MAX_PASSWORD_LENGTH,
+    MIN_PASSWORD_LENGTH,
+    verify_password,
+)
+
+SEED_VERSION = "20260917T1210_seed_administrator"
+CREATE_USERS_VERSION = "20260917T1200_create_users"
+
+SEED_EMAIL = "ruwan@rocell.lk"
+
+
+def a_password(length: int = MIN_PASSWORD_LENGTH + 8) -> str:
+    """A password of exactly `length` characters, never the same one twice."""
+    return secrets.token_urlsafe(length * 2)[:length]
+
+
+@pytest.fixture
+def seed_password(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """Set the seed environment for one test and return its password."""
+    password = a_password()
+    monkeypatch.setenv(SEED_ADMIN_EMAIL, SEED_EMAIL)
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, password)
+    monkeypatch.setenv(SEED_ADMIN_NAME, "Ruwan Perera")
+    yield password
+
+
+def administrator_count(conn: psycopg.Connection) -> int:
+    row = conn.execute("SELECT count(*) FROM users WHERE role = %s", ("admin",)).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def the_administrator(conn: psycopg.Connection) -> dict[str, object]:
+    cursor = conn.execute(
+        """
+        SELECT id, name, email, password_hash, role, active, must_change_password,
+               temp_credential_expires_at, last_login_at, created_at, updated_at
+          FROM users
+         WHERE role = %s
+        """,
+        ("admin",),
+    )
+    row = cursor.fetchone()
+    assert row is not None
+    assert cursor.description is not None
+    return {column.name: value for column, value in zip(cursor.description, row, strict=True)}
+
+
+def table_columns(conn: psycopg.Connection, table: str) -> set[str]:
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+        (table,),
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def ledger_versions(conn: psycopg.Connection) -> list[str]:
+    return [row[0] for row in conn.execute(migrate._SELECT_APPLIED).fetchall()]
+
+
+# --- First run ---------------------------------------------------------------
+
+
+def test_a_clean_database_gets_the_user_table(conn: psycopg.Connection, seed_password: str) -> None:
+    applied = up(conn)
+
+    assert applied == [CREATE_USERS_VERSION, SEED_VERSION]
+
+    columns = table_columns(conn, "users")
+    assert {"role", "active", "must_change_password", "temp_credential_expires_at"} <= columns
+    assert {"id", "name", "email", "password_hash", "last_login_at"} <= columns
+    assert table_columns(conn, "schema_migrations") == {"version", "applied_at"}
+
+
+def test_exactly_one_administrator_is_seeded(conn: psycopg.Connection, seed_password: str) -> None:
+    up(conn)
+
+    assert administrator_count(conn) == 1
+
+    administrator = the_administrator(conn)
+    assert administrator["must_change_password"] is True
+    assert administrator["active"] is True
+    assert administrator["email"] == SEED_EMAIL
+    assert administrator["name"] == "Ruwan Perera"
+    assert administrator["last_login_at"] is None
+
+
+def test_the_seeded_password_verifies_through_the_shared_helper(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # The whole point of one shared hasher: what the seed wrote is what Story
+    # 1.3's verifier will read.
+    up(conn)
+    stored = str(the_administrator(conn)["password_hash"])
+
+    assert stored.startswith(ARGON2ID_PREFIX)
+    assert verify_password(stored, seed_password) is True
+    assert verify_password(stored, a_password()) is False
+
+
+def test_the_seeded_credential_expires_in_72_hours(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    up(conn)
+
+    row = conn.execute(
+        """
+        SELECT temp_credential_expires_at - created_at
+          FROM users
+         WHERE role = %s
+        """,
+        ("admin",),
+    ).fetchone()
+    assert row is not None
+    assert row[0].total_seconds() == pytest.approx(
+        seed.TEMP_CREDENTIAL_LIFETIME_HOURS * 3600, abs=5
+    )
+
+
+def test_ids_are_uuids(conn: psycopg.Connection, seed_password: str) -> None:
+    up(conn)
+
+    row = conn.execute("SELECT id::text FROM users WHERE role = %s", ("admin",)).fetchone()
+    assert row is not None
+    # UUIDv4: the version nibble is 4.
+    assert row[0][14] == "4"
+
+
+# --- Idempotency -------------------------------------------------------------
+
+
+def test_a_second_run_applies_nothing(conn: psycopg.Connection, seed_password: str) -> None:
+    up(conn)
+
+    assert up(conn) == []
+    assert administrator_count(conn) == 1
+
+
+def test_a_truncated_ledger_still_yields_one_administrator(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # The second idempotency layer, independent of the ledger: an operator who
+    # resets `schema_migrations` re-runs the seed body, and it inserts nothing.
+    up(conn)
+    conn.execute("TRUNCATE schema_migrations")
+
+    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert administrator_count(conn) == 1
+
+
+def test_a_truncated_ledger_does_not_rewrite_the_credential(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    up(conn)
+    before = the_administrator(conn)
+    conn.execute("TRUNCATE schema_migrations")
+    up(conn)
+    after = the_administrator(conn)
+
+    assert after["id"] == before["id"]
+    assert after["password_hash"] == before["password_hash"]
+
+
+def test_a_second_run_never_adds_an_administrator_for_a_different_email(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    up(conn)
+    monkeypatch.setenv(SEED_ADMIN_EMAIL, "someone.else@rocell.lk")
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, a_password())
+    conn.execute("TRUNCATE schema_migrations")
+
+    up(conn)
+
+    assert administrator_count(conn) == 1
+    assert the_administrator(conn)["email"] == SEED_EMAIL
+
+
+# --- The seed environment ----------------------------------------------------
+
+
+@pytest.mark.parametrize("missing", [SEED_ADMIN_PASSWORD, SEED_ADMIN_EMAIL])
+def test_a_missing_seed_variable_fails_naming_it(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    monkeypatch.delenv(missing)
+
+    with pytest.raises(MigrationError, match=missing):
+        up(conn)
+
+
+def test_a_missing_seed_variable_leaves_nothing_partially_applied(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(SEED_ADMIN_PASSWORD)
+
+    with pytest.raises(MigrationError):
+        up(conn)
+
+    # The migration before it committed on its own; the failing one wrote
+    # neither a row nor a ledger entry.
+    assert ledger_versions(conn) == [CREATE_USERS_VERSION]
+    assert administrator_count(conn) == 0
+
+
+def test_a_missing_seed_variable_is_irrelevant_once_an_administrator_exists(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The guard short-circuits before the environment is read at all, so an
+    # already-seeded database migrates on a machine that has no seed
+    # credentials anywhere near it.
+    up(conn)
+    conn.execute("TRUNCATE schema_migrations")
+    for name in (SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD, SEED_ADMIN_NAME):
+        monkeypatch.delenv(name)
+
+    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert administrator_count(conn) == 1
+
+
+def test_a_weak_seed_password_fails_naming_the_rule(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, a_password(MIN_PASSWORD_LENGTH - 1))
+
+    with pytest.raises(MigrationError, match=f"at least {MIN_PASSWORD_LENGTH} characters"):
+        up(conn)
+
+    assert ledger_versions(conn) == [CREATE_USERS_VERSION]
+    assert administrator_count(conn) == 0
+
+
+def test_an_over_long_seed_password_fails_naming_the_rule(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The ceiling was enforced in `config.py` and tested nowhere. Deleting that
+    # branch kept every test green, and on the *reseed* path — which is not
+    # wrapped by `_apply` — the `ValueError` from `hash_password` is not one of
+    # the four exceptions `main` handles, so it would reach the operator as a
+    # traceback instead of a named refusal.
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, a_password(MAX_PASSWORD_LENGTH + 1))
+
+    with pytest.raises(MigrationError, match=f"at most {MAX_PASSWORD_LENGTH} characters"):
+        up(conn)
+
+    assert ledger_versions(conn) == [CREATE_USERS_VERSION]
+    assert administrator_count(conn) == 0
+
+
+def test_an_over_long_password_is_refused_on_the_reseed_path(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    up(conn)
+    stored = the_administrator(conn)["password_hash"]
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, a_password(MAX_PASSWORD_LENGTH + 1))
+
+    with pytest.raises(ConfigurationError, match=f"at most {MAX_PASSWORD_LENGTH} characters"):
+        migrate.reseed_admin(conn)
+
+    assert the_administrator(conn)["password_hash"] == stored
+
+
+def test_a_malformed_seed_email_is_refused(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SEED_ADMIN_EMAIL, "not-an-address")
+
+    with pytest.raises(MigrationError, match="email address"):
+        up(conn)
+
+
+def test_the_seed_name_is_optional(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(SEED_ADMIN_NAME)
+
+    up(conn)
+
+    assert the_administrator(conn)["name"] == "Rocell Administrator"
+
+
+def test_the_config_error_never_repeats_the_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rocell_infra.config import seed_admin_config
+
+    password = a_password(MIN_PASSWORD_LENGTH - 1)
+    monkeypatch.setenv(SEED_ADMIN_EMAIL, SEED_EMAIL)
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, password)
+
+    with pytest.raises(ConfigurationError) as raised:
+        seed_admin_config()
+
+    assert password not in str(raised.value)
+
+
+# --- The table's own constraints ---------------------------------------------
+
+
+def test_an_email_differing_only_by_case_is_rejected(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    up(conn)
+
+    # An integrity error, surfaced rather than swallowed. It is the CHECK that
+    # catches this one, because the canonical stored form is lowercase — which
+    # is precisely what keeps a case-differing duplicate from existing.
+    with pytest.raises(pg_errors.IntegrityError):
+        conn.execute(
+            "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+            ("Ruwan Again", SEED_EMAIL.upper(), "$argon2id$placeholder", "staff"),
+        )
+
+    assert administrator_count(conn) == 1
+
+
+def test_a_duplicate_email_is_rejected_by_the_unique_index(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    up(conn)
+
+    with pytest.raises(pg_errors.UniqueViolation):
+        conn.execute(
+            "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+            ("Ruwan Again", SEED_EMAIL, "$argon2id$placeholder", "staff"),
+        )
+
+
+def test_the_table_refuses_an_address_that_is_not_lowercased(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # Without this, every lookup from Story 1.3 on has to remember
+    # `lower(email) = lower(...)`, and nothing catches the first one that does
+    # not — it just silently fails to find the account.
+    up(conn)
+
+    with pytest.raises(pg_errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+            ("Mixed Case", "Someone@Rocell.LK", "$argon2id$placeholder", "staff"),
+        )
+
+
+def test_the_seeded_address_is_stored_lowercased(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SEED_ADMIN_EMAIL, "RUWAN@Rocell.LK")
+
+    up(conn)
+
+    assert the_administrator(conn)["email"] == "ruwan@rocell.lk"
+
+
+def test_an_unknown_role_is_rejected(conn: psycopg.Connection, seed_password: str) -> None:
+    up(conn)
+
+    with pytest.raises(pg_errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+            ("A Manager", "manager@rocell.lk", "$argon2id$placeholder", "manager"),
+        )
+
+
+@pytest.mark.parametrize("role", ["staff", "admin"])
+def test_both_roles_are_accepted(conn: psycopg.Connection, seed_password: str, role: str) -> None:
+    up(conn)
+
+    conn.execute(
+        "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+        ("Someone", f"{role}.someone@rocell.lk", "$argon2id$placeholder", role),
+    )
+
+    row = conn.execute(
+        "SELECT active, must_change_password FROM users WHERE email = %s",
+        (f"{role}.someone@rocell.lk",),
+    ).fetchone()
+    assert row is not None
+    # The defaults the ERD names: active, and gated by a password change.
+    assert row == (True, True)
+
+
+# --- down --------------------------------------------------------------------
+
+
+def test_down_reverts_one_step(conn: psycopg.Connection, seed_password: str) -> None:
+    up(conn)
+
+    assert down(conn) == SEED_VERSION
+    assert ledger_versions(conn) == [CREATE_USERS_VERSION]
+    assert administrator_count(conn) == 0
+    assert table_columns(conn, "users") != set()
+
+
+def test_down_twice_restores_the_previous_shape(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    up(conn)
+    down(conn)
+
+    assert down(conn) == CREATE_USERS_VERSION
+    assert ledger_versions(conn) == []
+    assert table_columns(conn, "users") == set()
+
+
+def test_down_refuses_a_ledger_version_whose_files_are_gone(
+    conn: psycopg.Connection, tmp_path: Path
+) -> None:
+    # A version recorded as applied whose `.sql` files were deleted or renamed.
+    # Without the guard, `down` reaches for `.down_path` on nothing and the
+    # operator gets an AttributeError traceback instead of the guided message —
+    # and no test noticed, because none of the `down` cases staged this state.
+    write_plain_pair(tmp_path, "20260101T0900_create_widgets", "widgets")
+    plan = discover_migrations(tmp_path)
+    assert up(conn, plan) == ["20260101T0900_create_widgets"]
+
+    for path in tmp_path.glob("20260101T0900_create_widgets.*"):
+        path.unlink()
+
+    with pytest.raises(MigrationError, match="recorded as applied but has no files"):
+        down(conn, discover_migrations(tmp_path))
+
+    assert ledger_versions(conn) == ["20260101T0900_create_widgets"]
+
+
+def test_down_on_an_unmigrated_database_reverts_nothing(conn: psycopg.Connection) -> None:
+    assert down(conn) is None
+
+
+def test_up_after_down_reseeds(conn: psycopg.Connection, seed_password: str) -> None:
+    up(conn)
+    down(conn)
+    down(conn)
+
+    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert administrator_count(conn) == 1
+
+
+def test_down_leaves_a_claimed_administrator_alone(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # A `down` must restore the previous shape, not take a live system's last
+    # way in with it.
+    up(conn)
+    conn.execute(
+        "UPDATE users SET must_change_password = false, last_login_at = now() WHERE role = %s",
+        ("admin",),
+    )
+
+    assert down(conn) == SEED_VERSION
+    assert administrator_count(conn) == 1
+
+
+def test_down_leaves_an_administrator_who_has_signed_in_alone(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # `must_change_password` is set and `last_login_at` is not null: the state
+    # an admin-issued credential reset produces on an account that has been
+    # used. The claimed-account test above sets *both* flags in one UPDATE, so
+    # it passes with either predicate deleted — and with `last_login_at IS
+    # NULL` gone, `down --yes` would take a live system's last way in.
+    up(conn)
+    conn.execute("UPDATE users SET last_login_at = now() WHERE role = %s", ("admin",))
+
+    assert down(conn) == SEED_VERSION
+    assert administrator_count(conn) == 1
+
+
+def test_down_leaves_an_administrator_who_set_their_own_password_alone(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # The mirror image: the password has been set but no sign-in is recorded.
+    up(conn)
+    conn.execute(
+        "UPDATE users SET must_change_password = false WHERE role = %s",
+        ("admin",),
+    )
+
+    assert down(conn) == SEED_VERSION
+    assert administrator_count(conn) == 1
+
+
+def test_down_leaves_staff_accounts_alone(conn: psycopg.Connection, seed_password: str) -> None:
+    # No `down` case had a non-admin row in the table, so deleting `role =
+    # 'admin'` from the down SQL passed the whole suite while taking every
+    # unclaimed Staff account with the seeded Administrator.
+    up(conn)
+    conn.execute(
+        "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+        ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
+    )
+
+    assert down(conn) == SEED_VERSION
+
+    remaining = conn.execute("SELECT role FROM users").fetchall()
+    assert [row[0] for row in remaining] == ["staff"]
+
+
+def test_down_leaves_a_second_administrator_alone(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    up(conn)
+    conn.execute(
+        "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+        ("Second Admin", "second@rocell.lk", "$argon2id$placeholder", "admin"),
+    )
+
+    assert down(conn) == SEED_VERSION
+    assert administrator_count(conn) == 2
+
+
+# --- status ------------------------------------------------------------------
+
+
+def test_status_reports_pending_then_applied(conn: psycopg.Connection, seed_password: str) -> None:
+    assert status(conn) == [(CREATE_USERS_VERSION, False), (SEED_VERSION, False)]
+
+    up(conn)
+
+    assert status(conn) == [(CREATE_USERS_VERSION, True), (SEED_VERSION, True)]
+
+
+# --- A migration that fails --------------------------------------------------
+
+
+def test_a_failing_migration_writes_no_ledger_row(conn: psycopg.Connection, tmp_path: Path) -> None:
+    (tmp_path / "20260101T0900_create_thing.up.sql").write_text(
+        "CREATE TABLE thing (id int);\nSELECT 1 / 0;\n", encoding="utf-8"
+    )
+    (tmp_path / "20260101T0900_create_thing.down.sql").write_text(
+        "DROP TABLE IF EXISTS thing;\n", encoding="utf-8"
+    )
+    plan = discover_migrations(tmp_path)
+
+    with pytest.raises(MigrationError, match="20260101T0900_create_thing.up.sql failed"):
+        up(conn, plan)
+
+    # The whole file rolled back — the table the first statement created is
+    # gone too — and nothing was recorded as applied.
+    assert ledger_versions(conn) == []
+    assert table_columns(conn, "thing") == set()
+
+
+def test_a_failing_migration_preserves_the_database_error_text(
+    conn: psycopg.Connection, tmp_path: Path
+) -> None:
+    (tmp_path / "20260101T0900_break_things.up.sql").write_text("SELECT 1 / 0;\n", encoding="utf-8")
+    (tmp_path / "20260101T0900_break_things.down.sql").write_text("SELECT 1;\n", encoding="utf-8")
+
+    with pytest.raises(MigrationError, match="division by zero"):
+        up(conn, discover_migrations(tmp_path))
+
+
+def test_an_unknown_python_step_is_refused(conn: psycopg.Connection, tmp_path: Path) -> None:
+    (tmp_path / "20260101T0900_do_magic.up.sql").write_text(
+        "-- rocell:python conjure_something\n", encoding="utf-8"
+    )
+    (tmp_path / "20260101T0900_do_magic.down.sql").write_text("SELECT 1;\n", encoding="utf-8")
+
+    with pytest.raises(MigrationError, match="conjure_something"):
+        up(conn, discover_migrations(tmp_path))
+
+    assert ledger_versions(conn) == []
+
+
+# --- reseed-admin ------------------------------------------------------------
+
+
+def test_reseed_reissues_the_credential_while_unclaimed(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    up(conn)
+    before = the_administrator(conn)
+
+    replacement = a_password()
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, replacement)
+    migrate.reseed_admin(conn)
+
+    after = the_administrator(conn)
+    assert after["id"] == before["id"]
+    assert verify_password(str(after["password_hash"]), replacement) is True
+    assert verify_password(str(after["password_hash"]), seed_password) is False
+    assert after["must_change_password"] is True
+    assert administrator_count(conn) == 1
+
+
+def test_reseed_restarts_the_seventy_two_hour_clock(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The command exists *because* the credential expires: if nobody claims the
+    # account inside 72 hours there is no Administrator left to reissue it. No
+    # test read `temp_credential_expires_at` after a reseed, so deleting that
+    # line from `_REISSUE_CREDENTIAL` kept the suite green while handing the
+    # operator a working password against an already-dead deadline.
+    up(conn)
+    conn.execute(
+        """
+        UPDATE users
+           SET temp_credential_expires_at = now() - interval '1 hour',
+               updated_at = now() - interval '4 days'
+         WHERE role = %s
+        """,
+        ("admin",),
+    )
+    before = the_administrator(conn)
+
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, a_password())
+    migrate.reseed_admin(conn)
+
+    after = the_administrator(conn)
+    assert after["temp_credential_expires_at"] > before["temp_credential_expires_at"]
+    assert after["updated_at"] > before["updated_at"]
+
+    row = conn.execute(
+        "SELECT temp_credential_expires_at - now() FROM users WHERE role = %s",
+        ("admin",),
+    ).fetchone()
+    assert row is not None
+    assert (
+        timedelta(hours=71, minutes=59)
+        < row[0]
+        <= timedelta(hours=seed.TEMP_CREDENTIAL_LIFETIME_HOURS)
+    )
+
+
+def test_reseed_refuses_once_the_account_is_claimed(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    up(conn)
+    conn.execute(
+        "UPDATE users SET must_change_password = false WHERE role = %s",
+        ("admin",),
+    )
+
+    with pytest.raises(seed.SeedRefused, match="already been claimed"):
+        migrate.reseed_admin(conn)
+
+
+def test_reseed_refuses_once_the_account_has_signed_in(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    up(conn)
+    conn.execute("UPDATE users SET last_login_at = now() WHERE role = %s", ("admin",))
+
+    with pytest.raises(seed.SeedRefused, match="already been claimed"):
+        migrate.reseed_admin(conn)
+
+
+def test_reseed_refuses_once_a_second_administrator_exists(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    up(conn)
+    conn.execute(
+        "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+        ("Second Admin", "second@rocell.lk", "$argon2id$placeholder", "admin"),
+    )
+
+    with pytest.raises(seed.SeedRefused, match="2 Administrators"):
+        migrate.reseed_admin(conn)
+
+
+def test_reseed_refuses_when_there_is_no_administrator(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    up(conn)
+    conn.execute("DELETE FROM users WHERE role = %s", ("admin",))
+
+    with pytest.raises(seed.SeedRefused, match="No Administrator exists"):
+        migrate.reseed_admin(conn)
+
+
+def test_reseed_leaves_a_deactivated_administrator_deactivated(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Reissuing a credential is not a reactivation. An Administrator
+    # deactivated on purpose must not come back because someone ran a console
+    # command that advertises itself as narrow.
+    up(conn)
+    conn.execute("UPDATE users SET active = false WHERE role = %s", ("admin",))
+
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, a_password())
+    migrate.reseed_admin(conn)
+
+    assert the_administrator(conn)["active"] is False
+
+
+def test_reseed_without_a_users_table_refuses_with_guidance(conn: psycopg.Connection) -> None:
+    with pytest.raises(seed.SeedRefused, match="no `users` table"):
+        migrate.reseed_admin(conn)
+
+
+# --- Concurrency -------------------------------------------------------------
+
+
+def test_a_concurrent_runner_waits_for_the_migration_lock(
+    conn: psycopg.Connection,
+    database_url: str,
+    seed_password: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The third layer behind the ledger and the seed guard: two runners that
+    # both observe an empty `users` table would both insert, and with different
+    # SEED_ADMIN_EMAIL values the unique index does not catch it either.
+    #
+    # The runner sets its own `lock_timeout`, so this waits on the real one —
+    # turned down to keep the test quick. Matching the message matters: a bare
+    # `raises(MigrationError)` is satisfied by any planning failure, so it would
+    # still pass with the advisory lock deleted outright.
+    monkeypatch.setattr(migrate, "LOCK_TIMEOUT_MS", 400)
+
+    with psycopg.connect(database_url, autocommit=True) as other:
+        other.execute("SELECT pg_advisory_lock(%s)", (migrate.MIGRATION_LOCK_ID,))
+
+        with pytest.raises(MigrationError, match="held the lock on this database"):
+            up(conn)
+
+        assert ledger_versions(conn) == []
+        other.execute("SELECT pg_advisory_unlock(%s)", (migrate.MIGRATION_LOCK_ID,))
+
+    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert administrator_count(conn) == 1
+
+
+def test_a_concurrent_reseed_waits_for_the_migration_lock(
+    conn: psycopg.Connection,
+    database_url: str,
+    seed_password: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `reseed_admin` takes the same lock, and for the same reason: two reseeds
+    # that both pass the "still unclaimed, still the only one" guard both write,
+    # and the operator holding the first password is told it works. The only
+    # lock test drove `up`, so removing `_take_lock` from `reseed_admin` left
+    # every reseed test green.
+    up(conn)
+    stored = the_administrator(conn)["password_hash"]
+    monkeypatch.setattr(migrate, "LOCK_TIMEOUT_MS", 400)
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, a_password())
+
+    with psycopg.connect(database_url, autocommit=True) as other:
+        other.execute("SELECT pg_advisory_lock(%s)", (migrate.MIGRATION_LOCK_ID,))
+
+        with pytest.raises(MigrationError, match="held the lock on this database"):
+            migrate.reseed_admin(conn)
+
+        assert the_administrator(conn)["password_hash"] == stored
+        other.execute("SELECT pg_advisory_unlock(%s)", (migrate.MIGRATION_LOCK_ID,))
+
+    migrate.reseed_admin(conn)
+    assert the_administrator(conn)["password_hash"] != stored
+
+
+def test_a_migration_already_applied_under_the_lock_is_not_applied_twice(
+    conn: psycopg.Connection, database_url: str, seed_password: str
+) -> None:
+    # The re-read under the lock: a plan drawn up before a concurrent runner
+    # committed must not replay what that runner already applied.
+    plan = discover_migrations()
+    with psycopg.connect(database_url, autocommit=True) as other:
+        up(other, plan)
+
+    assert up(conn, plan) == []
+    assert administrator_count(conn) == 1
+
+
+def test_apply_declines_a_version_that_became_applied_after_the_plan(
+    conn: psycopg.Connection, database_url: str, seed_password: str
+) -> None:
+    # `up` filters against a ledger snapshot taken *before* any lock is held,
+    # so the test above never reaches `_apply` at all — deleting the re-read
+    # inside the lock left the whole suite green. This is the race it exists
+    # for: the snapshot is empty, the other runner commits, and this runner
+    # then arrives at `_apply` for a version already applied. Replaying the
+    # seed migration here would run its body a second time.
+    plan = discover_migrations()
+    migrate.ensure_ledger(conn)
+    assert set(migrate.applied_versions(conn)) == set()
+
+    with psycopg.connect(database_url, autocommit=True) as other:
+        up(other, plan)
+
+    assert [migrate._apply(conn, migration) for migration in plan] == [False, False]
+    assert ledger_versions(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert administrator_count(conn) == 1
+
+
+def test_reseed_refuses_an_email_that_is_not_the_seeded_one(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Reissuing changes the password and the expiry and nothing else, so an
+    # operator who supplies a different address would be told the credential
+    # was reissued and then find nothing accepts what they typed.
+    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    before = the_administrator(conn)
+
+    monkeypatch.setenv(SEED_ADMIN_EMAIL, "someone.else@rocell.lk")
+    monkeypatch.setenv(SEED_ADMIN_PASSWORD, a_password())
+
+    with pytest.raises(seed.SeedRefused, match="does not change the address"):
+        migrate.reseed_admin(conn)
+
+    after = the_administrator(conn)
+    assert after["password_hash"] == before["password_hash"]
+    assert after["email"] == SEED_EMAIL
+    assert verify_password(str(after["password_hash"]), seed_password)
+
+
+def test_reseed_names_the_address_that_would_have_worked(
+    conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    monkeypatch.setenv(SEED_ADMIN_EMAIL, "someone.else@rocell.lk")
+
+    with pytest.raises(seed.SeedRefused, match=SEED_EMAIL):
+        migrate.reseed_admin(conn)
+
+
+def test_the_unclaimed_credential_is_reportable(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # What the runner prints after seeding: the address to type and the
+    # deadline to type it by. Both had to be queried out of the database before.
+    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+
+    record = seed.unclaimed_administrator(conn)
+    assert record is not None
+    email, expires_at = record
+    assert email == SEED_EMAIL
+    assert expires_at == the_administrator(conn)["temp_credential_expires_at"]
+
+
+def test_a_claimed_credential_is_not_reported(conn: psycopg.Connection, seed_password: str) -> None:
+    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    conn.execute("UPDATE users SET must_change_password = false WHERE role = %s", ("admin",))
+
+    assert seed.unclaimed_administrator(conn) is None
+
+
+def test_the_reseed_remedy_is_only_offered_where_it_would_work(
+    conn: psycopg.Connection, seed_password: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `reseed-admin` refuses once a second Administrator exists, and the row
+    # this reads is the *earliest* unclaimed one — on an already-migrated
+    # database that may be an account an Administrator created. Pointing the
+    # operator at a command that will refuse is worse than saying nothing.
+    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+
+    migrate._report_credential(conn)
+    assert "make reseed-admin" in capsys.readouterr().out
+
+    conn.execute(
+        "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+        ("Second Admin", "second@rocell.lk", "$argon2id$placeholder", "admin"),
+    )
+
+    migrate._report_credential(conn)
+    out = capsys.readouterr().out
+    assert "make reseed-admin" not in out
+    assert "another Administrator can reissue it" in out
+
+
+# --- A directive file that also carries SQL ----------------------------------
+
+
+def test_a_directive_file_carrying_sql_is_refused(conn: psycopg.Connection, tmp_path: Path) -> None:
+    # The SQL would never run, and the ledger row would still be written: the
+    # migration would read as applied and have done nothing.
+    (tmp_path / "20260101T0900_seed_and_more.up.sql").write_text(
+        "-- rocell:python seed_administrator\nCREATE TABLE extra (id int);\n", encoding="utf-8"
+    )
+    (tmp_path / "20260101T0900_seed_and_more.down.sql").write_text(
+        "DROP TABLE IF EXISTS extra;\n", encoding="utf-8"
+    )
+
+    with pytest.raises(MigrationError, match="both a `rocell:python` directive and SQL"):
+        up(conn, discover_migrations(tmp_path))
+
+    assert ledger_versions(conn) == []
+
+
+def test_a_commented_out_directive_does_not_run_its_step(
+    conn: psycopg.Connection, tmp_path: Path, seed_password: str
+) -> None:
+    # `/* ... */` is a comment. The directive match read the raw body while
+    # `has_sql` stripped block comments, so the two halves of the guard read the
+    # same file differently: a marker disabled by wrapping it in a block comment
+    # still called `seed_administrator`. Now it names no step — and a body that
+    # holds neither SQL nor a directive is refused rather than applied as a
+    # no-op with a ledger row to show for it.
+    (tmp_path / "20260101T0900_seed_later.up.sql").write_text(
+        "/* Not yet — enable this when the table exists.\n"
+        "-- rocell:python seed_administrator\n"
+        "*/\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "20260101T0900_seed_later.down.sql").write_text("SELECT 1;\n", encoding="utf-8")
+
+    with pytest.raises(MigrationError, match="holds no SQL and names no `rocell:python` step"):
+        up(conn, discover_migrations(tmp_path))
+
+    assert ledger_versions(conn) == []
+
+
+def test_a_directive_quoted_in_a_block_comment_does_not_refuse_real_sql(
+    conn: psycopg.Connection, tmp_path: Path
+) -> None:
+    # The other side of the same asymmetry: a plain SQL migration whose header
+    # merely *quotes* the directive while explaining it was refused with
+    # "carries both a `rocell:python` directive and SQL", which was untrue.
+    (tmp_path / "20260101T0900_create_widgets.up.sql").write_text(
+        "/* Unlike the seed, which uses\n"
+        "-- rocell:python seed_administrator\n"
+        "this one is ordinary SQL. */\n"
+        "CREATE TABLE widgets (id int);\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "20260101T0900_create_widgets.down.sql").write_text(
+        "DROP TABLE IF EXISTS widgets;\n", encoding="utf-8"
+    )
+
+    assert up(conn, discover_migrations(tmp_path)) == ["20260101T0900_create_widgets"]
+    assert table_columns(conn, "widgets") == {"id"}
+
+
+# --- down reverts what happened last, not what sorts last --------------------
+
+
+def write_plain_pair(directory: Path, version: str, table: str) -> None:
+    (directory / f"{version}.up.sql").write_text(
+        f"CREATE TABLE {table} (id int);\n", encoding="utf-8"
+    )
+    (directory / f"{version}.down.sql").write_text(
+        f"DROP TABLE IF EXISTS {table};\n", encoding="utf-8"
+    )
+
+
+def test_down_reverts_the_most_recently_applied_not_the_last_sorted(
+    conn: psycopg.Connection, tmp_path: Path
+) -> None:
+    # A migration merged from a branch can carry an earlier timestamp than what
+    # is already applied. Stepping down by version order would revert the wrong
+    # one — and `down` must undo what happened last.
+    write_plain_pair(tmp_path, "20260601T0900_create_alpha", "alpha")
+    assert up(conn, discover_migrations(tmp_path)) == ["20260601T0900_create_alpha"]
+
+    write_plain_pair(tmp_path, "20260101T0900_create_beta", "beta")
+    plan = discover_migrations(tmp_path)
+    assert up(conn, plan) == ["20260101T0900_create_beta"]
+
+    assert down(conn, plan) == "20260101T0900_create_beta"
+    assert table_columns(conn, "beta") == set()
+    assert table_columns(conn, "alpha") != set()
+
+
+# --- The command-line entry point --------------------------------------------
+
+
+@pytest.fixture
+def cli_env(database_url: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Point `main()` at this test's database, as `make migrate` would."""
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    return database_url
+
+
+def test_main_defaults_to_up(
+    cli_env: str, seed_password: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert migrate.main([]) == 0
+
+    out = capsys.readouterr().out
+    assert CREATE_USERS_VERSION in out
+    assert SEED_VERSION in out
+
+
+def test_main_up_is_idempotent(
+    cli_env: str, seed_password: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert migrate.main(["up"]) == 0
+    capsys.readouterr()
+
+    assert migrate.main(["up"]) == 0
+    assert "nothing to apply" in capsys.readouterr().out
+
+
+def test_main_status_lists_every_migration(
+    cli_env: str, seed_password: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert migrate.main(["up"]) == 0
+    capsys.readouterr()
+
+    assert migrate.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("applied") == 2
+    assert "pending" not in out
+
+
+def test_main_reseed_admin_succeeds(
+    cli_env: str, seed_password: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `make reseed-admin` exiting 2 with a usage message would otherwise leave
+    # the suite green.
+    assert migrate.main(["up"]) == 0
+    capsys.readouterr()
+
+    assert migrate.main(["reseed-admin"]) == 0
+    assert "reissued" in capsys.readouterr().out
+
+
+def test_main_surfaces_a_seed_refusal(
+    cli_env: str, seed_password: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert migrate.main(["up"]) == 0
+    with psycopg.connect(cli_env, autocommit=True) as other:
+        other.execute("UPDATE users SET must_change_password = false WHERE role = %s", ("admin",))
+    capsys.readouterr()
+
+    assert migrate.main(["reseed-admin"]) == 1
+    assert "already been claimed" in capsys.readouterr().err
+
+
+def test_main_surfaces_a_migration_failure(
+    cli_env: str,
+    seed_password: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv(SEED_ADMIN_PASSWORD)
+
+    assert migrate.main(["up"]) == 1
+    assert SEED_ADMIN_PASSWORD in capsys.readouterr().err
+
+
+def test_main_without_a_database_url_exits_non_zero_naming_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    assert migrate.main(["status"]) == 1
+    assert "DATABASE_URL" in capsys.readouterr().err
+
+
+def test_main_refuses_down_without_the_confirmation_flag(
+    cli_env: str, seed_password: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `down` twice drops `users` with every account in it, and it is documented
+    # as an ordinary operator command.
+    assert migrate.main(["up"]) == 0
+    capsys.readouterr()
+
+    assert migrate.main(["down"]) == 1
+    assert migrate.CONFIRM_FLAG in capsys.readouterr().err
+
+    with psycopg.connect(cli_env, autocommit=True) as other:
+        assert administrator_count(other) == 1
+
+
+def test_main_steps_down_with_the_confirmation_flag(
+    cli_env: str, seed_password: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert migrate.main(["up"]) == 0
+    capsys.readouterr()
+
+    assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
+    assert SEED_VERSION in capsys.readouterr().out
+
+    with psycopg.connect(cli_env, autocommit=True) as other:
+        assert administrator_count(other) == 0
+
+
+def test_main_reports_nothing_to_revert(cli_env: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
+    assert "nothing to revert" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "args", [["frobnicate"], ["up", "--yes"], ["status", "extra"], ["--force"]]
+)
+def test_main_rejects_an_unknown_invocation(
+    args: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert migrate.main(args) == 2
+    assert "usage:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", ["-h", "--help", "help"])
+def test_main_prints_usage_for_help(flag: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert migrate.main([flag]) == 0
+    assert "usage:" in capsys.readouterr().out

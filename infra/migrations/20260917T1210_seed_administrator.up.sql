@@ -1,0 +1,18 @@
+-- Story 1.2 — the one seeded Administrator.
+--
+-- This file is a marker, not SQL. An Argon2id digest cannot be computed in
+-- SQL, and hashing the seed password anywhere other than the single shared
+-- helper would let its parameters drift from the login verifier's — a seeded
+-- password that login cannot verify, with nothing raised. So the runner
+-- recognises the directive below and calls `rocell_infra.seed.seed_administrator`
+-- inside *this migration's transaction*, keeping the file/ledger atomicity that
+-- every other migration has.
+--
+-- The credentials come from SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD (and the
+-- optional SEED_ADMIN_NAME) in the environment. Nothing is committed here.
+--
+-- The seed step guards itself: if any `admin` row already exists it returns
+-- without touching the environment. That is the second of the two independent
+-- idempotency layers — the ledger is the first.
+
+-- rocell:python seed_administrator

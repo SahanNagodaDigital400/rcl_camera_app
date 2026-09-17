@@ -1,0 +1,83 @@
+"""The `User` contract, shared by `apps/web` and `apps/api`.
+
+The field set is the architecture spine's ERD `USER` block plus the two the PRD
+needs on the admin screens: `name` and `email` (FR-11) and `last_login_at`
+(FR-10). The glossary names are used verbatim — the entity is a `User` and its
+roles are `Staff` and `Administrator`, stored as the lowercase values `staff`
+and `admin`.
+
+**`password_hash` is deliberately absent.** It is not excluded by a serializer
+that a later change could forget; the field does not exist on this model, so
+there is no code path that can put a digest on the wire. `infra`'s seed and
+`apps/api`'s login verifier read that column directly and never through here.
+
+`shared_schema/ts/user.ts` is the TypeScript twin. The two files are one
+contract in two languages and change together or not at all.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from enum import StrEnum
+from uuid import UUID
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, field_serializer
+
+
+class Role(StrEnum):
+    """The complete set of roles. AGENTS.md Policy: never a third one."""
+
+    STAFF = "staff"
+    ADMIN = "admin"
+
+
+class User(BaseModel):
+    """A `Staff` or `Administrator` account, as the API renders it.
+
+    Closed shape, for the same reason `ErrorEnvelope` is closed: the TypeScript
+    twin's `isUser` rejects a body carrying any key beyond the contract, and
+    pydantic's default is to accept and silently discard. `password_hash`
+    arriving from anywhere must be a loud failure, not a quiet drop.
+
+    Nullable fields are required-but-nullable rather than optional, so the JSON
+    the API emits always carries all ten keys and the twin can check for them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    name: str
+    email: str
+    role: Role
+    active: bool
+    must_change_password: bool
+    # Set when an Administrator issues a temporary credential; AGENTS.md Policy
+    # gives it 72 hours. Read and compared as UTC (the column is `timestamptz`).
+    #
+    # `AwareDatetime`, not `datetime`: a naive value carries no instant at all,
+    # and the twin's `isUtcTimestamp` rejects one. Accepting it here would make
+    # the two halves disagree about a body pydantic had already validated.
+    temp_credential_expires_at: AwareDatetime | None
+    last_login_at: AwareDatetime | None
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+
+    @field_serializer(
+        "temp_credential_expires_at",
+        "last_login_at",
+        "created_at",
+        "updated_at",
+        when_used="json",
+    )
+    def _in_utc(self, value: datetime | None) -> str | None:
+        """Emit every timestamp in UTC, whatever offset it arrived with.
+
+        `timestamptz` comes back from the driver in the *session's* time zone,
+        so an API process whose session is not UTC would put `+05:30` on the
+        wire. The spine's Consistency Conventions fix timestamps as ISO 8601
+        UTC, and the twin's `isUtcTimestamp` accepts only a UTC designator — so
+        without this, a body this model validated and serialized could be
+        rejected by `isUser`, and "one contract in two languages" would be true
+        of the key set and false of the values.
+        """
+        return None if value is None else value.astimezone(UTC).isoformat()

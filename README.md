@@ -21,8 +21,8 @@ Both paths call the *same* code in `shared/vision`. See AD-1 below.
 | `apps/web` | React PWA — capture UI, results, scan history, admin screens. Talks only to `apps/api`, holds no database or storage credential (AD-6). |
 | `apps/api` | FastAPI service — auth, scan submission, admin user/catalogue endpoints, audit log. Every live mutation flows through here. |
 | `shared/vision` | Crop, colour management, preprocessing and embedding, plus the shared upload-intake path. Called identically by `apps/api` and `scripts/ingest`. |
-| `shared/schema` | Types and contracts shared between `apps/web` and `apps/api` — today, the API error envelope, defined once in Python and once in TypeScript. `apps/web` compiles against the TypeScript half (imported as `@rocell/schema/*`), so the two halves cannot drift apart unnoticed. |
-| `infra` | IaC, migrations, deployment config. See `infra/README.md`. |
+| `shared/schema` | Types and contracts shared between `apps/web` and `apps/api` — today the API error envelope and the `User`, each defined once in Python and once in TypeScript, plus the one Argon2id hashing helper that the migration seed and the login verifier both call. `apps/web` compiles against the TypeScript half (imported as `@rocell/schema/*`), so the two halves cannot drift apart unnoticed. |
+| `infra` | IaC, migrations and the plain-SQL migration runner (`rocell_infra`). See `infra/README.md`. |
 | `scripts/ingest` | Drive → index batch ingestion. The one pre-launch exception to "all mutation flows through `apps/api`". |
 
 `poc/` is a standalone proof of concept with its own venv, Makefile and data. It is not part of
@@ -41,8 +41,37 @@ make test     # pytest workspace suite + apps/web vitest suite
 make build    # production build of apps/web
 ```
 
-`make migrate`, `make ingest` and `make eval` exist but are not implemented; each names the story
-or epic that delivers it and exits non-zero. Run `make` with no target for the full list.
+`make ingest` and `make eval` exist but are not implemented; each names the epic that delivers it
+and exits non-zero. Run `make` with no target for the full list.
+
+### The database
+
+`make dev` is only meaningful against a migrated database. Point `DATABASE_URL` at a PostgreSQL
+you can write to, supply the first Administrator's credentials in the environment, and migrate:
+
+```bash
+export DATABASE_URL=postgresql://rocell@localhost:5432/rocell
+export SEED_ADMIN_EMAIL=you@rocell.lk
+read -rs SEED_ADMIN_PASSWORD && export SEED_ADMIN_PASSWORD   # 12-128 chars, not echoed
+make migrate
+unset SEED_ADMIN_PASSWORD
+```
+
+`read -rs` rather than `SEED_ADMIN_PASSWORD=… make migrate`: typed on the command line the
+password lands in shell history, and `make migrate SEED_ADMIN_PASSWORD=…` additionally puts it in
+the process's arguments, where `ps` shows it to every other user on the machine. `unset` it
+afterwards because an exported password is inherited by everything the shell runs next. `make migrate` prints the address it seeded and the deadline it has to be claimed by.
+
+That creates the `users` table and seeds **exactly one** Administrator, in the
+`must_change_password` state — the only account in the product's lifetime that no Administrator
+created. Re-running `make migrate` never produces a second one, and on an already-seeded database
+it needs no `SEED_ADMIN_*` variables at all.
+
+Nothing here is defaulted and nothing is committed: every value comes from the environment, and
+`make migrate` exits non-zero naming whatever is missing. The seeded credential expires after 72
+hours like any other admin-issued one; `make reseed-admin` reissues it while the account is still
+unclaimed. Full operator notes — commands, the two idempotency layers, stepping a migration back —
+are in `infra/README.md`.
 
 ## Design tokens
 

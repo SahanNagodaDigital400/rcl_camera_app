@@ -55,13 +55,16 @@ make lint           # ruff check + ruff format --check, oxlint, tsc --noEmit
 make format         # apply ruff's formatting and import fixes
 make test           # full suite (pytest workspace + apps/web vitest)
 make build          # production build of apps/web
+make migrate        # apply migrations -- needs DATABASE_URL, and SEED_ADMIN_EMAIL /
+                    # SEED_ADMIN_PASSWORD the first time (see infra/README.md)
+make reseed-admin   # reissue the seeded Administrator's temporary credential;
+                    # same SEED_ADMIN_* environment as make migrate
 ```
 
 Not implemented yet — each names the story or epic that delivers it and exits non-zero rather
 than reporting success:
 
 ```bash
-make migrate        # apply migrations                    -- Story 1.2
 make ingest         # run catalogue ingestion             -- Epic 2
 make eval           # accuracy harness                    -- Epic 2
 ```
