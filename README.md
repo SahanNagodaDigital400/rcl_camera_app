@@ -85,6 +85,18 @@ returns to itself. Testing on a real handset therefore needs a trustworthy origi
 server: a tunnel that terminates TLS, or a locally-trusted certificate. Do not reach for an
 insecure cookie to make it work.
 
+A session has two deadlines and dies at whichever comes first: it survives a normal shift, ends
+after 12 hours with no request, and ends 7 days after it was issued however busy its owner was —
+activity slides the first and cannot move the second. There is no warning before either and no
+countdown; signing in again is the whole of the recovery. If the API stops honouring the cookie
+for any reason — either deadline, a sign-out elsewhere, or an Administrator deactivating the
+account — the next request from an open tab returns the user to the login screen with a short
+notice, and which of those it was is deliberately not said. Arriving cold on a dead session shows
+the login screen with **no** notice, and that is correct rather than a gap: the cookie is
+HTTP-only and unreadable by page script, so a freshly loaded tab genuinely cannot distinguish a
+session that just ended from a browser that never had one, and guessing would tell people who
+never signed in that they had been signed out.
+
 Nothing here is defaulted and nothing is committed: every value comes from the environment, and
 `make migrate` exits non-zero naming whatever is missing. The seeded credential expires after 72
 hours like any other admin-issued one; `make reseed-admin` reissues it while the account is still

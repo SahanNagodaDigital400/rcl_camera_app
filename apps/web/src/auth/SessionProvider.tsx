@@ -10,6 +10,7 @@ import {
   PASSWORD_CHANGE_NOT_REQUIRED,
   UNAUTHORIZED,
   apiRequest,
+  onUnauthorized,
 } from '../api/client';
 
 /**
@@ -42,6 +43,22 @@ export interface SessionContextValue {
    */
   changePassword: (newPassword: string) => Promise<void>;
   signOut: () => Promise<void>;
+  /**
+   * A session that existed has ended — expired, revoked, or its owner
+   * deactivated.
+   *
+   * Set only on the way out of `'signed-in'`, which is what keeps it off a
+   * rejected sign-in: the login screen's own `unauthorized` is a credential
+   * that was refused, not a session that ended, and a notice there would tell
+   * a user who mistyped their password that they had been signed out of
+   * something.
+   *
+   * Which of the three it was is deliberately not recorded and deliberately
+   * not shown. The three are indistinguishable by design — the API answers all
+   * of them with the same 401 and the same message — and a front end that
+   * guessed between them would leak what the server refused to say.
+   */
+  sessionEnded: boolean;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -68,6 +85,7 @@ function asUser(body: unknown): User {
 export function SessionProvider({ children }: { children: ReactNode }): JSX.Element {
   const [status, setStatus] = useState<SessionStatus>('loading');
   const [user, setUser] = useState<User | null>(null);
+  const [sessionEnded, setSessionEnded] = useState(false);
 
   useEffect(() => {
     // Guards against setting state after the effect has been torn down —
@@ -97,12 +115,94 @@ export function SessionProvider({ children }: { children: ReactNode }): JSX.Elem
     };
   }, []);
 
+  useEffect(() => {
+    // Every request in the app goes through `apiRequest`, so this is the one
+    // place that always learns the server has stopped honouring the cookie
+    // (DW-37). Without it the shell keeps rendering over a dead session until
+    // the page is reloaded, and EXPERIENCE.md line 90's "session expired
+    // mid-flow -> redirect to Login" has no implementation.
+    //
+    // Registered only while signed in, and keyed on `status` rather than read
+    // through a ref: a ref written in an effect lags the state it mirrors by a
+    // commit, so a 401 arriving in that window would be tested against the
+    // *previous* status and silently dropped. Re-registering costs one
+    // assignment per sign-in.
+    if (status !== 'signed-in') return;
+
+    return onUnauthorized(() => {
+      // Registered only while signed in, which is what keeps the notice off
+      // the two 401s that are not a session ending: the login screen's own
+      // rejection and the bootstrap finding no cookie. Nothing is observing at
+      // either of those moments.
+      //
+      // A session dying mid-forced-change *is* a session ending, and it does
+      // raise the notice — once. This runs before `apiRequest` throws, so by
+      // the time `changePassword`'s own `unauthorized` branch sets
+      // `'signed-out'` the state is already what that branch would set, and
+      // setting it again is idempotent rather than a second report.
+      setUser(null);
+      setStatus('signed-out');
+      setSessionEnded(true);
+    });
+  }, [status]);
+
+  useEffect(() => {
+    // The other half of DW-37: a tab backgrounded for hours comes back to a
+    // shell whose session died while nobody was looking. Returning to it is
+    // the moment to find out, and it costs one request at the moment a user
+    // is about to act anyway.
+    //
+    // **Never an interval.** A poll is itself an authenticated request, so a
+    // timer re-checking the session would slide `last_seen_at` forward every
+    // tick and keep an unattended tab signed in forever — defeating the very
+    // 12-hour idle window this exists to surface. Nothing in this app may
+    // keep a session alive on its owner's behalf.
+    if (status !== 'signed-in') return;
+
+    let live = true;
+
+    function revalidate(): void {
+      if (document.visibilityState !== 'visible') return;
+
+      apiRequest('/auth/session')
+        .then((body) => {
+          // Refreshes the cached `User` as well as proving the session: a role
+          // change or a deactivation lands on the next request (AD-3,
+          // EXPERIENCE.md line 95), and this is that request.
+          if (live) setUser(asUser(body));
+        })
+        .catch(() => {
+          // A 401 has already been dealt with by the observer above, and a tab
+          // brought back on a dead connection must not be signed out for the
+          // network — the state is left exactly as it was and the user's next
+          // real action reports its own failure.
+          //
+          // This also swallows a body `asUser` rejects, which is not the
+          // network but a broken contract with our own API. Deliberately the
+          // same treatment: the cached user simply stays as it was, and every
+          // request after this one is still authorized server-side (AD-3), so
+          // there is nothing a signed-in user could be shown here that their
+          // next action would not show them better.
+        });
+    }
+
+    document.addEventListener('visibilitychange', revalidate);
+    return () => {
+      live = false;
+      document.removeEventListener('visibilitychange', revalidate);
+    };
+  }, [status]);
+
   const signIn = useCallback(async (email: string, password: string): Promise<void> => {
     // Errors propagate: the login form is what knows how to show them, and
     // swallowing one here would leave a form that submits and does nothing.
     const body = await apiRequest('/auth/login', { method: 'POST', body: { email, password } });
     setUser(asUser(body));
     setStatus('signed-in');
+    // The notice has served its purpose the moment a session exists again.
+    // Left set, it would be on screen the next time the user signs out
+    // deliberately.
+    setSessionEnded(false);
   }, []);
 
   const changePassword = useCallback(async (newPassword: string): Promise<void> => {
@@ -158,11 +258,27 @@ export function SessionProvider({ children }: { children: ReactNode }): JSX.Elem
     await apiRequest('/auth/logout', { method: 'POST' });
     setUser(null);
     setStatus('signed-out');
+    // Signing out is not a session *ending* on the user — they ended it. The
+    // login screen they land on says nothing about it.
+    //
+    // Only on the way through, though. If the logout is itself refused with a
+    // 401 the session had already ended before the click, `apiRequest` throws,
+    // and none of these three lines run — the observer has raised the notice
+    // and it stands, because in that case something really did end without
+    // being asked to. The first test in `session-expiry.test.tsx` is that
+    // path.
+    //
+    // Not redundant with `signIn`'s identical clear: a revalidation 401 that
+    // lands during a forced change leaves the flag set on an app that
+    // `changePassword` then puts back to signed-in without a sign-in ever
+    // happening. This is what keeps that notice off the login screen the user
+    // reaches next.
+    setSessionEnded(false);
   }, []);
 
   const value = useMemo<SessionContextValue>(
-    () => ({ status, user, signIn, changePassword, signOut }),
-    [status, user, signIn, changePassword, signOut],
+    () => ({ status, user, signIn, changePassword, signOut, sessionEnded }),
+    [status, user, signIn, changePassword, signOut, sessionEnded],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

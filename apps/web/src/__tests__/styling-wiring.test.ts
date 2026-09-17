@@ -215,6 +215,28 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
   });
 
+  it('writes the session-ended notice in muted text, not in the destructive red', () => {
+    // A session reaching its idle window or its absolute ceiling is not a
+    // failure of anything the user did, and red means destructive-or-failed in
+    // this system and nothing else (DESIGN.md:167 — the one brand colour with a
+    // hard behavioural contract). Point `.notice` at `--color-destructive` and
+    // every render test stays green while a routine expiry reads as an error.
+    const css = read(join(SRC, 'screens', 'LoginScreen.module.css'));
+
+    expect(declaration(rule(css, '.notice'), 'color')).toBe('var(--color-muted-text)');
+    expect(declaration(rule(css, '.notice'), 'color')).not.toBe('var(--color-destructive)');
+  });
+
+  it('carries the notice on a status region, not on an alert', () => {
+    // The rule above is inert if the element is the wrong one. `role="alert"`
+    // interrupts a screen-reader user assertively, which is right for "your
+    // password was refused" and wrong for "sign in again".
+    const screen = read(join(SRC, 'screens', 'LoginScreen.tsx'));
+
+    expect(screen).toContain('className={styles.notice}');
+    expect(screen).toContain('role="status"');
+  });
+
   it.each([
     ['LoginScreen', 'LoginScreen.tsx'],
     ['ForcedPasswordChangeScreen', 'ForcedPasswordChangeScreen.tsx'],

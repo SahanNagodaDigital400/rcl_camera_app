@@ -41,6 +41,14 @@ A migration that fails halfway therefore leaves neither, and the next run
 retries it from a clean state rather than skipping something that only
 half-applied.
 
+**Migrate before you deploy the code that reads the new schema.** The two are
+separate steps and nothing enforces their order: `api.sessions` names
+`last_seen_at` in three of its statements, so a revision that ships ahead of
+`20260917T1400_track_session_activity` fails *every authenticated request and
+every sign-in* on an undefined column for the length of the gap. A rollback is
+the same requirement mirrored — roll the application back first, then step the
+schema down, or the running code loses a column it is still selecting.
+
 ### What is in `migrations/` today
 
 | Version | What it creates |
@@ -48,6 +56,42 @@ half-applied.
 | `20260917T1200_create_users` | the `users` table and its `lower(email)` unique index |
 | `20260917T1210_seed_administrator` | the one seeded Administrator (a marker, see below) |
 | `20260917T1300_create_sessions` | the `sessions` table — the architecture spine's `SESSION` ERD block, with `ON DELETE CASCADE` from `users` so deleting an account ends its sessions rather than orphaning them, a unique index on `token_hash` and an index on `user_id` |
+| `20260917T1400_track_session_activity` | `sessions.last_seen_at` — the idle half of a session's two deadlines (see below). No index on it, on purpose |
+
+### A session's two deadlines
+
+A session dies at whichever of these comes first, and they are **two different
+columns** because only one of them may ever move:
+
+| Bound | Column | What extends it |
+|---|---|---|
+| 12 hours idle | `last_seen_at` | every authenticated request, throttled to one write a minute |
+| 7 days absolute | `issued_at` | **nothing** |
+
+`expires_at` is written once at sign-in and is never updated; the absolute
+check is made against `issued_at` regardless, so no amount of activity can push
+the 7-day ceiling. A user working through a shift is never signed out; a phone
+left in a drawer on Friday is not a live credential on Monday; and a session
+that has been used every hour for a week is still refused on the seventh day.
+
+There is no warning before either deadline and no countdown — signing in again
+is the whole of the recovery. A session refused for *any* of these reasons
+answers the same `401` as a revoked one or a deactivated owner, and says which
+it was to nobody.
+
+`last_seen_at` carries no index deliberately: it is written on most
+authenticated requests, and an index would be maintained on every one of those
+writes and would block HOT updates.
+
+What that costs, stated plainly: the sweep the login path runs matches
+`expires_at <= now() OR last_seen_at <= now() - interval '12 hours'`, and a
+disjunction across two columns where only one is indexed cannot use that index.
+Its `LIMIT` bounds the rows *returned*, not the rows *read*, so a sweep that
+finds little sequentially scans `sessions` on each sign-in. That is affordable
+because of the table's size — roughly one row per live session for an internal
+tool with tens of staff, swept on every sign-in so a backlog never accumulates
+— and for no other reason. If `sessions` ever stops being small, measure before
+adding an index.
 
 `sessions.token_hash` holds the SHA-256 of the cookie's value, never the value
 itself, so a database read yields nothing that can be presented as a session.

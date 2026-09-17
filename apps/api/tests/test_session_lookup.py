@@ -15,7 +15,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import psycopg
-from api.sessions import SESSION_COOKIE_NAME, hash_token, lookup_session
+from api.sessions import (
+    SESSION_ABSOLUTE_LIFETIME,
+    SESSION_COOKIE_NAME,
+    SESSION_IDLE_TIMEOUT,
+    hash_token,
+    lookup_session,
+)
 from fastapi.testclient import TestClient
 from shared_schema.user import Role
 
@@ -173,3 +179,53 @@ def test_the_lookup_refuses_a_row_that_has_already_expired(
     )
 
     assert lookup_session(conn, "expired-token") is None
+
+
+def test_the_lookup_refuses_a_row_idle_past_the_window(
+    conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    # The second of a session's two bounds (Story 1.5). `expires_at` is days
+    # away and the owner is active, so the idle condition is the only thing
+    # that can refuse this row.
+    account = make_user()
+    conn.execute(
+        "INSERT INTO sessions (user_id, token_hash, expires_at, last_seen_at) "
+        "VALUES (%s, %s, now() + %s, now() - %s)",
+        (
+            account.id,
+            hash_token("idle-token"),
+            SESSION_ABSOLUTE_LIFETIME,
+            SESSION_IDLE_TIMEOUT + timedelta(minutes=1),
+        ),
+    )
+
+    assert lookup_session(conn, "idle-token") is None
+
+
+def test_the_lookup_returns_exactly_the_user_contract_and_nothing_else(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    # `_SELECT_SESSION` selects two columns that are not `User` fields —
+    # `session_id` and `needs_touch` — so the lookup can decide whether to
+    # slide the window without a second read of the table (AD-3). `User` is
+    # `extra="forbid"`: leave either on the row and every authenticated request
+    # in the product raises. Asserted over the keys rather than by catching an
+    # error, so a *third* column added later is caught by name.
+    account = make_user()
+    _sign_in(client, account)
+
+    user = lookup_session(conn, client.cookies[SESSION_COOKIE_NAME])
+
+    assert user is not None
+    assert set(user.model_dump().keys()) == {
+        "id",
+        "name",
+        "email",
+        "role",
+        "active",
+        "must_change_password",
+        "temp_credential_expires_at",
+        "last_login_at",
+        "created_at",
+        "updated_at",
+    }

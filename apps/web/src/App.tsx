@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 
 import styles from './App.module.css';
-import { ApiRequestError } from './api/client';
+import { ApiRequestError, HTTP_UNAUTHORIZED } from './api/client';
 import { useSession, SessionProvider } from './auth/SessionProvider';
 import type { SessionStatus } from './auth/SessionProvider';
 import { AppShell, MAIN_REGION_ID } from './components/AppShell';
@@ -123,6 +123,19 @@ function Gate(): JSX.Element {
     // out" would be false. `SessionProvider` clears nothing until the row is
     // gone, so all this has to do is show why the screen did not change.
     signOut().catch((failure: unknown) => {
+      if (failure instanceof ApiRequestError && failure.status === HTTP_UNAUTHORIZED) {
+        // The session had already ended before the click. `apiRequest` notified
+        // the observer before it threw, so the app is on the login screen
+        // carrying the session-ended notice by the time this runs — and this
+        // message would be written onto a shell that is no longer rendered.
+        //
+        // It would not stay unrendered, either: `Gate` is one component with
+        // conditional returns rather than a tree that unmounts, so the state
+        // survives the swap and the next sign-in brings the shell back with
+        // "Not signed in." on it, over a user who is. The observer owns this
+        // case; every other failure is still this site's to word.
+        return;
+      }
       setSignOutError(failure instanceof ApiRequestError ? failure.message : SIGN_OUT_FAILED);
     });
   }

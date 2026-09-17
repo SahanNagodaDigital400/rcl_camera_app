@@ -292,7 +292,8 @@ location: apps/web/src/auth/SessionProvider.tsx
 source_spec: `spec-1-3-admin-provisioned-login.md`
 severity: low
 reason: SessionProvider bootstraps once on mount and changes status only on an explicit sign-in or sign-out. EXPERIENCE.md line 90 owes a "session expired mid-flow" pattern, and epics.md Story 1.5 owns session persistence and expiry, so the revalidation trigger belongs there. No other authenticated route exists yet, so nothing observes the gap today.
-status: open
+resolution: `spec-1-5-session-persistence-expiry.md`. `api/client.ts` gained `onUnauthorized`, a module-level observer `apiRequest` invokes for every `unauthorized` rejection, and SessionProvider registers it while signed in — so any request's 401 drops the shell to the login screen with a factual notice. A `visibilitychange` listener revalidates once when a backgrounded tab returns. Deliberately no interval: a poll is itself an authenticated request and would keep an unattended tab's session alive forever.
+status: resolved
 
 ### DW-38: The API sets no security response headers at all, so the login screen — the product's only unauthenticated surface — can be framed, and no response carries `X-Content-Type-Options` or a
 origin: spec-deferred 89a3b1d0ecaa
@@ -388,4 +389,44 @@ location: shared/schema/shared_schema/passwords.py
 source_spec: `spec-1-4-forced-password-change-on-first-login.md`
 severity: low
 reason: `LoginScreen`'s blank guard tests `.trim()` and refuses to send, so a user who set twelve spaces as their password would be locked out of the UI by the client, with a valid digest in the database. The guard predates this story. Refusing it at the API means a third rule message where EXPERIENCE.md names two, so it is a policy decision rather than a fix.
+status: open
+
+### DW-50: The rule that renewal can never extend a session's 7-day ceiling is a property of the call sites, not of the table: nothing at the database level stops a future writer from updating
+origin: spec-deferred 88171b208b31
+location: infra/migrations/20260917T1400_track_session_activity.up.sql
+source_spec: `spec-1-5-session-persistence-expiry.md`
+severity: low
+reason: The whole security argument for the two-column shape is that `_TOUCH_SESSION` writes `last_seen_at` and only `last_seen_at`, so the absolute bound read from `issued_at` is unreachable from the renewal path. That holds today because `api/sessions.py` is the one module allowed to touch the table and its only `UPDATE` is the touch — an invariant currently guarded by one Python test. A `BEFORE UPDATE` trigger, or a `CHECK` tying `expires_at` to `issued_at`, would make it true of the table itself. That is a migration and a decision about whether any story ever needs to move either column (Story 1.11's deactivation currently ends sessions by deleting rows, not by updating them), which is out of scope for a story whose acceptance clauses are about behaviour rather than schema hardening.
+status: open
+
+### DW-51: `visibilitychange` is the only revalidation trigger, and on iOS Safari a page restored from the back-forward cache can come back without one — the exact "tab backgrounded for hours" case, on the
+origin: spec-deferred c717335cc4a7
+location: apps/web/src/auth/SessionProvider.tsx:182
+source_spec: `spec-1-5-session-persistence-expiry.md`
+severity: low
+reason: `SessionProvider`'s second effect listens for `visibilitychange` alone. A bfcache restore fires `pageshow` with `persisted: true`, and whether `visibilitychange` also fires is implementation-specific and has moved between Safari versions. If it does not, a phone left on the login-adjacent shell overnight comes back to a shell rendering over a dead session until the user's first action fails — a narrower version of DW-37 rather than a regression of it, since the action itself still drops to login. Adding a `pageshow` listener beside the existing one is small, but it is a behaviour change whose whole value is on a device this suite cannot drive: jsdom has no bfcache, so a vitest case would assert only that a listener was registered. It wants verification on a real iOS device, which is a different kind of task from the rest of this story.
+status: open
+
+### DW-52: The revalidation on `visibilitychange` is itself an authenticated request, so foregrounding a tab slides the 12-hour idle window forward without the user having done anything in the app.
+origin: spec-deferred 68769bc471c0
+location: apps/web/src/auth/SessionProvider.tsx (the visibilitychange effect)
+source_spec: `spec-1-5-session-persistence-expiry.md`
+severity: low
+reason: `SessionProvider`'s second effect issues `GET /auth/session` whenever the tab becomes visible, and that request goes through `lookup_session` -> `_touch_session` like any other. On a phone, the OS fires `visibilitychange` every time the PWA is foregrounded — so picking the handset up and putting it down buys another 12 hours, with no interaction. The comment above the effect says "Nothing in this app may keep a session alive on its owner's behalf", and the matrix row it implements says a hidden tab makes no request at all; both hold literally, and the property they exist to protect is still reachable from the visible side. Closing it means a "revalidate at most every N minutes" rule, or reading the session without touching it, and both are behaviour the intent's matrix does not describe — the matrix requires the revalidation unconditionally. That makes it a decision about what counts as activity, not a defect in the code as specified.
+status: open
+
+### DW-53: `ARCHITECTURE-SPINE.md`'s `SESSION` ERD block does not carry `last_seen_at`, so the spine now describes a narrower table than the one the product has.
+origin: spec-deferred ed8957beceab
+location: _bmad-output/planning-artifacts/architecture/architecture-rcl_camera_app-2026-08-30/ARCHITECTURE-SPINE.md:243
+source_spec: `spec-1-5-session-persistence-expiry.md`
+severity: low
+reason: The block lists `id`, `user_id`, `token_hash`, `issued_at` and `expires_at`. AD-3's rule is untouched by this story — it says the lookup is shared, not that it is read-only — but the ERD is a column list and is now incomplete, and `infra/README.md` points at that block by name as the description of the table. Amending a planning artifact from inside a story is a scope question this story has no authority to settle on its own; recording it here is the cheaper half.
+status: open
+
+### DW-54: The `apps/web` suite failed twice during this review pass with a `findByLabelText`/`findByTestId` timing out at ~1s, and did not reproduce in eleven subsequent runs including a cold-cache one.
+origin: spec-deferred c140d1990821
+location: apps/web/src/__tests__/session-expiry.test.tsx
+source_spec: `spec-1-5-session-persistence-expiry.md`
+severity: low
+reason: Both failures were in `session-expiry.test.tsx` and both were a `findBy*` exhausting testing-library's default 1000ms timeout rather than an assertion reporting a wrong value; the runs that failed were also the slowest overall (3.1s vs a steady 1.8s). Clearing `node_modules/.vite`, touching every source file and re-running did not reproduce it, so the cold-transform explanation is unconfirmed. Left alone it is a test that fails for one person, once, on the story's central assertion — worth either raising the timeout for the async screen-swap cases or finding the real cause before it is dismissed as noise.
 status: open

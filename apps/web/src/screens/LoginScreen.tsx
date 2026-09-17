@@ -31,6 +31,17 @@ import styles from './LoginScreen.module.css';
 const UNEXPECTED = 'Sign-in failed. Try again.';
 
 /**
+ * Shown when a session that existed has ended and dropped the user back here.
+ *
+ * States what happened and what to do, and nothing else. It never says whether
+ * the session expired, was revoked, or its owner was deactivated: the API
+ * answers all three with the same 401 and the same message, and a screen that
+ * guessed between them would say more than the server did. EXPERIENCE.md's
+ * voice rules — short, factual, no exclamation mark, no apology.
+ */
+const SESSION_ENDED = 'Your session has ended. Sign in again to continue.';
+
+/**
  * What went wrong, and which fields — if any — the user can fix.
  *
  * `fields` is not decoration: it drives `aria-invalid`, and marking an input
@@ -66,7 +77,7 @@ function missingFields(email: string, password: string): FormError | null {
 }
 
 export function LoginScreen(): JSX.Element {
-  const { signIn } = useSession();
+  const { signIn, sessionEnded } = useSession();
   const emailId = useId();
   const passwordId = useId();
   const errorId = useId();
@@ -138,6 +149,16 @@ export function LoginScreen(): JSX.Element {
         <p className={styles.lede}>
           Sign in with the email address an Administrator issued your account.
         </p>
+
+        {/* `role="status"`, not `role="alert"`: nothing the user just did
+            failed, and an assertive interruption would frame a routine expiry
+            as an error. It sits above the form rather than inside it because
+            it is not about either field. */}
+        {sessionEnded && (
+          <p className={styles.notice} role="status">
+            {SESSION_ENDED}
+          </p>
+        )}
 
         <form className={styles.form} onSubmit={(event) => void handleSubmit(event)} noValidate>
           <div className={styles.field}>

@@ -94,3 +94,14 @@
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
 }
+
+/* The session-ended notice. Muted, not destructive: red is reserved for a
+ * destructive or failed action in this system, and a session reaching its
+ * 12-hour idle window or its 7-day ceiling is neither — nothing the user did
+ * went wrong. Distinct from `.error` above for exactly that reason. */
+.notice {
+  margin-top: var(--space-4);
+  color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}

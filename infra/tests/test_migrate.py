@@ -34,11 +34,17 @@ from shared_schema.passwords import (
 SEED_VERSION = "20260917T1210_seed_administrator"
 CREATE_USERS_VERSION = "20260917T1200_create_users"
 CREATE_SESSIONS_VERSION = "20260917T1300_create_sessions"
+TRACK_ACTIVITY_VERSION = "20260917T1400_track_session_activity"
 
 #: Every migration in `infra/migrations`, in the order the runner applies
 #: them. Listed once so adding a migration is one edit here rather than a
 #: sweep through every assertion in this file.
-ALL_VERSIONS = [CREATE_USERS_VERSION, SEED_VERSION, CREATE_SESSIONS_VERSION]
+ALL_VERSIONS = [
+    CREATE_USERS_VERSION,
+    SEED_VERSION,
+    CREATE_SESSIONS_VERSION,
+    TRACK_ACTIVITY_VERSION,
+]
 
 SEED_EMAIL = "ruwan@rocell.lk"
 
@@ -451,6 +457,73 @@ def test_both_roles_are_accepted(conn: psycopg.Connection, seed_password: str, r
     assert row == (True, True)
 
 
+def test_the_activity_migration_upgrades_a_database_that_already_holds_sessions(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    """The one path `20260917T1400_track_session_activity` exists for.
+
+    Every other test in this file applies the whole plan to an empty database
+    in one go, so the `ALTER TABLE` only ever meets a `sessions` table with no
+    rows — which is not the table any deployed system has. Two plausible
+    versions of that migration pass the entire suite and fail in production:
+
+    * without `DEFAULT now()`, `ADD COLUMN ... NOT NULL` raises
+      `NotNullViolation` against any existing row and `make migrate` stops
+      halfway through a deploy;
+    * with a `last_seen_at = issued_at` backfill, every session issued more
+      than 12 hours before the deploy is idle-dead the moment the code lands,
+      and every user holding one is signed out by the upgrade itself.
+
+    So the plan is applied in two halves with a real session row written in
+    between, and both properties are asserted on that pre-existing row.
+    """
+    plan = discover_migrations()
+    cut = [m.version for m in plan].index(CREATE_SESSIONS_VERSION) + 1
+
+    # Everything up to and including the `sessions` table — the shape a
+    # database deployed before this story is in.
+    assert up(conn, plan[:cut]) == [m.version for m in plan[:cut]]
+
+    # A live session on that older shape. `issued_at` is pushed well past the
+    # idle window so a backfill from it would be visibly wrong.
+    conn.execute(
+        "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+        ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
+    )
+    conn.execute(
+        """
+        INSERT INTO sessions (user_id, token_hash, issued_at, expires_at)
+        VALUES ((SELECT id FROM users WHERE email = %s), %s, now() - %s, now() + %s)
+        """,
+        ("nimal@rocell.lk", "a" * 64, timedelta(days=3), timedelta(days=4)),
+    )
+
+    # The upgrade itself, against a populated table. This is the assertion that
+    # fails outright — not merely reports a different value — if the column is
+    # added `NOT NULL` with no default.
+    assert up(conn, plan) == [TRACK_ACTIVITY_VERSION]
+
+    row = conn.execute(
+        "SELECT last_seen_at, issued_at, now() - last_seen_at AS idle_for FROM sessions"
+    ).fetchone()
+    assert row is not None
+    last_seen_at, issued_at, idle_for = row
+
+    # Non-null, or the NOT NULL constraint is a lie the table is not holding.
+    assert last_seen_at is not None
+    # And *not* backfilled from `issued_at`: this session was issued three days
+    # ago, so a backfill would hand it an idle age of three days and the very
+    # next request would sign its holder out. The upgrade starts the idle
+    # window at the migration, which is the safe direction — a known instant,
+    # not an invented history.
+    assert last_seen_at > issued_at
+    # 12 hours is `api.sessions.SESSION_IDLE_TIMEOUT`, spelled out because
+    # `infra` does not import `apps/api`. Shorten that constant and this bound
+    # has to come with it, or the assertion keeps passing while no longer
+    # testing that a migrated session survives its first request.
+    assert idle_for < timedelta(hours=12)
+
+
 # --- down --------------------------------------------------------------------
 
 
@@ -458,7 +531,14 @@ def test_down_reverts_one_step(conn: psycopg.Connection, seed_password: str) -> 
     up(conn)
 
     # One step is one migration: the most recently applied, and nothing behind
-    # it. `sessions` goes and the seeded Administrator is still there.
+    # it. The activity column goes first and `sessions` itself survives that
+    # step — proof the step really is one file and not "everything on top".
+    assert down(conn) == TRACK_ACTIVITY_VERSION
+    assert ledger_versions(conn) == [CREATE_USERS_VERSION, SEED_VERSION, CREATE_SESSIONS_VERSION]
+    assert "last_seen_at" not in table_columns(conn, "sessions")
+    assert "expires_at" in table_columns(conn, "sessions")
+
+    # Then `sessions` goes, and the seeded Administrator is still there.
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert ledger_versions(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
     assert administrator_count(conn) == 1
@@ -527,6 +607,7 @@ def test_down_leaves_a_claimed_administrator_alone(
         ("admin",),
     )
 
+    assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
     assert administrator_count(conn) == 1
@@ -543,6 +624,7 @@ def test_down_leaves_an_administrator_who_has_signed_in_alone(
     up(conn)
     conn.execute("UPDATE users SET last_login_at = now() WHERE role = %s", ("admin",))
 
+    assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
     assert administrator_count(conn) == 1
@@ -558,6 +640,7 @@ def test_down_leaves_an_administrator_who_set_their_own_password_alone(
         ("admin",),
     )
 
+    assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
     assert administrator_count(conn) == 1
@@ -573,6 +656,7 @@ def test_down_leaves_staff_accounts_alone(conn: psycopg.Connection, seed_passwor
         ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
     )
 
+    assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
 
@@ -589,6 +673,7 @@ def test_down_leaves_a_second_administrator_alone(
         ("Second Admin", "second@rocell.lk", "$argon2id$placeholder", "admin"),
     )
 
+    assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
     assert administrator_count(conn) == 2
@@ -1144,6 +1229,9 @@ def test_main_steps_down_with_the_confirmation_flag(
 ) -> None:
     assert migrate.main(["up"]) == 0
     capsys.readouterr()
+
+    assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
+    assert TRACK_ACTIVITY_VERSION in capsys.readouterr().out
 
     assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
     assert CREATE_SESSIONS_VERSION in capsys.readouterr().out

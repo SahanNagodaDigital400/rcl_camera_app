@@ -322,12 +322,13 @@ def login(
             # this endpoint gives.
             raise _rejected()
         # The cookie this request arrived with is about to be overwritten, so
-        # its row would otherwise stay live and unreachable for the rest of its
-        # seven days: the browser can no longer present it, logout only revokes
-        # the cookie it is given, and revoking a user's sessions in bulk is
-        # Story 1.5's. Signing in again is the one moment the old token is still
-        # in hand, so it is spent here. Not bulk revocation — this ends exactly
-        # the session this browser was holding, and no other device is touched.
+        # its row would otherwise stay live and unreachable until one of its two
+        # deadlines caught it: the browser can no longer present it, logout only
+        # revokes the cookie it is given, and nothing in the product revokes a
+        # user's sessions in bulk on their behalf. Signing in again is the one
+        # moment the old token is still in hand, so it is spent here. This ends
+        # exactly the session this browser was holding, and no other device is
+        # touched.
         delete_session(conn, rocell_session)
         raw_token = issue_session(conn, row["id"])
 
@@ -380,8 +381,9 @@ def logout(
     """End this session. Idempotent — a second call is still `204`.
 
     Only *this* session. Signing out on a phone must not sign the same person
-    out of the desktop they left open in the back office; revoking every
-    session of a user is Story 1.5's.
+    out of the desktop they left open in the back office. Ending every session
+    of a user is not a surface anybody drives: it happens through Story 1.11's
+    deactivation, by the cascade and the `active` check in the lookup.
 
     Not named by Story 1.3's acceptance clauses and delivered anyway: issuing a
     session with no revocation path leaves clearing browser cookies as the only
@@ -597,8 +599,8 @@ def set_password(
         # Credential rotation, in the same transaction as the digest it
         # rotates: the temporary credential has just stopped being trusted, and
         # any session issued on it — including one opened on another device by
-        # whoever saw the note it was written on — goes with it. Not Story
-        # 1.5's session management; this is one user acting on their own
+        # whoever saw the note it was written on — goes with it. Not a
+        # session-management surface; this is one user acting on their own
         # account.
         delete_sessions_for_user(conn, user.id)
         # Issued inside the same transaction, so the caller is never left

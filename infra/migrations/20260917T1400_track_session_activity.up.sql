@@ -1,0 +1,61 @@
+-- Story 1.5 — the second of a session's two deadlines.
+--
+-- A session is bounded twice, and the two bounds are deliberately two columns
+-- rather than one sliding deadline:
+--
+--   expires_at    the ABSOLUTE ceiling. `issue_session` writes it as
+--                 `now() + 7 days` in the same INSERT that defaults
+--                 `issued_at` to `now()`, and nothing ever updates it. This
+--                 column is NOT what activity extends. The lookup's absolute
+--                 check is nevertheless made against `issued_at`, not against
+--                 this column — see below.
+--   last_seen_at  the IDLE bound. The moment of the last authenticated
+--                 request. `api.sessions.lookup_session` refuses a row idle
+--                 longer than SESSION_IDLE_TIMEOUT (12 hours) and slides this
+--                 column forward as a side effect of authenticating.
+--
+-- Neither can be mistaken for the other, and that separation is the security
+-- property: the absolute bound is enforced from `issued_at`, an immutable
+-- column, so the renewal path physically cannot reach it. A single sliding
+-- `expires_at` capped with LEAST(now() + 12h, issued_at + 7d) would make the
+-- 7-day bound a property of arithmetic run on every request — lose the cap in
+-- a refactor and sessions become immortal with every test still green.
+--
+-- Corrects 20260917T1300_create_sessions.up.sql's comments, which say nothing
+-- here belongs to Story 1.5. It does now. That file is applied and is never
+-- edited, comments included (AGENTS.md Conventions, and DW-21: the ledger
+-- stores no checksum, so an edited migration is undetectable rather than
+-- merely discouraged) — the correction goes here instead.
+--
+-- Deliberately NO INDEX on this column. It is written on most authenticated
+-- requests; an index would be maintained on every one of those writes and
+-- would block HOT updates.
+--
+-- The cost that buys is real and is stated honestly here rather than talked
+-- down: the login sweep's `LIMIT` bounds the rows it *returns*, not the rows
+-- it *reads*, and its `OR` across `expires_at` and this column cannot use the
+-- `expires_at` index either — so when few rows match, each sign-in
+-- sequentially scans `sessions`. That is acceptable only because of the
+-- table's size: roughly one row per live session for an internal tool with
+-- tens of staff, swept on every sign-in so a backlog never accumulates. It is
+-- a bet on the row count, not on the plan. If the row count stops being small,
+-- measure before adding an index.
+--
+-- DEFAULT now() rather than a backfill: a session that exists when this
+-- migration runs was last seen at some point in the past nobody recorded, and
+-- starting its idle window at the migration is the safe direction — it holds
+-- the bound from a known instant instead of signing every live session out.
+--
+-- **Apply this before deploying the code that reads the column — the mirror of
+-- the ordering the .down.sql states, and the direction that happens on every
+-- release rather than only on a revert.** `api.sessions` names `last_seen_at`
+-- in `_SELECT_SESSION`, `_TOUCH_SESSION` and `_DELETE_EXPIRED`, so a revision
+-- that ships ahead of its migration fails *every authenticated request and
+-- every sign-in* on an undefined column for the length of the gap. Migrate,
+-- confirm the column is there, then roll the application forward.
+--
+-- `IF NOT EXISTS` for the same reason the pair before it uses it: a truncated
+-- ledger must be able to replay the whole set.
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS last_seen_at timestamptz NOT NULL DEFAULT now();

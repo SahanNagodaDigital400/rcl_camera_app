@@ -22,6 +22,15 @@ export const API_PREFIX = '/api';
 export const UNAUTHORIZED = 'unauthorized';
 
 /**
+ * The status that means the session is gone, whatever body came with it.
+ *
+ * Read alongside `UNAUTHORIZED` rather than instead of it: the *code* is what a
+ * screen branches on, and the *status* is what the session observer keys off,
+ * because a proxy answering 401 with its own HTML carries no code at all.
+ */
+export const HTTP_UNAUTHORIZED = 401;
+
+/**
  * The envelope code for a password the API refuses to set.
  *
  * One code for every rule — length, or reuse of the temporary password — with
@@ -118,6 +127,69 @@ function failed(controller: AbortController): ApiRequestError {
 }
 
 /**
+ * Told whenever a request is refused with `unauthorized`. See `onUnauthorized`.
+ *
+ * Module-level and single, not a list: there is one session in the app, so
+ * there is one thing that needs to know it ended. A set of subscribers would
+ * invite two of them to disagree about what to do about it.
+ */
+let unauthorizedObserver: (() => void) | null = null;
+
+/**
+ * Watch for the API refusing a request because the session is gone.
+ *
+ * Registered here rather than handled per screen. The gap this closes (DW-37)
+ * is not that one screen forgot about expiry — it is that nothing in the app
+ * ever learns the server stopped honouring the cookie. Every request in the
+ * product goes through `apiRequest`, so this is the one place that always
+ * finds out, and the first Epic 2 screen that calls `apiRequest` directly
+ * inherits the behaviour instead of having to remember it.
+ *
+ * **It observes; it does not handle.** The originating caller still gets its
+ * own rejection and still decides what to show — the login screen's own
+ * "email or password is incorrect" is an `unauthorized` too, and swallowing it
+ * here would leave a form that submits and does nothing.
+ *
+ * **Registering replaces whatever was registered before, silently.** There is
+ * one slot, and the app has one registrant — `SessionProvider`, which
+ * re-registers on each sign-in after its own teardown has cleared the slot. A
+ * second consumer added later would not sit alongside the first; it would
+ * disable it, and the only symptom would be the shell quietly rendering over a
+ * dead session again. Whatever needs to know next must be composed into the
+ * provider's handler rather than registered here beside it.
+ *
+ * Returns the deregistration, so an effect can tear it down.
+ */
+export function onUnauthorized(handler: () => void): () => void {
+  unauthorizedObserver = handler;
+  return () => {
+    // Only if it is still ours. Under StrictMode the effect runs, tears down
+    // and runs again; clearing unconditionally would drop the *second*
+    // registration and leave the app with no observer at all.
+    if (unauthorizedObserver === handler) unauthorizedObserver = null;
+  };
+}
+
+/**
+ * Tell the observer, and never let it change what the caller sees.
+ *
+ * The observer runs on the way to a rejection the caller is written to branch
+ * on. If it threw, *that* error would propagate instead of the
+ * `ApiRequestError`, and `LoginScreen`'s `unauthorized` branch — the one that
+ * words a refused credential — would simply not run. An observer is a
+ * notification, so its failure is its own.
+ */
+function notifyUnauthorized(): void {
+  try {
+    unauthorizedObserver?.();
+  } catch {
+    // Deliberately swallowed, and deliberately not logged through anything
+    // this module would have to import: the caller's own rejection is about to
+    // be thrown and is the thing that matters.
+  }
+}
+
+/**
  * Send one request and return its parsed body, or throw an `ApiRequestError`.
  *
  * A `204` returns `null`: the server said "done, nothing to read", and parsing
@@ -175,6 +247,18 @@ export async function apiRequest(path: string, options: RequestOptions = {}): Pr
     }
 
     if (!response.ok) {
+      // Keyed on the **status**, not on the envelope's code, and told before
+      // either throw below. A 401 answered by a proxy or a gateway — HTML, an
+      // empty body, anything that is not the shared envelope — is still the
+      // server refusing the cookie, and reading the code first would let
+      // exactly that case leave the shell rendering over a dead session: the
+      // one failure this observer exists to catch.
+      //
+      // Still only a real answer from the network. A timeout or an unreachable
+      // server never reaches this line — both throw out of the `fetch` above —
+      // so a dropped connection cannot sign anyone out.
+      if (response.status === HTTP_UNAUTHORIZED) notifyUnauthorized();
+
       // Every error this API produces is the shared envelope, so anything else
       // is a proxy or a gateway answering in its place — reported as such rather
       // than rendered as an empty message.

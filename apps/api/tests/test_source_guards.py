@@ -139,6 +139,30 @@ def test_only_one_module_reads_the_sessions_table() -> None:
     )
 
 
+def test_only_one_module_writes_the_sessions_table() -> None:
+    # The read guard above is matched on `FROM sessions`, which catches a
+    # SELECT and a DELETE and cannot see an INSERT or an UPDATE. Story 1.5 gave
+    # the request path its first write to this table (`_TOUCH_SESSION` slides
+    # `last_seen_at`), and the security argument for the two-column shape is
+    # that the touch writes `last_seen_at` and nothing else — so the absolute
+    # bound, read from `issued_at`, is unreachable from the renewal path. That
+    # argument is about which statements exist, and it survives only while they
+    # all live in the one module somebody would think to check.
+    pattern = re.compile(r"\b(?:UPDATE\s+|INSERT\s+INTO\s+)" + _SESSIONS + r"\b", re.IGNORECASE)
+    offenders = [
+        str(path.relative_to(REPO_ROOT))
+        for path in _sources()
+        if path not in (SESSIONS_HOME, SELF)
+        and "tests" not in path.parts
+        and pattern.search(path.read_text(encoding="utf-8"))
+    ]
+
+    assert offenders == [], (
+        f"A session write outside {SESSIONS_HOME.relative_to(REPO_ROOT)} (AD-3): "
+        + ", ".join(offenders)
+    )
+
+
 @pytest.mark.parametrize(
     "line",
     [

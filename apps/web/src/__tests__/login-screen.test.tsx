@@ -28,13 +28,17 @@ vi.mock('../auth/SessionProvider', async (importOriginal) => {
   };
 });
 
-function renderLogin(signIn: SessionContextValue['signIn']): void {
+function renderLogin(
+  signIn: SessionContextValue['signIn'],
+  sessionEnded: boolean = false,
+): void {
   session.value = {
     status: 'signed-out',
     user: null,
     signIn,
     changePassword: vi.fn(async () => undefined),
     signOut: vi.fn(async () => undefined),
+    sessionEnded,
   };
   render(<LoginScreen />);
 }
@@ -118,6 +122,35 @@ describe('the login screen', () => {
 
     await waitFor(() => expect(signIn).toHaveBeenCalledTimes(1));
     expect(signIn).toHaveBeenCalledWith('kasun@rocell.lk', 'a-long-enough-password');
+  });
+
+  it('shows the session-ended notice only when a session actually ended', () => {
+    // The default arrival at this screen — never signed in, or signed out
+    // deliberately — says nothing. A notice here would tell a user who has
+    // lost nothing that they have.
+    renderLogin(vi.fn(async () => undefined));
+    expect(screen.queryByRole('status')).toBeNull();
+
+    cleanup();
+    renderLogin(vi.fn(async () => undefined), true);
+
+    // `role="status"`, not `role="alert"`: a session reaching its 12-hour idle
+    // window or its 7-day ceiling is not a failure of anything the user just
+    // did, and an assertive interruption would frame it as one.
+    const notice = screen.getByRole('status');
+    expect(notice.textContent).toMatch(/session has ended/i);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('never names which way the session ended', () => {
+    // Expiry, revocation and deactivation are indistinguishable by design —
+    // the API answers all three with one 401 and one message. A screen that
+    // guessed between them would say more than the server did.
+    renderLogin(vi.fn(async () => undefined), true);
+
+    expect(screen.getByRole('status').textContent).not.toMatch(
+      /expir|revok|deactivat|disabled|inactive|locked/i,
+    );
   });
 
   it('shows no error before anything is submitted', () => {
