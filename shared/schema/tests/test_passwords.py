@@ -7,6 +7,7 @@ would be one.
 
 from __future__ import annotations
 
+import re
 import secrets
 import threading
 from pathlib import Path
@@ -18,7 +19,9 @@ from shared_schema.passwords import (
     ARGON2ID_PREFIX,
     MAX_PASSWORD_LENGTH,
     MIN_PASSWORD_LENGTH,
+    PASSWORD_RULES,
     hash_password,
+    password_rule_violation,
     verify_dummy_password,
     verify_password,
     warm_password_verifier,
@@ -153,6 +156,104 @@ def test_a_malformed_stored_digest_is_not_reported_as_a_wrong_password() -> None
     # fault. Returning False would hide it behind "wrong password" forever.
     with pytest.raises(InvalidHashError):
         verify_password("not-a-digest", a_password())
+
+
+# --- The rules, as the one statement of them (Story 1.4) ---------------------
+#
+# `password_rule_violation` is what `apps/api`'s forced-change endpoint calls
+# before it pays for a 64 MiB hash, and what `hash_password` raises. Two
+# properties matter and neither is visible from either call site alone: the two
+# agree about *every* password, and each message names the rule it enforces
+# rather than saying "invalid". EXPERIENCE.md:87 requires the second one — a
+# rejected password states which rule failed — and a generic message would pass
+# every other test in this file.
+
+
+def test_an_acceptable_password_breaks_no_rule() -> None:
+    assert password_rule_violation(a_password()) is None
+
+
+@pytest.mark.parametrize(
+    ("password", "rule"),
+    [
+        ("", "empty"),
+        (a_password(1), "too_short"),
+        (a_password(MIN_PASSWORD_LENGTH - 1), "too_short"),
+        (a_password(MAX_PASSWORD_LENGTH + 1), "too_long"),
+    ],
+)
+def test_each_broken_rule_returns_its_own_message(password: str, rule: str) -> None:
+    assert password_rule_violation(password) == PASSWORD_RULES[rule]
+
+
+@pytest.mark.parametrize("rule", ["too_short", "too_long"])
+def test_a_length_message_names_the_length_it_enforces(rule: str) -> None:
+    # "Invalid password" is the thing this must never become: it tells the user
+    # nothing they can act on, and the screen shows this sentence verbatim.
+    message = PASSWORD_RULES[rule]
+    bound = MIN_PASSWORD_LENGTH if rule == "too_short" else MAX_PASSWORD_LENGTH
+
+    assert str(bound) in message
+    assert "characters" in message
+    assert "invalid" not in message.lower()
+
+
+def test_the_empty_message_names_the_rule_rather_than_the_verdict() -> None:
+    assert "empty" in PASSWORD_RULES["empty"].lower()
+    assert "invalid" not in PASSWORD_RULES["empty"].lower()
+
+
+@pytest.mark.parametrize(
+    "length",
+    [
+        1,
+        MIN_PASSWORD_LENGTH - 1,
+        MIN_PASSWORD_LENGTH,
+        MIN_PASSWORD_LENGTH + 1,
+        MAX_PASSWORD_LENGTH - 1,
+        MAX_PASSWORD_LENGTH,
+        MAX_PASSWORD_LENGTH + 1,
+    ],
+)
+def test_the_check_and_the_hasher_agree_at_every_boundary(length: int) -> None:
+    # Both boundaries are inclusive: exactly MIN and exactly MAX are accepted,
+    # one either side is not — and the endpoint that pre-checks must reach the
+    # same verdict as the hasher it is standing in front of, or a password the
+    # API accepted would raise on the way to the column.
+    password = a_password(length)
+    violation = password_rule_violation(password)
+
+    if violation is None:
+        assert hash_password(password).startswith(ARGON2ID_PREFIX)
+        return
+
+    with pytest.raises(ValueError, match=re.escape(violation)):
+        hash_password(password)
+
+
+def test_the_empty_password_agrees_too() -> None:
+    violation = password_rule_violation("")
+
+    assert violation is not None
+    with pytest.raises(ValueError, match=re.escape(violation)):
+        hash_password("")
+
+
+def test_the_rules_are_length_only() -> None:
+    # A composition rule ("one digit, one symbol") shrinks the search space an
+    # attacker has to cover. Adding one here would be a silent policy change
+    # that every other test in this file would let through.
+    assert set(PASSWORD_RULES) == {"empty", "too_short", "too_long"}
+
+
+def test_the_rule_table_cannot_be_edited_in_place() -> None:
+    # A mutable module global is one stray assignment away from a process
+    # serving a rule nobody wrote down. The table is the single statement of
+    # the password rules for every package that grows one — today it is read
+    # by this suite and by `apps/api`'s password-change tests, which assert the
+    # API returns these exact sentences.
+    with pytest.raises(TypeError):
+        PASSWORD_RULES["too_short"] = "anything"  # type: ignore[index]
 
 
 # --- The decoy verifier (DW-24) ---------------------------------------------

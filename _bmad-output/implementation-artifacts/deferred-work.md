@@ -309,3 +309,83 @@ source_spec: `spec-1-3-admin-provisioned-login.md`
 severity: medium
 reason: apps/api/tests/conftest.py calls pytest.skip from a session-scoped fixture when initdb/pg_ctl are not on PATH, mirroring the pattern infra/tests/conftest.py established in Story 1.2. On this machine all 320 tests run, but a CI image without PostgreSQL would report success for a suite that asserted nothing about the story. Fixing it means choosing a policy — an opt-in REQUIRE_POSTGRES that fails instead of skipping, or a floor on how many database tests must have run — and applying it to both packages at once, which is the same test-layout decision the conftest-duplication entry above is waiting on.
 status: open
+
+### DW-40: `POST /auth/password` is a second Argon2id-backed endpoint that the forced-change gate must leave open, so a signed-in user on a temporary credential can spend two ~100ms hashes per request against a
+origin: spec-deferred 5c9857b72c61
+location: apps/api/api/auth.py
+source_spec: `spec-1-4-forced-password-change-on-first-login.md`
+severity: medium
+reason: The handler verifies the candidate against the stored digest (the reuse rule) and then hashes the accepted one, so each call costs two 64 MiB Argon2id operations. `require_claimed_user` cannot gate it — that is the point of the endpoint — and Story 1.6's counters are scoped to login by epics.md. Combined with DW-34 (POOL_MAX_SIZE = 10 behind a 40-worker sync threadpool) a modest burst from one authenticated account queues every other request behind it. Bounding it means choosing whether the counter is per-account or per-session and whether it shares Story 1.6's substrate, which is that story's decision to take.
+status: open
+
+### DW-41: `make reseed-admin` refuses an account with a recorded sign-in, so an Administrator who signs in on the temporary credential and lets the 72 hours lapse without claiming has no console path back in at
+origin: spec-deferred a3b730ae080b
+location: infra/rocell_infra/seed.py:54
+source_spec: `spec-1-4-forced-password-change-on-first-login.md`
+severity: high
+reason: `_SELECT_UNCLAIMED_ADMINISTRATOR` carries `AND last_login_at IS NULL`, so the reissue treats a sign-in as a claim. After the deadline passes, login refuses the credential (Story 1.3), `POST /auth/password` refuses it and revokes the sessions riding on it, and the reissue refuses the account — on a database whose only Administrator is in that state the product is unreachable and recovery is a manual `UPDATE`. Pre-existing: the predicate and the login refusal both predate this story, which only narrowed the window rather than opening it. `infra/rocell_infra/seed.py` is marked read-only by this spec's Code Map, and widening the reissue is a decision about what counts as a claim — the same judgement Story 1.8's account creation has to make.
+status: open
+
+### DW-42: Nothing revokes a session when a temporary credential's deadline passes; only an attempt to use it does, so an unclaimed holder keeps a live session for the session's full seven days.
+origin: spec-deferred 3c1125563c1d
+location: apps/api/api/sessions.py
+source_spec: `spec-1-4-forced-password-change-on-first-login.md`
+severity: medium
+reason: `_SELECT_SESSION` joins on `s.expires_at > now() AND u.active` and never reads `temp_credential_expires_at`. A holder who signs in at hour 1 and never posts to `/auth/password` still gets `200` from `GET /auth/session` with the flag set, `204` from logout, and `403` rather than `401` from every gated route, for four days past the credential's death. Closing it means either widening the one AD-3 session lookup (which this story is forbidden to fork) or a sweep job, and Story 1.5 owns session lifetimes.
+status: open
+
+### DW-43: `apps/web` has no state, microcopy or test for the expired-credential path, so the most likely real failure lands the user on the login screen with a message that reads as a typo.
+origin: spec-deferred 30de9405ee67
+location: apps/web/src/auth/SessionProvider.tsx
+source_spec: `spec-1-4-forced-password-change-on-first-login.md`
+severity: medium
+reason: `changePassword`'s `unauthorized` branch sets `signed-out` and rethrows with nothing shown; the login screen then answers the generic `INVALID_CREDENTIALS` sentence, which says "you typed it wrong" rather than "your 72 hours are up, ask an Administrator". The server side is right and tested; the screen has no row in this story's I/O matrix for it, and writing one is a copy decision under EXPERIENCE.md's tone rules that also depends on the reseed question above.
+status: open
+
+### DW-44: A `must_change_password` row with a NULL `temp_credential_expires_at` is permanently unusable by design, and nothing warns the Administrator who will be able to create one.
+origin: spec-deferred d7d147eca4b0
+location: apps/api/api/auth.py:125
+source_spec: `spec-1-4-forced-password-change-on-first-login.md`
+severity: medium
+reason: `credential_expired` fails closed, deliberately and correctly: such a row is refused at login, 403s on every gated route and 401s at `POST /auth/password`. Today only the seeder writes the flag and it always writes an expiry, so the shape is unreachable. Story 1.10 edits users and "force a password change" is the obvious next control; an admin who sets the flag without an expiry would brick the account with no feedback. The fix is a constraint or a default on `users`, which is a migration and a decision for the story that adds the control.
+status: open
+
+### DW-45: `ForcedPasswordChangeScreen` duplicates `LoginScreen`'s form machinery and stylesheet almost exactly; Story 1.7's change form will be the third copy.
+origin: spec-deferred 347ecf4d1aed
+location: apps/web/src/screens/ForcedPasswordChangeScreen.tsx
+source_spec: `spec-1-4-forced-password-change-on-first-login.md`
+severity: medium
+reason: Stripped of comments the two stylesheets differ only in `.panel`'s card declarations — `.screen`, `.title`, `.lede`, `.form`, `.field`, `.label`, `.input`, `.submit`, `.submit:disabled` and `.error` are identical — and the component repeats the same `useId` / `noValidate` / `aria-describedby` / inserted-`role="alert"` / `submitting` pattern. The cost is already visible in `styling-wiring.test.ts`, which had to be parameterised over two files. Extracting it is a component-API decision better taken with the third caller in hand than guessed at now.
+status: open
+
+### DW-46: The boundary of every text input is `--color-border` on its container at roughly 1.2:1, under WCAG 1.4.11's 3:1 floor for a control boundary.
+origin: spec-deferred f4f4816c429c
+location: apps/web/src/styles/tokens.css:32
+source_spec: `spec-1-4-forced-password-change-on-first-login.md`
+severity: low
+reason: `#ECE6DB` on the panel's `#FFFFFF` is about 1.24:1, and on the login screen's `#FAFAF8` about 1.19:1 — the new screen is marginally the better of the two, so this is not something this story introduced. It affects every form surface the product will grow. Fixing it means darkening `--color-border` or giving inputs their own border token, which is a DESIGN.md change, not a code change.
+status: open
+
+### DW-47: A login that commits a session between `delete_sessions_for_user` and the password change's COMMIT survives the credential rotation.
+origin: spec-deferred 02e93cca950f
+location: apps/api/api/auth.py
+source_spec: `spec-1-4-forced-password-change-on-first-login.md`
+severity: low
+reason: The change runs in one transaction, but the DELETE does not block an INSERT of a row that does not exist yet, so under read-committed a concurrent login on the still-valid temporary password can land a session that outlives the rotation. It needs a second party who knows the temporary credential and races a ~100ms window. Closing it properly means locking the user row for the duration of the change, which is a concurrency decision that touches login as well.
+status: open
+
+### DW-48: Request-validation rejections carry no `cache-control` at all, against the rule that every auth response carries `NO_STORE`.
+origin: spec-deferred d37acf206b60
+location: apps/api/api/main.py:104
+source_spec: `spec-1-4-forced-password-change-on-first-login.md`
+severity: low
+reason: `validation_error_handler` passes no headers to `_envelope`, so the `422 validation_error` from a malformed or absurd body ships bare — on `POST /auth/login` since Story 1.3 and now on `POST /auth/password` too. The bodies say nothing about an account, so the exposure is small, but the invariant is stated absolutely and this is the one hole in it. The fix is one shared default in the handler, which touches every endpoint's rejections at once.
+status: open
+
+### DW-49: A whitespace-only password of twelve or more characters is accepted by `POST /auth/password` but can never be submitted at the login screen.
+origin: spec-deferred 15da4b84179a
+location: shared/schema/shared_schema/passwords.py
+source_spec: `spec-1-4-forced-password-change-on-first-login.md`
+severity: low
+reason: `LoginScreen`'s blank guard tests `.trim()` and refuses to send, so a user who set twelve spaces as their password would be locked out of the UI by the client, with a valid digest in the database. The guard predates this story. Refusing it at the API means a third rule message where EXPERIENCE.md names two, so it is a policy decision rather than a fix.
+status: open

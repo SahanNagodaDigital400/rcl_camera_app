@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import secrets
 import threading
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Final
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
@@ -57,6 +60,51 @@ _HASHER = PasswordHasher(
 )
 
 
+#: The complete set of rules a password being *set* has to satisfy, each as the
+#: sentence a user is shown when it fails.
+#:
+#: They are messages rather than codes because both consumers show them
+#: verbatim: `hash_password` raises one, and `apps/api`'s password endpoint puts
+#: one in the error envelope that `apps/web` renders inline. EXPERIENCE.md:87
+#: requires a rejected password to name the rule that failed — "length, reuse of
+#: the temporary password" — and never a generic "invalid password", so the
+#: wording is the contract and not decoration.
+#:
+#: Length is the whole list on purpose. A composition rule ("one digit, one
+#: symbol") shrinks the search space an attacker has to cover; see
+#: `MIN_PASSWORD_LENGTH`. Reuse of a *temporary* credential is a rule about one
+#: specific account's stored digest rather than about the string, so it cannot
+#: be decided here — `apps/api` owns that one, in the same rule-naming register.
+PASSWORD_RULES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "empty": "A password must not be empty.",
+        "too_short": f"A password must be at least {MIN_PASSWORD_LENGTH} characters.",
+        "too_long": f"A password must be at most {MAX_PASSWORD_LENGTH} characters.",
+    }
+)
+
+
+def password_rule_violation(password: str) -> str | None:
+    """The message for the first rule `password` breaks, or `None` if it breaks none.
+
+    The one statement of the length rules in the product. `hash_password`
+    raises whatever this returns, and `apps/api`'s forced-change endpoint
+    answers `422 weak_password` with it, so a caller that wants to refuse a
+    password *before* paying for a 64 MiB Argon2id hash gets exactly the same
+    verdict and exactly the same sentence as the hasher would have given.
+
+    Story 1.7 reuses it for the signed-in self-service change rather than
+    restating the rules, which is the point of it living here.
+    """
+    if not password:
+        return PASSWORD_RULES["empty"]
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return PASSWORD_RULES["too_short"]
+    if len(password) > MAX_PASSWORD_LENGTH:
+        return PASSWORD_RULES["too_long"]
+    return None
+
+
 def hash_password(password: str) -> str:
     """Hash a password with Argon2id, returning the encoded digest to store.
 
@@ -65,14 +113,13 @@ def hash_password(password: str) -> str:
 
     Raises `ValueError` for a password that breaks a length rule — refused
     where it is supplied, the way `ApiError` refuses an empty code, rather than
-    stored and discovered later.
+    stored and discovered later. The rules themselves are
+    `password_rule_violation`'s, so this function and every endpoint that
+    pre-checks a password cannot drift apart about what is acceptable.
     """
-    if not password:
-        raise ValueError("A password must not be empty.")
-    if len(password) < MIN_PASSWORD_LENGTH:
-        raise ValueError(f"A password must be at least {MIN_PASSWORD_LENGTH} characters.")
-    if len(password) > MAX_PASSWORD_LENGTH:
-        raise ValueError(f"A password must be at most {MAX_PASSWORD_LENGTH} characters.")
+    violation = password_rule_violation(password)
+    if violation is not None:
+        raise ValueError(violation)
 
     return _HASHER.hash(password)
 

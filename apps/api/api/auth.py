@@ -1,6 +1,6 @@
-"""`POST /auth/login`, `GET /auth/session`, `POST /auth/logout`.
+"""`POST /auth/login`, `GET /auth/session`, `POST /auth/logout`, `POST /auth/password`.
 
-The whole of Story 1.3's HTTP surface. Three things about it are load-bearing:
+The product's whole auth surface. Four things about it are load-bearing:
 
 **There is no registration endpoint, and there never will be.** FR-1: accounts
 are provisioned by an Administrator, and the first one is written by the
@@ -18,13 +18,25 @@ credential) are states a maintainer will one day be tempted to explain to the
 user "to be helpful", and constructing them from one factory makes that a
 visible edit rather than an accident.
 
+**The forced change is the one write that ends every session of its user.**
+`POST /auth/password` is where an admin-issued temporary credential stops being
+trusted, and a credential that travelled by note or message may have been
+issued a session on a device its owner cannot reach. Replacing the digest
+without revoking those would leave the note working. The caller is handed a
+fresh token in the same response, so their own browser is not bounced to the
+login screen. The *gate* that makes the change unavoidable is not here — it is
+`api.dependencies.require_claimed_user`, declared by every route that serves
+real data.
+
 **Not here.** Failed-attempt counters, progressive delay and lockout are Story
-1.6 over AD-8's Postgres counters — this file adds none of them. The forced
-password change is Story 1.4: login *issues* a session for a
-`must_change_password` user and reports the flag; gating on it is 1.4's. And
-none of this is audited yet — AGENTS.md Policy requires the append-only audit
-log to cover logins, and that log arrives with Story 1.12, which owes this
-endpoint its entries. Until then a sign-in leaves only `last_login_at` behind.
+1.6 over AD-8's Postgres counters — this file adds none of them. A signed-in
+self-service change, with a current password and its own decision about
+re-authentication, is Story 1.7's endpoint: `POST /auth/password` refuses an
+already-claimed account rather than quietly becoming it. And none of this is
+audited yet — AGENTS.md Policy requires the append-only audit log to cover
+logins, and that log arrives with Story 1.12, which owes both this endpoint and
+the login above their entries. Until then a sign-in leaves only `last_login_at`
+behind and a password change leaves only `updated_at`.
 """
 
 from __future__ import annotations
@@ -40,18 +52,30 @@ from argon2.exceptions import InvalidHashError
 from fastapi import APIRouter, Cookie, Depends, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from shared_schema.errors import ApiError
-from shared_schema.passwords import MAX_PASSWORD_LENGTH, verify_dummy_password, verify_password
+from shared_schema.passwords import (
+    MAX_PASSWORD_LENGTH,
+    hash_password,
+    password_rule_violation,
+    verify_dummy_password,
+    verify_password,
+)
 from shared_schema.user import User
 
 from api.db import get_connection
+from api.dependencies import (
+    AUTH_CHALLENGE,
+    NO_STORE,
+    UNAUTHORIZED,
+    current_user,
+    not_signed_in,
+)
 from api.sessions import (
     SESSION_COOKIE_NAME,
     clear_session_cookie,
-    cleared_cookie_headers,
     delete_expired_sessions,
     delete_session,
+    delete_sessions_for_user,
     issue_session,
-    lookup_session,
     set_session_cookie,
 )
 
@@ -65,41 +89,42 @@ router = APIRouter(tags=["auth"])
 #: covers the other three states.
 INVALID_CREDENTIALS = "Email or password is incorrect."
 
-UNAUTHORIZED = "unauthorized"
-
-#: Not signed in, as opposed to "these credentials are wrong". Distinct wording
-#: because it is a distinct situation and no account is being probed by it: the
-#: caller is a browser with no cookie, not someone guessing a password.
-NO_SESSION = "Not signed in."
-
 #: The longest address the endpoint will look at. Longer than RFC 5321's 254,
 #: so it refuses only what is certainly not an address, and short enough that
 #: the lookup is never handed a megabyte to index.
 MAX_EMAIL_LENGTH = 320
 
-#: Both success responses carry a signed-in user's name, address and role, and
-#: `GET /auth/session` is a plain GET — heuristically cacheable by any
-#: intermediary and by the service worker this PWA will eventually ship. A
-#: cached identity served to the next person on a shared shop-floor tablet is
-#: the whole failure mode; `no-store` is what stops it being written down at
-#: all.
-#:
-#: Carried by every auth response, not only the two that return a body. A
-#: rejection and a logout both say something about who is *not* signed in here
-#: any more, a 204 is cacheable by default, and — the reason that outlasts the
-#: others — a header three of five responses carry is a header the sixth will
-#: be written without.
-NO_STORE = {"cache-control": "no-store"}
+#: The envelope code for a password this endpoint will not set, whichever rule
+#: it broke. The *message* names the rule (EXPERIENCE.md:87) — a single code
+#: with a rule-naming message is what lets `apps/web` branch once and still show
+#: the user what to fix.
+WEAK_PASSWORD = "weak_password"
 
-#: RFC 9110 requires a `WWW-Authenticate` challenge on a 401, and both
-#: `shared_schema.errors.ApiError` and `api.main`'s handlers exist partly to
-#: carry it. `Session` rather than `Basic`: a `Basic` challenge makes the
-#: browser open its own credential dialog over this app's login screen, which
-#: is a worse experience *and* a phishing surface. No browser acts on an
-#: unknown scheme, which is exactly what is wanted — the scheme names how to
-#: authenticate for a client that reads it, and changes nothing for one that
-#: does not.
-AUTH_CHALLENGE = {"WWW-Authenticate": 'Session realm="rocell"'}
+#: The account already has a password of its own. Story 1.7 owns the signed-in
+#: self-service change, and it needs a current password this endpoint
+#: deliberately does not ask for.
+PASSWORD_CHANGE_NOT_REQUIRED = "password_change_not_required"
+
+#: The two states above, as the sentences the caller is shown.
+ALREADY_CLAIMED = "This account already has a password of its own."
+PASSWORD_REUSES_TEMPORARY = "The new password must be different from the temporary one."
+
+#: The point past which a submitted password stops being a password and becomes
+#: a payload. Deliberately far above `MAX_PASSWORD_LENGTH` (128) rather than
+#: equal to it: everything between the real rule and this ceiling has to reach
+#: the handler, because only the handler can answer with the sentence that names
+#: the rule — request validation would answer the generic "not in the expected
+#: shape" that EXPERIENCE.md:87 forbids for a rejected password.
+#:
+#: 4 KiB is the smallest round number that no passphrase manager will ever
+#: produce. It bounds what gets *worked on*, not what gets received: pydantic's
+#: `max_length` runs after Starlette has read the whole body and after JSON
+#: parsing, so a megabyte-sized body is buffered and decoded either way. A real
+#: body-size limit belongs at the edge, and there is none yet. What this ceiling
+#: does buy is that nothing past it reaches a `verify_password` or a
+#: `hash_password`, and nothing is hashed for a candidate it admits and the
+#: rules refuse — `password_rule_violation` runs first and costs one `len()`.
+MAX_PASSWORD_FIELD_LENGTH = 4096
 
 #: `credential_expired` fails **closed**: a `must_change_password` row whose
 #: `temp_credential_expires_at` is NULL counts as expired, not as unexpired.
@@ -196,19 +221,20 @@ def _rejected() -> ApiError:
     )
 
 
-def _not_signed_in() -> ApiError:
-    """No usable session. Carries the cookie clearance so a stale one goes.
+def _weak_password(rule: str) -> ApiError:
+    """Refuse a password, naming the rule it broke.
 
-    A cookie the server no longer honours is worse than no cookie: the browser
-    keeps sending it, every request costs a lookup that can only fail, and the
-    user sees a sign-in screen while holding a credential. It is cleared on the
-    way out.
+    `422`, matching the shape of every other body the request contract refuses,
+    and one code for every rule so a client branches once. The rule is in the
+    message because EXPERIENCE.md:87 requires the screen to say which one
+    failed — "length, reuse of the temporary password" — and never a generic
+    "invalid password".
     """
     return ApiError(
-        UNAUTHORIZED,
-        NO_SESSION,
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        headers={**AUTH_CHALLENGE, **NO_STORE, **cleared_cookie_headers()},
+        WEAK_PASSWORD,
+        rule,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        headers=NO_STORE,
     )
 
 
@@ -331,22 +357,18 @@ def login(
 
 
 @router.get("/auth/session", response_model=User)
-def read_session(
-    response: Response,
-    conn: Annotated[psycopg.Connection, Depends(get_connection)],
-    rocell_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
-) -> User:
+def read_session(user: Annotated[User, Depends(current_user)]) -> User:
     """Who the caller is, re-read from Postgres on every call (AD-3).
 
     This is what makes a role change or a deactivation take effect on the very
     next request: nothing here trusts anything recorded when the session was
     issued.
-    """
-    response.headers.update(NO_STORE)
 
-    user = lookup_session(conn, rocell_session)
-    if user is None:
-        raise _not_signed_in()
+    Deliberately **not** gated by `require_claimed_user`. A user on a temporary
+    credential gets a `200` here carrying `must_change_password: true`, and that
+    is how `apps/web` learns to render the forced-change screen at all — gating
+    it would leave the front end with a 403 and no way to know why.
+    """
     return user
 
 
@@ -371,3 +393,220 @@ def logout(
     response = Response(status_code=status.HTTP_204_NO_CONTENT, headers=dict(NO_STORE))
     clear_session_cookie(response)
     return response
+
+
+class PasswordChangeRequest(BaseModel):
+    """The forced-change body: one field, and deliberately only one.
+
+    **No `current_password`.** The caller proved it at sign-in minutes ago and
+    is holding the session it issued; asking for it again would be Story 1.7's
+    contract, not this one. **No confirm field either** — DESIGN.md:219
+    specifies a single-field form, and a second box with no rule behind it is
+    another thing to type for no enforcement.
+
+    `extra="forbid"`, like `LoginRequest`: a field this endpoint does not read
+    is a caller with a different idea of the contract.
+
+    **Neither length rule is enforced here**, and that is the point. Validation
+    answers `422 validation_error` — "the request was not in the expected
+    shape" — which is exactly the generic rejection EXPERIENCE.md:87 forbids for
+    a password. Both bounds are the handler's, so an empty candidate and a
+    129-character one are each answered by `password_rule_violation` with the
+    sentence that names the rule they broke. `LoginRequest` bounds its password
+    for the opposite reason: there the rules do not apply at all, and the
+    ceiling is the only thing standing between an unauthenticated caller and a
+    64 MiB hash.
+
+    Nothing is hashed for an oversized candidate here either. The rule check
+    runs before both the reuse verify and `hash_password`, so a string this
+    model accepts and the rules refuse costs one `len()`.
+
+    `MAX_PASSWORD_FIELD_LENGTH` is therefore not a password rule; it is the
+    point past which a body stops being a password at all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_password: str = Field(max_length=MAX_PASSWORD_FIELD_LENGTH)
+
+
+#: The digest, for the one rule this endpoint decides that `shared_schema`
+#: cannot — the new password must not be the temporary one — and the deadline
+#: the credential is still under. Read by id, from the session the caller
+#: already presented.
+#:
+#: `credential_expired` is `_SELECT_CREDENTIAL`'s expression verbatim, and fails
+#: **closed** for the same reason: a `must_change_password` row with a NULL
+#: `temp_credential_expires_at` counts as expired, not as having no deadline.
+#: Written the other way, the one row shape an admin insert is most likely to
+#: produce by mistake would get a temporary credential that never dies.
+_SELECT_CREDENTIAL_STATE = """
+SELECT password_hash,
+       (temp_credential_expires_at IS NULL OR temp_credential_expires_at <= now())
+           AS credential_expired
+  FROM users
+ WHERE id = %s
+"""
+
+#: The claim, in one statement. `must_change_password` and
+#: `temp_credential_expires_at` are cleared together: the expiry is what login
+#: checks for an unclaimed row, and leaving it set would arm a deadline against
+#: an account that no longer has a temporary credential to expire.
+#:
+#: `updated_at` is set by hand — `users` carries no BEFORE UPDATE trigger
+#: (DW-17), and the column's DEFAULT applies to inserts only.
+#:
+#: The `RETURNING` list is `_RECORD_LOGIN`'s, exactly: it is the ten-column
+#: shape `User.model_validate` wants, and the two must not drift.
+#:
+#: `AND must_change_password` is what makes "the credential works exactly once"
+#: a property of the *statement* rather than of the sequence of checks in front
+#: of it. The 409 guard below reads a `User` fetched by a separate query, so two
+#: posts arriving together on one session both pass it — and without this
+#: predicate both would write, the second revoking the session the first had
+#: just issued. With it, the loser matches no row, `RETURNING` is empty, and the
+#: handler answers the same 409 it would have answered a second later.
+_SET_PASSWORD = """
+UPDATE users
+   SET password_hash = %s,
+       must_change_password = false,
+       temp_credential_expires_at = NULL,
+       updated_at = now()
+ WHERE id = %s
+   AND must_change_password
+RETURNING id, name, email, role, active, must_change_password,
+          temp_credential_expires_at, last_login_at, created_at, updated_at
+"""
+
+
+def _already_claimed() -> ApiError:
+    """The account has a password of its own. Story 1.7 owns changing that one.
+
+    Raised from two places that are the same answer arriving at different
+    moments: the guard that reads the session's `User`, and the `UPDATE` whose
+    `AND must_change_password` matched nothing because another request got
+    there first.
+    """
+    return ApiError(
+        PASSWORD_CHANGE_NOT_REQUIRED,
+        ALREADY_CLAIMED,
+        status_code=status.HTTP_409_CONFLICT,
+        headers=NO_STORE,
+    )
+
+
+@router.post("/auth/password", response_model=User)
+def set_password(
+    payload: PasswordChangeRequest,
+    response: Response,
+    user: Annotated[User, Depends(current_user)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> User:
+    """Exchange an admin-issued temporary credential for a real password.
+
+    Authenticated, and deliberately **not** gated by `require_claimed_user` —
+    gating the escape hatch on having already escaped would leave the account
+    unreachable forever. It is the only ungated route that writes anything;
+    `GET /auth/session` and `POST /auth/logout` are the other two exemptions and
+    both are read-or-revoke. The allowlist and the reason for each live in
+    `tests/test_forced_change_gate.py`.
+
+    Sync, not `async def`: psycopg is a synchronous driver and the Argon2id hash
+    below is CPU-bound for ~100ms. FastAPI runs a sync endpoint in its
+    threadpool; an `async def` around the same calls would block every other
+    request in the process.
+
+    Story 1.12 owes this endpoint **two** audit entries — AGENTS.md Policy
+    requires the append-only log to cover user changes, and this endpoint makes
+    two of them in one request: the password change itself, and the silent
+    revocation of every session the user holds on every device. The second is a
+    security event in its own right and currently leaves no trace at all —
+    `updated_at` records that the row changed and says nothing about the
+    sessions that disappeared with it. No private log path is built here in the
+    meantime.
+    """
+    response.headers.update(NO_STORE)
+
+    if not user.must_change_password:
+        # Story 1.7's endpoint, not this one: a claimed account's own change
+        # takes a current password and makes its own decision about
+        # re-authentication. Answering here would be a password change on a
+        # live session with nothing proved.
+        raise _already_claimed()
+
+    row = conn.execute(_SELECT_CREDENTIAL_STATE, (user.id,)).fetchone()
+    if row is None:
+        # Deleted between the session lookup and this read. The session is gone
+        # with it; saying so is the honest answer and the cookie goes too.
+        raise not_signed_in()
+
+    if row["credential_expired"]:
+        # AGENTS.md line 18 gives an admin-issued temporary credential 72 hours
+        # without exception, and login is not the only place that deadline has
+        # to hold. A session lives for seven days (`SESSION_ABSOLUTE_LIFETIME`),
+        # so a user who signs in at hour 1 and comes back at hour 100 is refused
+        # at login and — without this check — could still claim the account
+        # here, through the session the credential issued while it was alive.
+        # That is the 72 hours turned into eleven days by the session that rode
+        # out of them.
+        #
+        # Every session of this user goes, not merely this browser's: they were
+        # all issued on a credential that is now dead, and one of them may be on
+        # a device whose holder saw the note it was written on. The way back is
+        # a reissue — `make reseed-admin` for the seeded Administrator — which
+        # is also what the 401 tells any client that reads only the status.
+        with conn.transaction():
+            delete_sessions_for_user(conn, user.id)
+        raise not_signed_in()
+
+    # The length rules, in their one statement (`shared_schema.passwords`), and
+    # checked before the reuse verify below so a too-short password costs no
+    # Argon2id work at all. This is also where an empty or oversized candidate
+    # is answered — the request model deliberately bounds neither, so that both
+    # get the sentence naming the rule rather than a generic 422.
+    violation = password_rule_violation(payload.new_password)
+    if violation is not None:
+        raise _weak_password(violation)
+
+    # The one rule that costs a verify, and the only one that needs the stored
+    # digest: EXPERIENCE.md:87 names exactly two — length, and reuse of the
+    # temporary password. Reuse of an *older* password is not checked, and
+    # deliberately: a history rule needs a history table, a retention policy and
+    # a decision about how many, none of which this epic asks for.
+    #
+    # `InvalidHashError` is left to propagate. It means the column holds
+    # something `shared_schema.passwords` did not write — and such an account
+    # cannot sign in at all, so it cannot reach this line. Swallowing it here
+    # would let a corrupt digest be silently overwritten, destroying the
+    # evidence of a data-integrity fault.
+    if verify_password(row["password_hash"], payload.new_password):
+        raise _weak_password(PASSWORD_REUSES_TEMPORARY)
+
+    # Hashed before the transaction opens. ~100ms of CPU inside an open
+    # transaction is ~100ms of held row locks on `users` for no benefit.
+    new_hash = hash_password(payload.new_password)
+
+    with conn.transaction():
+        user_row = conn.execute(_SET_PASSWORD, (new_hash, user.id)).fetchone()
+        if user_row is None:
+            # `AND must_change_password` matched nothing: either a concurrent
+            # post claimed the account a moment ago, or the row was deleted.
+            # Both mean this request must not write, and the transaction unwinds
+            # having written nothing.
+            raise _already_claimed()
+        # Credential rotation, in the same transaction as the digest it
+        # rotates: the temporary credential has just stopped being trusted, and
+        # any session issued on it — including one opened on another device by
+        # whoever saw the note it was written on — goes with it. Not Story
+        # 1.5's session management; this is one user acting on their own
+        # account.
+        delete_sessions_for_user(conn, user.id)
+        # Issued inside the same transaction, so the caller is never left
+        # holding a revoked cookie: either the whole change lands or none of it
+        # does.
+        raw_token = issue_session(conn, user.id)
+
+    # The token leaves in the cookie and nowhere else (AGENTS.md Policy, AD-3).
+    set_session_cookie(response, raw_token)
+
+    return User.model_validate(user_row)

@@ -88,8 +88,13 @@ insecure cookie to make it work.
 Nothing here is defaulted and nothing is committed: every value comes from the environment, and
 `make migrate` exits non-zero naming whatever is missing. The seeded credential expires after 72
 hours like any other admin-issued one; `make reseed-admin` reissues it while the account is still
-unclaimed. Full operator notes — commands, the two idempotency layers, stepping a migration back —
-are in `infra/README.md`.
+unclaimed — and only while nobody has signed in on it. A new account's first sign-in lands on the
+password-change screen and reaches nothing else — no app bar, no navigation, no way past it —
+until a real password is set. The 72 hours are a deadline on *claiming* the account, not merely on
+signing in: once they pass, the change screen stops accepting a password too. Finish the change in
+one sitting; signing in and coming back later is the one sequence neither the screen nor
+`make reseed-admin` can rescue. Full operator notes — commands, the two idempotency layers,
+stepping a migration back — are in `infra/README.md`.
 
 ## Design tokens
 

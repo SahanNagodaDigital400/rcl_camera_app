@@ -168,6 +168,51 @@ system:
 It changes the password, the expiry and nothing else. It runs at the console,
 with the same environment access `make migrate` needs.
 
+**What the reissued credential is then good for.** Exactly one thing: signing
+in and setting a real password. The first sign-in lands on the forced
+password-change screen and reaches nothing else — no app bar, no navigation, no
+way to dismiss it — and every API route that serves real data answers
+`403 password_change_required` until the change is done (AGENTS.md: never grant
+further access on a temporary credential before the forced change). Once the
+new password is set the flag and the 72-hour expiry are both cleared, every
+session opened on the temporary credential is revoked, and the account behaves
+like any other. Hand the credential over accordingly: it is a one-use key to
+the change screen, not an account someone can work from.
+
+**The 72 hours are a deadline on claiming the account, not on signing in.**
+Signing in inside the window does not bank the credential: a session outlives it
+(seven days against three), and the change screen refuses a password once the
+expiry has passed just as login refuses the credential itself — revoking the
+sessions that were riding on it as it goes. Somebody who signs in on day one and
+comes back on day four is locked out, and a retry will not help.
+
+**Nor will `make reseed-admin`, in that one case.** It counts a recorded
+sign-in as a claim, so the account it refuses to reissue includes the account
+that signed in and never finished. There is no console path back in, and on a
+database whose only Administrator is in that state the product is unreachable
+until somebody with database access clears the sign-in by hand. Hand the
+credential over with that in mind — the change is meant to be finished in the
+same sitting as the sign-in. Making the reissue cover this case is deferred work
+against `infra/rocell_infra/seed.py`, not something this story changed.
+
+**Clearing it by hand.** The reissue selects on `must_change_password AND
+last_login_at IS NULL`, and a lapsed account still carries the flag — so the
+only thing standing between it and `make reseed-admin` is the recorded sign-in:
+
+```sql
+UPDATE users SET last_login_at = NULL, updated_at = now()
+ WHERE email = '<the Administrator>' AND must_change_password;
+```
+
+Then run `make reseed-admin` as above; it writes a fresh password and a fresh
+72-hour expiry, and the account is back to its first-sign-in state. The `AND
+must_change_password` is not decoration: on an account that *did* claim itself
+this statement must change nothing, because there `last_login_at` is history
+rather than a lock, and blanking it would hand out a temporary credential for a
+working account. Two people should watch this run. It is a database write with
+no audit trail behind it (Story 1.12), and it is the one operation in this file
+that can turn a claimed account back into a claimable one.
+
 ### Stepping the seed migration back
 
 `down --yes` on the seed migration runs the file below.

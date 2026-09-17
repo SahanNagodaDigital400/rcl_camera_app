@@ -137,15 +137,21 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_three_auth_routes_and_health() -> None:
+def test_the_route_table_is_the_four_auth_routes_and_health() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
+    #
+    # `/auth/password` sets a password on an *existing* account signed in on an
+    # admin-issued temporary credential (Story 1.4). It creates nothing, and
+    # `test_forced_change_gate.py` holds the same table to the forced-change
+    # allowlist.
     assert {path for path, _ in _routes()} == {
         "/health",
         "/auth/login",
         "/auth/session",
         "/auth/logout",
+        "/auth/password",
     }
 
 

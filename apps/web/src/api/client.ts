@@ -21,6 +21,39 @@ export const API_PREFIX = '/api';
 /** The envelope code the API uses for "not signed in" and "wrong credential". */
 export const UNAUTHORIZED = 'unauthorized';
 
+/**
+ * The envelope code for a password the API refuses to set.
+ *
+ * One code for every rule — length, or reuse of the temporary password — with
+ * the failing rule named in the *message*. A screen branches on this and then
+ * shows the server's own sentence, which is what keeps the front end from
+ * restating a policy it does not own (EXPERIENCE.md:87).
+ */
+export const WEAK_PASSWORD = 'weak_password';
+
+/**
+ * The envelope code for "signed in, but still on a temporary credential".
+ *
+ * Deliberately not `unauthorized`: the session is valid, so sending the user to
+ * the login screen would loop them straight back.
+ *
+ * Nothing branches on it yet — no route in the product declares the gate,
+ * because Story 1.4 adds no surface that serves real data. It is here for the
+ * first gated surface, which Epic 2 brings, and a parity test holds it to the
+ * Python spelling in the meantime.
+ */
+export const PASSWORD_CHANGE_REQUIRED = 'password_change_required';
+
+/**
+ * The envelope code for "this account already has a password of its own".
+ *
+ * Answered by `POST /auth/password` when the forced change has already been
+ * done — the signed-in self-service change is a different endpoint with a
+ * different contract. For the session provider it means the cached user is
+ * stale, not that the request was malformed.
+ */
+export const PASSWORD_CHANGE_NOT_REQUIRED = 'password_change_not_required';
+
 /** The code this module invents when the request never reached the API. */
 export const NETWORK_ERROR = 'network_error';
 

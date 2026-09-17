@@ -4,44 +4,80 @@ import type { JSX } from 'react';
 import styles from './App.module.css';
 import { ApiRequestError } from './api/client';
 import { useSession, SessionProvider } from './auth/SessionProvider';
-import { AppShell, MAIN_REGION_ID } from './components/AppShell';
-import { LoginScreen } from './screens/LoginScreen';
 import type { SessionStatus } from './auth/SessionProvider';
+import { AppShell, MAIN_REGION_ID } from './components/AppShell';
+import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
+import { LoginScreen } from './screens/LoginScreen';
+import type { User } from '@rocell/schema/user';
 
 /** Shown when signing out fails as something other than an `ApiRequestError`. */
 const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 
 /**
+ * Which of the four screens the session state selects.
+ *
+ * Named separately from `SessionStatus` because the two are not the same shape:
+ * `'signed-in'` covers both the forced-change screen and the shell, and the
+ * move between them is a screen swap that the status cannot see. Focus
+ * management keys off this, not off the status.
+ */
+type Screen = 'loading' | 'login' | 'password-change' | 'shell';
+
+function currentScreen(status: SessionStatus, user: User | null): Screen {
+  if (status === 'loading') return 'loading';
+  if (status === 'signed-out' || user === null) return 'login';
+  return user.must_change_password ? 'password-change' : 'shell';
+}
+
+/**
  * The application root: the session gate, and nothing else yet.
  *
  * The split is a conditional render, not a router. Nothing in the architecture
- * spine, DESIGN.md or EXPERIENCE.md names a routing library, and the only
- * navigation this story needs is "signed out or signed in". Story 1.4's forced
- * password change is where navigation trapping actually forces the question,
- * so that is where the dependency decision belongs.
+ * spine, DESIGN.md or EXPERIENCE.md names a routing library, and the navigation
+ * this needs is "signed out", "signed in but unclaimed", or "signed in".
+ *
+ * Story 1.3 left a note here saying the forced password change would be what
+ * forced the routing-library question. It did not, and the reason belongs on
+ * the record: a trap only needs intercepting if there is somewhere to navigate
+ * *to*. With no router, rendering the change screen instead of the shell means
+ * the shell is not in the document at all — nothing to reach, nothing to
+ * intercept, no history entry to guard. A router would have added the very
+ * surface the trap then has to defend.
+ *
+ * The trap is a convenience either way. The control is server-side: every route
+ * that serves real data declares `require_claimed_user` and answers
+ * `403 password_change_required` until the change lands (AGENTS.md Policy —
+ * authorization is never gated by what the UI hides).
  */
 function Gate(): JSX.Element {
   const { status, user, signOut } = useSession();
   const [signOutError, setSignOutError] = useState<string | null>(null);
-  const previous = useRef<SessionStatus>('loading');
+  const screen = currentScreen(status, user);
+  const previous = useRef<Screen>('loading');
 
   useEffect(() => {
     // Swapping one screen for the other unmounts whatever had focus — the
     // submit button on the way in, the sign-out button on the way out — and
     // focus falls to `<body>`, which leaves a keyboard or screen-reader user
-    // at the top of a page they did not ask to be at the top of. Both screens
-    // expose the same focusable main region for this.
+    // at the top of a page they did not ask to be at the top of. Every screen
+    // exposes the same focusable main region for this.
+    //
+    // Keyed on which screen is rendered, not on `status`. The forced change
+    // moves from the change screen to the shell without `status` ever leaving
+    // `'signed-in'` — only `must_change_password` changes — so an effect
+    // watching the status alone silently skips that one swap, and the user who
+    // just pressed a button that no longer exists is left on `<body>`.
     //
     // Deliberately not on the first resolution of `loading`: the page has just
     // loaded, and moving focus on arrival is its own accessibility failure.
     const from = previous.current;
-    previous.current = status;
-    if (from !== 'loading' && from !== status) {
+    previous.current = screen;
+    if (from !== 'loading' && from !== screen) {
       document.getElementById(MAIN_REGION_ID)?.focus();
     }
-  }, [status]);
+  }, [screen]);
 
-  if (status === 'loading') {
+  if (screen === 'loading') {
     // The bootstrap request is in flight. Deliberately quiet — a spinner here
     // would flash on every reload for a request that usually beats the paint,
     // and showing the login screen instead reads as "you have been signed out"
@@ -62,8 +98,22 @@ function Gate(): JSX.Element {
     );
   }
 
-  if (status === 'signed-out' || user === null) {
+  if (screen === 'login' || user === null) {
+    // `user === null` is unreachable at runtime — `currentScreen` already maps
+    // it to `'login'`. It is here so TypeScript narrows `user` to non-null for
+    // the two branches below, which read `user.must_change_password` and
+    // `user.name`. Removing it as redundant breaks the build, so it says why.
     return <LoginScreen />;
+  }
+
+  if (screen === 'password-change') {
+    // Before the shell, and instead of it. The account is signed in and holding
+    // an admin-issued temporary credential: AGENTS.md line 18 gives it no
+    // further access until a real password is set, and the API enforces that
+    // independently. `changePassword` clears the flag by storing the `User` the
+    // API returns, so this branch stops being taken on the very next render —
+    // with no success screen in between (EXPERIENCE.md line 88).
+    return <ForcedPasswordChangeScreen />;
   }
 
   function handleSignOut(): void {

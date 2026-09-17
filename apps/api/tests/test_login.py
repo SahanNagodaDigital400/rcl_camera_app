@@ -801,3 +801,59 @@ def test_another_device_keeps_its_session_when_this_one_signs_in_again(
 
     hashes = {row["token_hash"] for row in _sessions(conn, account.id)}
     assert elsewhere in hashes
+
+
+# --- Story 1.4's second acceptance clause, end to end ------------------------
+
+
+def test_an_expired_temporary_credential_cannot_reach_the_change_screen(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    # The AC: "an unclaimed temporary credential stops working after 72 hours
+    # and must be reissued by an Administrator." Login answers the generic
+    # rejection, so no session is issued — and with no session there is no
+    # forced-change screen to land on and no `POST /auth/password` to call. The
+    # only way back is a reissue (`make reseed-admin` for the seeded
+    # Administrator, `infra/README.md`).
+    account = make_user(
+        must_change_password=True,
+        temp_credential_expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+
+    refused = client.post(LOGIN, json={"email": account.email, "password": account.password})
+
+    assert refused.status_code == 401
+    assert refused.json()["error"]["message"] == INVALID_CREDENTIALS
+    assert _sessions(conn, account.id) == []
+    # Nothing to present, so the change endpoint is unreachable too.
+    assert (
+        client.post("/auth/password", json={"new_password": "a-long-enough-password"}).status_code
+        == 401
+    )
+
+
+def test_a_valid_temporary_credential_signs_in_and_completes_the_claim(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    # The other half of the same clause: inside the window the credential works
+    # exactly once — to set a real password — and the account is claimed from
+    # then on.
+    account = make_user(
+        must_change_password=True,
+        temp_credential_expires_at=datetime.now(UTC) + timedelta(hours=71),
+    )
+
+    signed_in = client.post(LOGIN, json={"email": account.email, "password": account.password})
+    assert signed_in.status_code == 200
+    assert signed_in.json()["must_change_password"] is True
+
+    claimed = client.post("/auth/password", json={"new_password": f"{account.password}-claimed"})
+
+    assert claimed.status_code == 200
+    row = conn.execute(
+        "SELECT must_change_password, temp_credential_expires_at FROM users WHERE id = %s",
+        (account.id,),
+    ).fetchone()
+    assert row is not None
+    assert row["must_change_password"] is False
+    assert row["temp_credential_expires_at"] is None

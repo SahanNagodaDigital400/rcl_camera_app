@@ -33,6 +33,7 @@ function renderLogin(signIn: SessionContextValue['signIn']): void {
     status: 'signed-out',
     user: null,
     signIn,
+    changePassword: vi.fn(async () => undefined),
     signOut: vi.fn(async () => undefined),
   };
   render(<LoginScreen />);

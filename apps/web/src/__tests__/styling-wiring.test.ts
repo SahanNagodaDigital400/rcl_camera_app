@@ -206,14 +206,58 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
   });
 
-  it('is the class the alert element actually carries', () => {
-    // The rule above is inert if the element points somewhere else. The
+  it('colours the forced password change rejection the same way', () => {
+    // DESIGN.md's `force-password-change-form` block names
+    // `error-foreground: {colors.destructive}` explicitly, and this is the one
+    // screen whose rejection a user cannot get past.
+    const css = read(join(SRC, 'screens', 'ForcedPasswordChangeScreen.module.css'));
+
+    expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
+  it.each([
+    ['LoginScreen', 'LoginScreen.tsx'],
+    ['ForcedPasswordChangeScreen', 'ForcedPasswordChangeScreen.tsx'],
+  ])('is the class %s\'s alert element actually carries', (_label, file) => {
+    // The rules above are inert if the element points somewhere else. The
     // dangling-reference check upstream proves `styles.error` resolves to a
     // declared class; this proves it is the class on the live region.
-    const screen = read(join(SRC, 'screens', 'LoginScreen.tsx'));
+    const screen = read(join(SRC, 'screens', file));
 
     expect(screen).toContain('className={styles.error}');
     expect(screen).toContain('role="alert"');
+  });
+});
+
+describe('the forced password change is the one action on its screen', () => {
+  // DESIGN.md: "Exactly one per screen" for the accent-filled primary button,
+  // and its foreground is navy — white on orange is 2.63:1, the one contrast
+  // pair the system bans.
+  const css = (): string => read(join(SRC, 'screens', 'ForcedPasswordChangeScreen.module.css'));
+
+  it('fills the submit with the accent and writes on it in navy', () => {
+    const submit = rule(css(), '.submit');
+
+    expect(declaration(submit, 'background')).toBe('var(--color-accent)');
+    expect(declaration(submit, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('gives the form the surface DESIGN.md names for it', () => {
+    // DESIGN.md:134's `force-password-change-form` block specifies
+    // `background: {colors.surface}` — the one way this screen is meant to
+    // differ from the login screen it otherwise mirrors. Nothing else in the
+    // suite can see a background, so without this the rule can be deleted and
+    // every other check stays green.
+    expect(declaration(rule(css(), '.panel'), 'background')).toBe('var(--color-surface)');
+  });
+
+  it('paints nothing else with the accent', () => {
+    // A second orange element on the screen would make neither of them the one
+    // action. Counted over the whole stylesheet rather than rule by rule, so a
+    // new rule cannot introduce one unseen.
+    const accents = [...css().matchAll(/var\(--color-accent\)/g)];
+
+    expect(accents).toHaveLength(1);
   });
 });
 

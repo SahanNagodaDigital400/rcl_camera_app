@@ -13,6 +13,7 @@ retired by AD-18 and must not appear.
 from shared_schema.errors import ApiError, ErrorBody, ErrorEnvelope
 from shared_schema.passwords import (
     hash_password,
+    password_rule_violation,
     verify_dummy_password,
     verify_password,
     warm_password_verifier,
@@ -26,6 +27,7 @@ __all__ = [
     "Role",
     "User",
     "hash_password",
+    "password_rule_violation",
     "verify_dummy_password",
     "verify_password",
     "warm_password_verifier",

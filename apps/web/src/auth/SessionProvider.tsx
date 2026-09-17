@@ -4,7 +4,13 @@ import type { JSX, ReactNode } from 'react';
 import { isUser } from '@rocell/schema/user';
 import type { User } from '@rocell/schema/user';
 
-import { ApiRequestError, MALFORMED_RESPONSE, apiRequest } from '../api/client';
+import {
+  ApiRequestError,
+  MALFORMED_RESPONSE,
+  PASSWORD_CHANGE_NOT_REQUIRED,
+  UNAUTHORIZED,
+  apiRequest,
+} from '../api/client';
 
 /**
  * Who is signed in, for the whole app.
@@ -27,6 +33,14 @@ export interface SessionContextValue {
   status: SessionStatus;
   user: User | null;
   signIn: (email: string, password: string) => Promise<void>;
+  /**
+   * Set a real password for a user still holding an admin-issued temporary one.
+   *
+   * On success the API returns the same `User` with `must_change_password`
+   * cleared, so storing it is what lets the gate in `App` fall through to the
+   * shell — there is no separate "done" flag to keep in step with the server.
+   */
+  changePassword: (newPassword: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -91,6 +105,49 @@ export function SessionProvider({ children }: { children: ReactNode }): JSX.Elem
     setStatus('signed-in');
   }, []);
 
+  const changePassword = useCallback(async (newPassword: string): Promise<void> => {
+    // Errors propagate, as `signIn`'s do: the screen is what knows how to show
+    // a rule-naming rejection, and swallowing one here would leave a form that
+    // submits and does nothing.
+    //
+    // Two of them are not the screen's to show, though, and they are the two
+    // that would trap the user on it. The change screen carries no sign-out
+    // control and no dismissal by design, so a failure that makes the cached
+    // user wrong has to be resolved here or not at all — otherwise the only way
+    // out of the app is clearing cookies.
+    let body: unknown;
+    try {
+      body = await apiRequest('/auth/password', {
+        method: 'POST',
+        body: { new_password: newPassword },
+      });
+    } catch (failure) {
+      if (
+        failure instanceof ApiRequestError &&
+        (failure.code === UNAUTHORIZED || failure.code === PASSWORD_CHANGE_NOT_REQUIRED)
+      ) {
+        // `unauthorized`: the session died mid-change — expired, revoked, or
+        // its owner deactivated. EXPERIENCE.md's state table sends that to
+        // Login, and the server has already cleared the cookie.
+        //
+        // `password_change_not_required`: the account was claimed by someone
+        // else holding the same temporary credential, or on another tab. Either
+        // way the user this context is holding is stale and its
+        // `must_change_password` is a lie, so keeping it would re-render the
+        // screen that just failed. Login is where a real password is used.
+        setUser(null);
+        setStatus('signed-out');
+      }
+      throw failure;
+    }
+
+    // The server's own answer, narrowed by the same contract check as every
+    // other user body. Setting it is the whole transition: the flag it carries
+    // is what the gate reads.
+    setUser(asUser(body));
+    setStatus('signed-in');
+  }, []);
+
   const signOut = useCallback(async (): Promise<void> => {
     // The server's copy is the session. If the revocation did not land, the
     // cookie is still valid and still in the browser, so clearing local state
@@ -104,8 +161,8 @@ export function SessionProvider({ children }: { children: ReactNode }): JSX.Elem
   }, []);
 
   const value = useMemo<SessionContextValue>(
-    () => ({ status, user, signIn, signOut }),
-    [status, user, signIn, signOut],
+    () => ({ status, user, signIn, changePassword, signOut }),
+    [status, user, signIn, changePassword, signOut],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

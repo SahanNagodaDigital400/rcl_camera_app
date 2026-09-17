@@ -161,9 +161,12 @@ def create_app() -> FastAPI:
         """
         return {"status": "ok"}
 
-    # Story 1.3. The only unauthenticated endpoints in the product are `/health`
-    # and `POST /auth/login`; everything a later story adds goes behind
-    # `api.sessions.lookup_session` (AD-3).
+    # The only unauthenticated endpoints in the product are `/health` and
+    # `POST /auth/login`. Everything a later story adds goes behind
+    # `api.dependencies.require_claimed_user`, which is `lookup_session` (AD-3)
+    # plus Story 1.4's forced-change gate — `tests/test_forced_change_gate.py`
+    # walks the route table below and fails on any route outside its written
+    # allowlist that does not declare it.
     app.include_router(auth.router)
 
     return app

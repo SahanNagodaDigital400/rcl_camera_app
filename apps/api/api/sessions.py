@@ -98,6 +98,10 @@ SELECT u.id, u.name, u.email, u.role, u.active, u.must_change_password,
 
 _DELETE_SESSION = "DELETE FROM sessions WHERE token_hash = %s"
 
+#: Every session a user holds, on any device. Used by the forced password
+#: change and nothing else — see `delete_sessions_for_user`.
+_DELETE_USER_SESSIONS = "DELETE FROM sessions WHERE user_id = %s"
+
 #: How many dead rows one sign-in will clear. A sign-in adds one row, so any
 #: bound above 1 drains a backlog rather than merely keeping pace; a bound at
 #: all is what stops a single unlucky login paying to delete everything that
@@ -165,17 +169,19 @@ def lookup_session(conn: psycopg.Connection, raw_token: str | None) -> User | No
     lookup that distinguished them would invite a route to explain the
     difference to the client.
 
-    **Obligation for the next authenticated route — Story 1.4.** A `User` this
-    returns may still carry `must_change_password = true`: login deliberately
-    issues a session for an unclaimed temporary credential so that Story 1.4
-    has something to gate. This function does **not** gate it, and today
-    nothing is exposed because `GET /auth/session` is the only caller and
-    reporting the flag is its whole job. The first route that serves real data
-    must refuse a `must_change_password` user until Story 1.4's gate exists —
-    AGENTS.md Policy: never grant further access on an admin-issued temporary
-    credential before the forced change. Adding that check here rather than in
-    1.4 would break `GET /auth/session`, which is how the front end learns the
-    flag in the first place.
+    **A `User` this returns may still carry `must_change_password = true`**, and
+    that is deliberate: login issues a session for an unclaimed temporary
+    credential, and `GET /auth/session` reporting the flag is how `apps/web`
+    learns to show the forced-change screen at all. Gating it here would break
+    that endpoint, so the gate is one layer up.
+
+    That gate is `api.dependencies.require_claimed_user` (Story 1.4), and it is
+    the thing every route serving real data declares — AGENTS.md Policy: never
+    grant further access on an admin-issued temporary credential before the
+    forced change. The obligation is not left to whoever reads this docstring:
+    `tests/test_forced_change_gate.py` walks `create_app()`'s route table and
+    fails on any route outside a written-down allowlist that does not declare
+    it, so a route added later cannot serve an unclaimed account by omission.
     """
     if not raw_token:
         return None
@@ -189,6 +195,24 @@ def delete_session(conn: psycopg.Connection, raw_token: str | None) -> None:
     if not raw_token:
         return
     conn.execute(_DELETE_SESSION, (hash_token(raw_token),))
+
+
+def delete_sessions_for_user(conn: psycopg.Connection, user_id: UUID) -> int:
+    """Revoke every session this user holds, anywhere. Returns how many went.
+
+    Credential rotation, not session management. It exists for one caller: the
+    forced password change, where the temporary credential the sessions were
+    issued on has just stopped being trusted. A temporary credential travels by
+    whatever channel an Administrator used — spoken, written on a note,
+    messaged — so a session opened by someone who saw it has to go with it,
+    including one on a device the user cannot reach.
+
+    Story 1.5 owns session *management*: listing a user's sessions, sliding
+    renewal, an Administrator revoking someone else's. This is neither of
+    those; it is one user, acting on their own account, in the same transaction
+    that replaces their digest.
+    """
+    return conn.execute(_DELETE_USER_SESSIONS, (user_id,)).rowcount
 
 
 def delete_expired_sessions(conn: psycopg.Connection, limit: int = EXPIRED_SWEEP_LIMIT) -> int:

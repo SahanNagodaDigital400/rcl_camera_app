@@ -31,6 +31,18 @@ const STAFF: User = {
   updated_at: '2026-09-17T08:00:00Z',
 };
 
+/**
+ * The same account before it has claimed its temporary credential.
+ *
+ * `must_change_password` is the only difference, and it is the whole of what
+ * decides which screen renders.
+ */
+const UNCLAIMED: User = {
+  ...STAFF,
+  must_change_password: true,
+  temp_credential_expires_at: '2026-09-20T08:00:00Z',
+};
+
 interface Reply {
   status: number;
   body?: unknown;
@@ -76,6 +88,11 @@ function fillAndSubmit(): void {
     target: { value: 'a-long-enough-password' },
   });
   fireEvent.click(screen.getByRole('button', { name: /^sign in$/i }));
+}
+
+function setNewPassword(value: string): void {
+  fireEvent.change(screen.getByLabelText(/new password/i), { target: { value } });
+  fireEvent.click(screen.getByRole('button', { name: /^set password$/i }));
 }
 
 describe('the session gate', () => {
@@ -261,25 +278,37 @@ describe('the session gate', () => {
     await screen.findByLabelText(/password/i);
   });
 
-  it('moves focus to the main region when the screen is swapped', async () => {
-    // Both swaps unmount whatever had focus — the submit button on the way in,
+  it('moves focus to the main region on every screen swap', async () => {
+    // Every swap unmounts whatever had focus — the submit button on the way in,
     // the sign-out button on the way out — and focus would otherwise fall to
     // <body>, stranding a keyboard or screen-reader user at the top of a page
     // they did not navigate to.
+    //
+    // The middle hop is the one an effect keyed on `status` cannot see: the
+    // change screen and the shell are both `'signed-in'`, so only
+    // `must_change_password` changes and the status never fires the effect.
     stubFetch({
       '/api/auth/session': [unauthorized],
-      '/api/auth/login': [{ status: 200, body: STAFF }],
+      '/api/auth/login': [{ status: 200, body: UNCLAIMED }],
+      '/api/auth/password': [{ status: 200, body: STAFF }],
       '/api/auth/logout': [{ status: 204 }],
     });
     render(<App />);
-    await screen.findByLabelText(/password/i);
+    await screen.findByLabelText(/^password$/i);
 
+    // login -> forced change
     fillAndSubmit();
+    await screen.findByLabelText(/new password/i);
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('MAIN'));
+
+    // forced change -> shell
+    setNewPassword('a-long-enough-password');
     const main = await screen.findByTestId('app-main');
     await waitFor(() => expect(document.activeElement).toBe(main));
 
+    // shell -> login
     fireEvent.click(screen.getByRole('button', { name: /sign out/i }));
-    await screen.findByLabelText(/password/i);
+    await screen.findByLabelText(/^password$/i);
     await waitFor(() => expect(document.activeElement?.tagName).toBe('MAIN'));
   });
 
@@ -336,5 +365,212 @@ describe('the session gate', () => {
 
     await screen.findByLabelText(/password/i);
     await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+  });
+});
+
+describe('the forced password change traps the app', () => {
+  it('renders the change screen when the bootstrap reports the flag', async () => {
+    stubFetch({ '/api/auth/session': [{ status: 200, body: UNCLAIMED }] });
+    render(<App />);
+
+    expect(await screen.findByLabelText(/new password/i)).toBeTruthy();
+  });
+
+  it('does not put the shell in the document while the flag is set', async () => {
+    // Not "hides it" — with no router the shell is simply not rendered, so
+    // there is nothing to navigate to and nothing to intercept. The app bar and
+    // the sign-out control are what the shell brings with it, and neither is
+    // here.
+    stubFetch({ '/api/auth/session': [{ status: 200, body: UNCLAIMED }] });
+    render(<App />);
+
+    await screen.findByLabelText(/new password/i);
+    expect(screen.queryByTestId('app-bar')).toBeNull();
+    expect(screen.queryByTestId('app-main')).toBeNull();
+    expect(screen.queryByRole('button', { name: /sign out/i })).toBeNull();
+  });
+
+  it('goes to the change screen when a sign-in returns the flag', async () => {
+    // The other way in: a user who was signed out, signing in on a temporary
+    // credential. The login screen must not hand them the shell.
+    stubFetch({
+      '/api/auth/session': [unauthorized],
+      '/api/auth/login': [{ status: 200, body: UNCLAIMED }],
+    });
+    render(<App />);
+    await screen.findByLabelText(/^password$/i);
+
+    fillAndSubmit();
+
+    expect(await screen.findByLabelText(/new password/i)).toBeTruthy();
+    expect(screen.queryByTestId('app-bar')).toBeNull();
+  });
+
+  it('posts the new password to the API', async () => {
+    const { calls } = stubFetch({
+      '/api/auth/session': [{ status: 200, body: UNCLAIMED }],
+      '/api/auth/password': [{ status: 200, body: STAFF }],
+    });
+    render(<App />);
+    await screen.findByLabelText(/new password/i);
+
+    setNewPassword('a-long-enough-password');
+    await screen.findByTestId('app-bar');
+
+    const change = calls.filter(([url]) => url === '/api/auth/password');
+    expect(change).toHaveLength(1);
+    expect(change[0]?.[1].method).toBe('POST');
+    // The cookie is what authenticates it; nothing else is sent.
+    expect(change[0]?.[1].credentials).toBe('same-origin');
+    expect(change[0]?.[1].headers).toEqual({ 'content-type': 'application/json' });
+    expect(JSON.parse(String(change[0]?.[1].body))).toEqual({
+      new_password: 'a-long-enough-password',
+    });
+  });
+
+  it('swaps straight to the shell on success, with no interstitial', async () => {
+    // EXPERIENCE.md line 88: the transition is immediate — no "your password is
+    // set" screen to click through.
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: UNCLAIMED }],
+      '/api/auth/password': [{ status: 200, body: STAFF }],
+    });
+    render(<App />);
+    await screen.findByLabelText(/new password/i);
+
+    setNewPassword('a-long-enough-password');
+
+    expect(await screen.findByTestId('app-bar')).toBeTruthy();
+    expect(screen.queryByLabelText(/new password/i)).toBeNull();
+  });
+
+  it('stays on the change screen when the password is refused', async () => {
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: UNCLAIMED }],
+      '/api/auth/password': [
+        {
+          status: 422,
+          body: {
+            error: {
+              code: 'weak_password',
+              message: 'A password must be at least 12 characters.',
+            },
+          },
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByLabelText(/new password/i);
+
+    setNewPassword('short');
+
+    // The API's own sentence, naming the rule (EXPERIENCE.md:87).
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'A password must be at least 12 characters.',
+    );
+    expect(screen.queryByTestId('app-bar')).toBeNull();
+  });
+
+  it('refuses a body that is not the shared User contract', async () => {
+    // The same failure mode the sign-in path has: a partial render of a body the
+    // contract rejects is how a field the API stopped sending becomes
+    // `undefined` on screen instead of an error.
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: UNCLAIMED }],
+      '/api/auth/password': [{ status: 200, body: { id: STAFF.id, name: STAFF.name } }],
+    });
+    render(<App />);
+    await screen.findByLabelText(/new password/i);
+
+    setNewPassword('a-long-enough-password');
+
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryByTestId('app-bar')).toBeNull();
+  });
+
+  it('falls back to the login screen when the session dies mid-change', async () => {
+    // The change screen carries no sign-out control and no dismissal by design,
+    // so a 401 that left the user on it would leave clearing cookies as the only
+    // way out of the app. EXPERIENCE.md's state table sends an expired session
+    // to Login.
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: UNCLAIMED }],
+      '/api/auth/password': [unauthorized],
+    });
+    render(<App />);
+    await screen.findByLabelText(/new password/i);
+
+    setNewPassword('a-long-enough-password');
+
+    expect(await screen.findByLabelText(/^password$/i)).toBeTruthy();
+    expect(screen.queryByLabelText(/new password/i)).toBeNull();
+  });
+
+  it('falls back to the login screen when the account was already claimed', async () => {
+    // `password_change_not_required` means the cached user is stale — its
+    // `must_change_password` is a lie, so keeping it would re-render the screen
+    // that just failed, forever. The account has a real password now, and Login
+    // is where one is used.
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: UNCLAIMED }],
+      '/api/auth/password': [
+        {
+          status: 409,
+          body: {
+            error: {
+              code: 'password_change_not_required',
+              message: 'This account already has a password of its own.',
+            },
+          },
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByLabelText(/new password/i);
+
+    setNewPassword('a-long-enough-password');
+
+    expect(await screen.findByLabelText(/^password$/i)).toBeTruthy();
+  });
+
+  it('keeps the user on the change screen for a failure they can retry', async () => {
+    // The mirror image, and why the two above are a branch rather than a blanket
+    // reset: a refused password is fixable in place, and dropping to the login
+    // screen would throw away a session that is still perfectly good.
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: UNCLAIMED }],
+      '/api/auth/password': [
+        {
+          status: 422,
+          body: {
+            error: { code: 'weak_password', message: 'A password must be at least 12 characters.' },
+          },
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByLabelText(/new password/i);
+
+    setNewPassword('short');
+
+    await screen.findByRole('alert');
+    expect(screen.getByLabelText(/new password/i)).toBeTruthy();
+    expect(screen.queryByLabelText(/^password$/i)).toBeNull();
+  });
+
+  it('logs no console error while trapped', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: UNCLAIMED }],
+      '/api/auth/password': [{ status: 200, body: STAFF }],
+    });
+
+    render(<App />);
+    await screen.findByLabelText(/new password/i);
+    setNewPassword('a-long-enough-password');
+    await screen.findByTestId('app-bar');
+    cleanup();
+
+    expect(spy.mock.calls).toEqual([]);
   });
 });
