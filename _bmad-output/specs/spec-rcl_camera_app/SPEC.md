@@ -29,15 +29,15 @@ Rocell staff regularly can't identify a tile with no visible product code — an
 
 - **CAP-2 — Tile Scanning & Identification**
   - **intent:** A Staff or Administrator user captures or uploads a tile photo, crops it to just the tile face, and receives up to three visually-ranked candidate matches to confirm by sight.
-  - **success:** The submitted Scan is always the cropped region. A materially blurry cropped region prompts a retake before submission. Results always show up to three Candidates with image, code, size, and design — never a single unverifiable answer. Crop-confirmation-to-result stays under 3 seconds.
+  - **success:** The submitted Scan is always the cropped region. A materially blurry cropped region prompts a retake before submission. Results always show up to three Candidates with image, code, size, and category — never a single unverifiable answer, and never a similarity number. Candidates are distinct Tiles, never collapsed by Category. Crop-confirmation-to-result stays under 3 seconds.
 
 - **CAP-3 — Admin User Management**
   - **intent:** An Administrator manages the Staff/Administrator population entirely in-app — creating, editing, deactivating, or deleting accounts.
   - **success:** A role edit or deactivation takes effect on the user's very next request, not their next login. The last remaining active Administrator account cannot be deactivated or deleted.
 
 - **CAP-4 — Admin Catalogue Management**
-  - **intent:** An Administrator adds, edits, removes, or bulk-loads Products and Reference Images directly, with the Catalogue searchable immediately — no developer or re-import needed.
-  - **success:** A Product added mid-session is returned as a Candidate for a Scan submitted later that same session. A bulk upload reports per-row success/failure. A removed Product or Reference Image never resurfaces as a Candidate.
+  - **intent:** An Administrator adds, edits, removes, or bulk-loads Tiles and Reference Images directly, with the Catalogue searchable immediately — no developer or re-import needed.
+  - **success:** A Tile added mid-session is returned as a Candidate for a Scan submitted later that same session. A bulk upload reports per-row success/failure. A removed Tile or Reference Image never resurfaces as a Candidate.
 
 - **CAP-5 — Audit Log & Anomaly/Rate-Limit Defense**
   - **intent:** Every account and Catalogue change is immutably logged and viewable by Administrators; login and scan activity are rate-limited and anomalous patterns flagged.
@@ -62,13 +62,14 @@ Rocell staff regularly can't identify a tile with no visible product code — an
 - No customer- or dealer-facing access in v1.
 - No app-sent email — Administrators distribute credentials manually.
 - No ERP, POS, or inventory integration.
-- No maintained `size + design → code` mapping table — the Code is the Reference Image's cleaned file name.
+- No maintained `size + category → code` mapping table — the Code is the Reference Image's cleaned file name, and it is the Tile's identity (glossary, AD-18).
 - No confidence-gated single-answer result — always up to three Candidates.
+- No similarity score shown to the user, in any form — not a percentage, bar, star rating, or derived wording (architecture spine AD-20). On the measured distribution a wrong top-1 answer scores about as high as a correct one, so the number reads as confidence while carrying almost none.
 - No crop step for admin-added Reference Images (resolved during the architecture Update, not a deferred gap).
 
 ## Success signal
 
-In the Phase 2 pilot, top-3 accuracy (SM-1: the correct Product appears among the returned Candidates) and top-1 accuracy (SM-6) both get concrete rollout targets, and crop-confirmation-to-result stays under 3 seconds (SM-2). Post-rollout, weekly-active adoption among showroom staff (SM-3) and a low fallback-to-manual-lookup rate (SM-4) demonstrate real trust in results; Catalogue currency (SM-5) demonstrates the admin-side half of the thesis. Raw scan volume (SM-C1) is deliberately *not* optimized in isolation — a spike uncorrelated with an improving fallback rate is a catalogue-exfiltration signal, not adoption.
+In the Phase 2 pilot, top-3 accuracy (SM-1: the **exact** correct Tile appears among the returned Candidates — a Tile from the right Category folder but the wrong file is a miss) and top-1 accuracy (SM-6) both get concrete rollout targets, and crop-confirmation-to-result stays under 3 seconds (SM-2). Post-rollout, weekly-active adoption among showroom staff (SM-3) and a low fallback-to-manual-lookup rate (SM-4) demonstrate real trust in results; Catalogue currency (SM-5) demonstrates the admin-side half of the thesis. Raw scan volume (SM-C1) is deliberately *not* optimized in isolation — a spike uncorrelated with an improving fallback rate is a catalogue-exfiltration signal, not adoption.
 
 ## Assumptions
 
@@ -89,3 +90,6 @@ In the Phase 2 pilot, top-3 accuracy (SM-1: the correct Product appears among th
 - Is business-hours-only availability actually acceptable, or is there a real uptime target?
 - Four numeric thresholds (FR-9 blur/framing, FR-14/19 reference-image quality, FR-22 anomaly baseline, FR-23 scan-rate limit) need concrete bounds — calibrated during Foundation build and the Phase 2 pilot.
 - FR-24 crop UX specifics: mandatory vs. skippable, free-form vs. fixed-aspect, default selection.
+- Should the scan flow let Staff declare the tile's Size (or another narrowing attribute) before submitting? A working POC measures +3.2 points of top-3 for a declared Size, at the cost of making the true Tile unreachable when it is declared wrong. Mechanism is pinned if adopted (AD-19); adoption is not. `[new 2026-09-17, from the POC]`
+- Should Staff get a text lookup of the Catalogue by Code, for "I have the code, show me the picture" with no tile in hand? FR-18's search exists but is Administrator-only. `[new 2026-09-17, from the POC]`
+- Should the results screen expand beyond three Candidates when several score closely, and at what bar? Mechanism is pinned if adopted (AD-20); adoption is not. `[new 2026-09-17, from the POC]`

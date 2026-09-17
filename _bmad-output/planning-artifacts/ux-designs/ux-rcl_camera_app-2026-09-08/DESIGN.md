@@ -1,7 +1,7 @@
 ---
 status: final
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-17
 name: Rocell Tile Scanner
 description: Internal staff PWA — camera-based tile identification plus admin catalogue/user management — for Rocell, a premium ceramic tile brand. Confident and brand-forward, but restrained enough for fast, repeated task completion.
 colors:
@@ -206,7 +206,7 @@ Rendered reference for the components below: [`mockups/key-scan.html`](mockups/k
 - **Button (destructive)** — `{colors.destructive}` fill, white text. Requires a confirmation step before firing (see `EXPERIENCE.md` State Patterns) — the color alone isn't the safeguard.
 - **App bar** — navy fill, white text/icons, a 3–4px `{colors.accent}` stripe along the bottom edge (the "Bold" variant's signature move). Present on every authenticated screen.
 - **Card** — white surface, `{colors.border}` hairline, `{rounded.md}`, navy-tinted shadow. The base container for a scan candidate, a catalogue product, a table row on mobile.
-- **Candidate card (best match)** — the top-ranked Candidate gets `{colors.accent}` as a 2px border instead of the neutral border, so the eye lands on it first without needing a "confidence score" label the PRD explicitly avoids.
+- **Candidate card (best match)** — the top-ranked Candidate gets `{colors.accent}` as a 2px border instead of the neutral border, so the eye lands on it first without needing a "confidence score" label the PRD explicitly avoids. The border is the *only* rank signal on the card: no percentage, bar, star rating, or derived wording appears anywhere on a Candidate (architecture AD-20 — a wrong answer's similarity is statistically indistinguishable from a right one's). The card's second line reads `Size · Category`; each card is one Tile, and two cards from the same Category folder are two different tiles, never a duplicate to collapse (AD-18).
 - **Role badge** — Administrator: navy fill, white text, pill. Staff: outline only, muted text, pill. Deliberately asymmetric — Administrator should read as the heavier-weight role at a glance in a user list. Display-only, no interaction (see `EXPERIENCE.md` Component Patterns).
 - **Status badge** — Active: outline, muted text. Deactivated: `{colors.destructive}` fill, white text, pill. Display-only, no interaction.
 - **Data table row** — the desktop-admin case (User List, Catalogue at `md`+ breakpoints): `{colors.surface}` background, `{colors.background}` on hover, hairline `{colors.border}` between rows, no card wrapper or shadow — a table, not a stack of cards. Below that breakpoint it inherits Card styling per `EXPERIENCE.md`'s Responsive & Platform section.

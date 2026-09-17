@@ -7,7 +7,7 @@ paradigm: 'Layered monorepo with a shared domain core (hexagonal-flavored)'
 scope: 'Whole system: apps/web (PWA), apps/api (FastAPI), shared/vision (embedding pipeline), shared/schema, infra, scripts/ingest'
 status: final
 created: '2026-08-30'
-updated: '2026-09-08'
+updated: '2026-09-17'
 binds: ['FR-1..FR-24']
 sources:
   - '_bmad-output/planning-artifacts/prds/prd-rcl_camera_app-2026-08-25/prd.md'
@@ -70,7 +70,7 @@ graph LR
 ### AD-5 — pgvector HNSW index; hard delete, not soft `[ASSUMPTION]`
 
 - **Binds:** `shared/vision` (embedding write path), `apps/api` (catalogue endpoints), `scripts/ingest`
-- **Prevents:** catalogue-management code and bulk-ingestion code diverging on whether a newly-inserted embedding needs a manual rebuild before it's searchable; a removed Product or Reference Image (FR-15, FR-16) resurfacing as a Candidate because one query site forgot to apply a soft-delete filter another site remembered.
+- **Prevents:** catalogue-management code and bulk-ingestion code diverging on whether a newly-inserted embedding needs a manual rebuild before it's searchable; a removed Tile or Reference Image (FR-15, FR-16) resurfacing as a Candidate because one query site forgot to apply a soft-delete filter another site remembered.
 - **Rule:** The embedding column is indexed with pgvector's HNSW (not IVFFlat) — inserts are immediately part of the searchable graph, no manual reindex step. Removal is a hard delete from the embedding index, not a soft-delete flag filtered at query time — there is no filter to forget. Vectors are stored unit-norm, so cosine similarity is a single dot product — the HNSW index uses the cosine/inner-product ops class, never L2. Embedding dimension is fixed at 1536 (`concat(L2(CLS), L2(mean patch))`, then L2-normalized again — the model's own retrieval recipe, validated in a working POC, `poc/README.md`) — this pins pgvector's `vector(1536)` column.
 
 ### AD-6 — Web talks only to the API `[ADOPTED]`
@@ -99,9 +99,9 @@ graph LR
 
 ### AD-10 — Scan history is a snapshot, never a live reference `[ASSUMPTION]`
 
-- **Binds:** `apps/api` (scan submission write path), Scan storage, audit-log entries that name a Product or Reference Image
+- **Binds:** `apps/api` (scan submission write path), Scan storage, audit-log entries that name a Tile or Reference Image
 - **Prevents:** AD-5's hard delete of a removed Reference Image silently corrupting or orphaning past Scan history (FR-8); a foreign key from Scan or the audit log to Reference Image forcing a choice between blocking every deletion and cascading it in a way that contradicts AD-4's no-delete database grant.
-- **Rule:** A Scan's returned Candidates are stored as a denormalized snapshot at scan time (code, size, design, and a reference-image identifier that may point to a since-deleted row) — never as an enforced foreign key to Reference Image. FR-8's history renders from the snapshot, unaffected by a later AD-5 deletion. The same snapshot-not-FK rule applies wherever an audit-log entry names a Product or Reference Image.
+- **Rule:** A Scan's returned Candidates are stored as a denormalized snapshot at scan time (code, size, category, and a reference-image identifier that may point to a since-deleted row) — never as an enforced foreign key to Reference Image. FR-8's history renders from the snapshot, unaffected by a later AD-5 deletion. The same snapshot-not-FK rule applies wherever an audit-log entry names a Tile or Reference Image.
 
 ### AD-11 — Crop executes server-side in `shared/vision`, never client-side `[ASSUMPTION]`
 
@@ -145,13 +145,31 @@ graph LR
 - **Prevents:** the exact bug a working POC found — building a reference view on demand means decoding an original up to 96MB, measured at 1–3.5 seconds per request. FR-7 requires a reference image on every Candidate; serving the original or generating on the fly would silently violate the product's speed expectations even though matching itself stays within budget.
 - **Rule:** A capped-size derivative (POC validated: ~1280px long edge, ~300KB budget) is generated once, at catalogue-write time — never at read time. The original asset is never served directly to `apps/web`.
 
+### AD-18 — The Tile — one reference-image file — is the unit of identity `[ADOPTED, from a working POC]`
+
+- **Binds:** `shared/schema`, the ERD, `apps/api` (search + catalogue paths), `scripts/ingest`, the accuracy harness
+- **Prevents:** the identity model this spine and the PRD were originally written against — `Product = Size + Design`, with the files inside a folder as `Faces` of it — which a working POC disproved against the real source tree and confirmed with Rocell. Every consequence of that error is silent: candidates collapsed to one per folder discard correct answers rather than duplicates; an eval scored at `size + category` counts "a different tile from the same range" as a hit and overstates top-3 by roughly 9 points; a leave-one-out eval deletes the only correct answer instead of forcing generalisation.
+- **Rule:** `<SIZE>/<CATEGORY>/<file>` is exactly three levels, and **every file in a category folder is a different Tile** — 381 files are 381 Tiles in 76 category folders, each with exactly one reference image. `Category` (the second-level folder, `POLISH`, `CREMA MARMOL`) is a **grouping, never an identity**; the varying numeric segment in a Code (`0011`, `0013`, `0014` in `45X90/POLISH`) distinguishes different Tiles, not faces of one. Therefore: (a) Candidates are one per **Tile** — max-pooled across that Tile's Reference Images and their AD-13 views — and are **never** collapsed, deduplicated, or diversified by Category; (b) accuracy is scored against the **exact Tile**, and a candidate from the right category folder but the wrong Tile is a miss; (c) the legacy `design`/`product` field names persist in the POC's `meta.json` for index compatibility only — no new code may read them as an identity. A `face_number`-style trailing digit survives as a nullable **display hint** and nothing else; the Code alone identifies the Tile.
+
+### AD-19 — A staff-declared narrowing attribute is a hard pre-filter, never a re-rank `[ASSUMPTION, mechanism from a working POC]`
+
+- **Binds:** `apps/api` (scan endpoint), the search path
+- **Prevents:** a narrowing attribute the user supplies at scan time (Size first; later, plausibly, finish or collection) being implemented as a scoring boost or a post-hoc re-ordering — which leaves references of the declared-away kind still able to outrank the truth, and quietly turns a stated fact into a preference. Also prevents the opposite failure: an unrecognised attribute value silently matching nothing and rendering as "no match found" rather than as the input error it is.
+- **Rule:** Whether such a filter is offered at all is a product decision (PRD OQ-15, not settled here). Wherever one exists, it is applied as a **hard mask over the candidate set before ranking**, never as a re-rank or a score adjustment, and its value is **validated against the live index** on arrival — an unknown value is a 400, never an empty result set. The filter is optional with an explicit all-values default, because a *mis*-declared value makes the true Tile unreachable rather than merely lower-ranked, and no ranking recovers from that. A filtered search returns fewer than `k` Candidates when the filtered set holds fewer — never padded back to `k` from outside the filter. Measured effect in the POC (size, 381 Tiles, exact-Tile scoring): top-3 78.7% → 81.9%, and the gain tracks how much of the catalogue the filter removes from contention (45X90, 75 Tiles: +8.0 points; 60X30, two thirds of the catalogue: +1.2). The lever is catalogue narrowing, not Size as such.
+
+### AD-20 — The similarity score never reaches the user as a number; display bars are display-layer only `[ADOPTED, from a working POC]`
+
+- **Binds:** `apps/web` (results surface), `apps/api` (scan response), the UX contract
+- **Prevents:** two distinct failures a working POC hit. First, a raw cosine similarity rendered as a percentage beside a Code reads as confidence no matter what caption sits under it, and here it carries almost no information: on a 381-Tile eval the correct top-1 medians **0.918** and the wrong one **0.907**, with the wrong answers' p10 and p90 both *higher* than the correct ones'. A JPEG of pure random noise — not a tile at all — still returns two candidates above 0.80. Second, a similarity bar drifting into the pipeline: a bar is not preprocessing, and treating it as such would wrongly imply a re-index (AD-1, AD-14) for what is a UI tuning change.
+- **Rule:** No similarity value is ever rendered in the staff-facing UI, as a percentage, a bar, a star rating, or a word derived from it ("strong match"). The score remains in the API response and every server log line — debugging must not be blinded — and continues to decide ranking and display count. Any display threshold (a floor below which a Candidate is not shown; a bar above which the list expands beyond three) is **configurable at runtime without a code edit or a re-index**, lives in exactly one server-side function whose result the client paints rather than re-derives, and is folded into the UI build stamp so the screen and the log can never disagree about what staff saw. A threshold that leaves nothing on screen renders the empty state with an explicit opt-in to show the closest matches anyway — never a silent back-fill, which would convert "nothing was close" into "here are three" and reproduce exactly the single-confident-answer failure FR-7 exists to prevent.
+
 ## Consistency Conventions
 
 | Concern | Convention |
 | --- | --- |
-| Naming (entities, files, interfaces, events) | PRD Glossary terms (`Product`, `Design`, `Size`, `Face`, `Code`, `ReferenceImage`, `Scan`, `Candidate`, `Catalogue`, `Staff`, `Administrator`, `Session`) used verbatim as PascalCase type/entity names across `apps/api`, `shared/schema`, `apps/web`. No synonyms. |
+| Naming (entities, files, interfaces, events) | PRD Glossary terms (`Tile`, `Category`, `Size`, `Code`, `ReferenceImage`, `Scan`, `Candidate`, `Catalogue`, `Staff`, `Administrator`, `Session`) used verbatim as PascalCase type/entity names across `apps/api`, `shared/schema`, `apps/web`. No synonyms. `Product` and `Face` are **retired** by AD-18 and must not appear as type or entity names in new code; `Design` survives only as the legacy field name inside the POC's `meta.json`, never as a domain term. |
 | Data & formats (ids, dates, error shapes) | IDs: UUIDv4. Timestamps: ISO 8601 UTC. API error envelope: `{ "error": { "code": string, "message": string } }`. `[ASSUMPTION]` |
-| Product identity shape | `Size` and `Design` are normalized into their own reference tables, not free text. Both `scripts/ingest` and `apps/api`'s catalogue endpoints resolve a size/design string against the same lookup (create-if-missing, case/whitespace-normalized) — never stored as ad hoc text that could drift into near-duplicate values across the two write paths. `[ASSUMPTION]` |
+| Tile identity shape | The `Code` is the identity (AD-18) — one Tile per catalogue file, never `Size + Category`. `Size` and `Category` are grouping attributes, normalized into their own reference tables rather than free text: both `scripts/ingest` and `apps/api`'s catalogue endpoints resolve a size/category string against the same lookup (create-if-missing, case/whitespace-normalized) — never stored as ad hoc text that could drift into near-duplicate values across the two write paths. `[ASSUMPTION]` |
 | State & cross-cutting (mutation, authz, audit) | All live, post-launch Postgres/object-storage mutation flows through `apps/api` (AD-6, AD-9); `scripts/ingest` is the sole, explicitly pre-launch exception (Design Paradigm). Every privileged action re-verifies role server-side per request (AGENTS.md Policy). Anything PRD FR-20 covers writes through the one audit-log path — never ad hoc logging. |
 
 ## Stack
@@ -192,25 +210,21 @@ scripts/
 
 ```mermaid
 erDiagram
-  PRODUCT ||--o{ FACE : has
-  FACE ||--o{ REFERENCE_IMAGE : "photographed as"
+  TILE ||--o{ REFERENCE_IMAGE : "photographed as (exactly 1 in today's catalogue)"
   REFERENCE_IMAGE ||--o{ REFERENCE_EMBEDDING : "up to 16 views (AD-13)"
   USER ||--o{ SESSION : holds
   USER ||--o{ SCAN : submits
   USER ||--o{ AUDIT_LOG_ENTRY : "acts, logged as"
 
-  PRODUCT {
+  TILE {
     uuid id
+    string code "the answer a Scan returns -- THIS is the identity (AD-18)"
     string size
-    string design "nullable -- UNKNOWN sentinel when unrecoverable, never dropped"
-  }
-  FACE {
-    uuid id
-    string face_number "nullable -- some real codes carry no recoverable face number"
+    string category "nullable -- UNKNOWN sentinel when unrecoverable, never dropped"
+    string face_number "nullable display hint only, never an identity (AD-18)"
   }
   REFERENCE_IMAGE {
     uuid id
-    string code
   }
   REFERENCE_EMBEDDING {
     uuid id
@@ -247,16 +261,16 @@ erDiagram
   }
 ```
 
-`SCAN.candidates_snapshot` and any audit-log field naming a Product/Reference Image are denormalized snapshots, not foreign keys (AD-10) — deliberately not drawn as ERD relationships to Reference Image, since none is enforced. `SCAN` deliberately carries no crop-rectangle field either: AD-11's crop is executed once, server-side, before the image is ever persisted — the rectangle is a transient request parameter, not stored state. `REFERENCE_EMBEDDING` is the child entity AD-13 requires — `REFERENCE_IMAGE` itself holds no vector; a removed `REFERENCE_IMAGE` (AD-5, hard delete) cascades to its embeddings, since nothing else ever references them directly (AD-10 already guarantees `Scan` history doesn't).
+`SCAN.candidates_snapshot` and any audit-log field naming a Tile/Reference Image are denormalized snapshots, not foreign keys (AD-10) — deliberately not drawn as ERD relationships to Reference Image, since none is enforced. `SCAN` deliberately carries no crop-rectangle field either: AD-11's crop is executed once, server-side, before the image is ever persisted — the rectangle is a transient request parameter, not stored state. `REFERENCE_EMBEDDING` is the child entity AD-13 requires — `REFERENCE_IMAGE` itself holds no vector; a removed `REFERENCE_IMAGE` (AD-5, hard delete) cascades to its embeddings, since nothing else ever references them directly (AD-10 already guarantees `Scan` history doesn't). `TILE` replaces the earlier `PRODUCT ||--o{ FACE` pair, which encoded the identity model AD-18 corrects: a Tile *is* a catalogue file, `category` hangs off it as a grouping attribute rather than as a parent entity, and `face_number` survives only as a nullable display hint. `TILE ||--o{ REFERENCE_IMAGE` is drawn as one-to-many because FR-14/15 let an Administrator attach more than one image to a Tile, though every Tile in the real catalogue has exactly one — where a Tile does carry several, they are views of one identity, so its Candidate score is the max across them (AD-13 pooling extended one level up) and it still occupies exactly one Candidate slot.
 
 ## Capability → Architecture Map
 
 | Capability / Area | Lives in | Governed by |
 | --- | --- | --- |
 | §4.1 Auth & Session Management (FR-1–5) | `apps/api` auth module + Postgres `sessions` table | AD-3, AD-6, AD-8, AGENTS.md Policy |
-| §4.2 Tile Scanning & Identification (FR-6–9, FR-24) | `apps/web` capture + crop UI + `apps/api` scan endpoint + `shared/vision` | AD-1, AD-2, AD-5, AD-7, AD-9, AD-10 (scan history), AD-11 (crop), AD-12 (quality-check ordering), AD-13 (multi-vector search), AD-14 (pipeline-version check), AD-15 (colour management — a phone photo can carry its own ICC profile), AD-16 (serialized inference) |
+| §4.2 Tile Scanning & Identification (FR-6–9, FR-24) | `apps/web` capture + crop UI + `apps/api` scan endpoint + `shared/vision` | AD-1, AD-2, AD-5, AD-7, AD-9, AD-10 (scan history), AD-11 (crop), AD-12 (quality-check ordering), AD-13 (multi-vector search), AD-14 (pipeline-version check), AD-15 (colour management — a phone photo can carry its own ICC profile), AD-16 (serialized inference), AD-18 (Tile identity — never deduplicate Candidates by Category), AD-19 (a staff-declared narrowing attribute, if adopted, is a hard pre-filter), AD-20 (no similarity number on screen; display bars are display-layer) |
 | §4.3 Admin User Management (FR-10–13) | `apps/api` admin module + Postgres | AD-3 (live role/session read), AD-6 |
-| §4.4 Admin Catalogue Management (FR-14–19) | `apps/api` catalogue module + `shared/vision` + object storage + Postgres/pgvector | AD-1, AD-5, AD-7, AD-9, AD-13 (writes multi-vector embeddings), AD-15 (colour management), AD-17 (reference-image derivatives) |
+| §4.4 Admin Catalogue Management (FR-14–19) | `apps/api` catalogue module + `shared/vision` + object storage + Postgres/pgvector | AD-1, AD-5, AD-7, AD-9, AD-13 (writes multi-vector embeddings), AD-15 (colour management), AD-17 (reference-image derivatives), AD-18 (a catalogue row is a Tile, keyed by Code) |
 | §4.5 Audit Log & Anomaly Monitoring (FR-20–23) | `apps/api` audit/rate-limit module + Postgres audit table | AD-4, AD-6, AD-8 |
 
 ## Deferred
@@ -270,6 +284,8 @@ erDiagram
 - **Monitoring and observability** — no logging/metrics/alerting stack chosen. FR-22's anomaly flagging needs somewhere to surface to; not decided here.
 - **Retention-purge job mechanism** — PRD OQ-7/OQ-8 defer the exact retention *durations*; this spine additionally defers *how* the purge runs (scheduled job, which service owns it) once those durations are set.
 - ~~Whether admin-added Reference Images (FR-14/15/17) get an equivalent crop step~~ — **resolved, not deferred:** no. Admin catalogue-image uploads stay as-is; AD-11's server-side crop capability exists but is exercised only by the Scan submission path (FR-24). Reference-image framing quality continues to rely on FR-19's Notes (flag-for-re-shoot below a quality threshold), not a crop step.
-- **Accuracy degrading as the catalogue grows** — a working POC measured top-3 79.5% at 36 products dropping to 70.0% at 76 products on the same unchanged pipeline. Production targets a catalogue far larger than either measurement. This is not this spine's call (no architectural lever fixes it directly — the POC's own notes point at higher input resolution or local-feature re-ranking on the top-N, neither committed here); it needs surfacing prominently in the PRD's risk register and the Phase 2 pilot's accuracy targets.
+- **Accuracy degrading as the catalogue grows** — a working POC measured top-3 79.5% at 36 category folders dropping to 70.0% at 76 on the same unchanged pipeline. ⚠ **Both figures came from the pre-AD-18 harness** (leave-one-out, scored loosely at `size + category`) and cannot be reproduced — the trend is probably real, the magnitude is not trustworthy, and there is no honest way to recompute the smaller catalogue's row. Current exact-Tile numbers on the 381-Tile catalogue are top-1 55.6% / top-3 78.7% all-sizes and top-1 59.1% / top-3 81.9% with the size declared, both on synthetic queries that are a loose upper bound (a warp of image X is far closer to X than any photo of the physical tile). Production targets a catalogue far larger than any of these. Still not this spine's call (no architectural lever fixes it directly — the POC's notes point at higher input resolution or local-feature re-ranking on the top-N, neither committed here); it needs re-measuring at scale against real photos, and surfacing in the PRD's risk register and the Phase 2 pilot's accuracy targets.
 - **Capture guidance for white balance** — a working POC measured white balance as the single dominant accuracy lever (+6.6 top-3 points), ahead of crop, perspective, blur, and JPEG. Whether to add explicit WB capture guidance (beyond the existing framing guide) is a PRD/epics product decision, not made here.
-- **Showing more than 3 candidates in the UI** — a working POC displays 10 (with an expander to 20) while keeping the accuracy metric and FR-7's contract at a strict top 3, reasoning that "never one" is what FR-7 protects and more candidates only reinforces it. Whether production's UI should do the same is a PRD/epics decision; this spine takes no position beyond noting the two numbers (a displayed count and a scored `TOP_K`) must not be silently collapsed into one if that path is taken.
+- **Showing more than 3 candidates in the UI** — a working POC now shows **three** by default and expands to every candidate above a similarity bar, having tried a flat 10-with-an-expander first. The displayed count and the scored `TOP_K` remain deliberately separate numbers and must not be collapsed into one. AD-20 fixes the mechanics wherever such a rule exists (one server-side function, client paints the count, runtime-tunable, no re-index); whether production adopts expansion at all, and at what bar, stays a PRD/epics decision. Be clear-eyed if it is taken up: at the POC's 0.75 bar the median scan shows 19 of 20, which is long rather than selective.
+- **A second narrowing attribute after Size** — AD-19's measured gain tracks how much of the catalogue the filter eliminates, and Size buys almost nothing on the largest folder (60X30, two thirds of the catalogue: +1.2 points). Once a single size runs to thousands of Tiles, a second staff-declarable attribute — finish (matt/gloss/polished) is the obvious candidate, then room or collection — will be needed for the same effect. Which attribute, and whether the catalogue can even supply it reliably, is a PRD/data question, not this spine's.
+- **Staff-facing catalogue lookup by Code** — the POC added a text search over Code/Size/Category on the scan screen, for "I have the code, show me the picture" (a code on an order, a half-remembered code, no physical tile to photograph). It runs no inference and touches no vector, so architecturally it is an ordinary indexed read and needs no invariant of its own. Whether Staff (not just Administrators, who have FR-18) get it in v1 is a PRD scope decision — see PRD OQ-16.

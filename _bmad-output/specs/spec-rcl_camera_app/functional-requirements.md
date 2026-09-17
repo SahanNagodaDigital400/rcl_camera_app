@@ -18,13 +18,15 @@ Granular, testable detail underneath each capability in `SPEC.md`. IDs are stabl
 
 **FR-6 Capture or upload a scan.** Live camera capture (with on-screen framing guide) or photo upload, as the input to a Scan. Both paths produce an equivalent submission and proceed to the crop step (FR-24).
 
-**FR-7 Ranked candidate results with images.** Up to three Candidates, ranked by visual similarity, each with Reference Image, Code, Size, Design. Never fewer than available, never a single "confidence-gated" answer. Candidates are not deduplicated by Product — different Faces of the same Product may both appear.
+**FR-7 Ranked candidate results with images.** Up to three Candidates, ranked by visual similarity, each with Reference Image, Code, Size, Category. Never fewer than available, never a single "confidence-gated" answer, never a similarity number on screen (architecture spine AD-20). Each Candidate is a distinct **Tile** — Candidates are never deduplicated, collapsed, or diversified by Category, since two files in one Category folder are two different Tiles, and collapsing them would discard correct answers rather than duplicates (AD-18).
 
 **FR-8 Scan history.** A user views their own past scans, each with the result as shown at scan time (denormalized snapshot — see the architecture spine AD-10; unaffected by a later Reference Image deletion).
 
 **FR-9 Capture quality guidance.** A materially blurry or poorly-framed *cropped region* (runs after FR-24, per architecture spine AD-12) triggers a retake prompt before matching proceeds. Exact threshold: open question, see `SPEC.md`.
 
 **FR-24 Crop before submit.** After capture/upload, the user adjusts a crop selection to isolate the tile face before submission. The submitted Scan is the cropped region, never the original full frame. Crop execution is server-side (architecture spine AD-11) — the client sends the full (already downscaled) image plus a normalized 0–1 crop rectangle, never a pre-cropped image or absolute pixel coordinates. Confirming the crop is currently assumed mandatory, free-form (no fixed aspect ratio), pre-filled to a best-guess selection — all three assumptions are open questions, see `SPEC.md`.
+
+**Scoring note (CAP-2, binding on any accuracy claim).** A Scan is correct only when the **exact Tile** is returned. A Candidate from the right Category folder but the wrong file is a miss. There is no leave-one-out evaluation available — a Tile has one Reference Image, so removing it deletes the only correct answer rather than forcing generalisation — which makes synthetic accuracy a loose upper bound and real staff phone photos the only number that decides anything.
 
 *Out of scope:* identifying tiles already installed (grouted, angled, partially obscured).
 
@@ -40,15 +42,15 @@ Granular, testable detail underneath each capability in `SPEC.md`. IDs are stabl
 
 ## CAP-4 — Admin Catalogue Management
 
-**FR-14 Add product.** Code + one or more Reference Images. Matchable against new Scans immediately, no developer/re-import — a Product added mid-session is a Candidate for a Scan submitted later that same session.
+**FR-14 Add tile.** Code + one or more Reference Images. Matchable against new Scans immediately, no developer/re-import — a Tile added mid-session is a Candidate for a Scan submitted later that same session. The Code is the identity (AD-18); Size and Category are grouping attributes stored alongside it, not a composite key.
 
-**FR-15 Edit product.** Change code, add/replace/remove Reference Images. A removed image is never returned as a Candidate after the edit, even if it was before.
+**FR-15 Edit tile.** Change code, add/replace/remove Reference Images. Where a Tile carries several images they are views of one identity — it still occupies exactly one Candidate slot, scored as the max across them. A removed image is never returned as a Candidate after the edit, even if it was before.
 
-**FR-16 Remove product.** Removed from the Catalogue; never returned as a Candidate after removal, regardless of visual similarity (hard delete, architecture spine AD-5 — no soft-delete filter to forget).
+**FR-16 Remove tile.** Removed from the Catalogue; never returned as a Candidate after removal, regardless of visual similarity (hard delete, architecture spine AD-5 — no soft-delete filter to forget).
 
 **FR-17 Bulk upload.** Image set + spreadsheet of codes, for initial load and large new ranges. Per-row success/failure report; all valid pairs individually searchable.
 
-**FR-18 Catalogue search.** Search/filter by product code; partial matches included, not just exact.
+**FR-18 Catalogue search.** Search/filter by Code; partial matches included, not just exact. Administrator-only as written — whether Staff get an equivalent lookup on the scan screen is an open question, see `SPEC.md`.
 
 **FR-19 Automatic re-index.** Any Catalogue change is reflected in match results with no separate manual re-indexing step. Admin-added reference images below a quality threshold should be flagged for re-shoot (mirrors FR-9) — threshold is an open question, see `SPEC.md`. No equivalent crop step for admin uploads (resolved, not deferred — see `SPEC.md` Non-goals).
 

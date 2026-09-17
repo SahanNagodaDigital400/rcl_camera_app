@@ -8,7 +8,7 @@ Named-persona narratives the product enables. Referenced from `SPEC.md`'s Assump
 
 - **Persona + context:** Kasun, a showroom sales associate, is helping a customer who's brought in a leftover tile from a renovation and wants three more boxes of the same one.
 - **Entry state:** Already authenticated — his session has persisted through the shift. On the showroom floor, PWA installed to his home screen.
-- **Path:** Opens the app → taps Scan → on-screen framing guide helps him fill the frame with the tile face → captures the photo → adjusts the crop selection to the tile face and confirms → brief processing → results screen shows three candidates, each with its reference image, cleaned code, and size/design.
+- **Path:** Opens the app → taps Scan → on-screen framing guide helps him fill the frame with the tile face → captures the photo → adjusts the crop selection to the tile face and confirms → brief processing → results screen shows three candidates, each with its reference image, cleaned code, and size/category.
 - **Climax:** The top card's reference image visually matches the tile in his hand within a second or two of looking at it — he doesn't need to recognize a code, just recognize a picture.
 - **Resolution:** He reads the code to the customer and proceeds with the order. The scan is saved to his history.
 - **Edge case:** None of the three candidates look right — he retakes the photo with better framing, or falls back to asking a colleague (this is what the Fallback Rate success signal measures).
@@ -20,11 +20,11 @@ Named-persona narratives the product enables. Referenced from `SPEC.md`'s Assump
 
 - **Persona + context:** Nadeesha, an operations admin, receives a new tile range and needs it identifiable before it hits the showroom floor.
 - **Entry state:** Authenticated as admin, in the catalogue management screen.
-- **Path:** Opens Add Product → enters the product code → captures or uploads one or more reference images → saves.
-- **Climax:** She runs a test scan against the physical sample in the same session — the new product appears as a match. No ticket filed with engineering, no wait for the next data import.
-- **Resolution:** The catalogue is current; any staff member can now identify that product.
+- **Path:** Opens Add Tile → enters the Code → captures or uploads its reference image → saves. (A new range is many Tiles, one per file — bulk upload, not one form per tile, once it is more than a handful.)
+- **Climax:** She runs a test scan against the physical sample in the same session — the new Tile appears as a match. No ticket filed with engineering, no wait for the next data import.
+- **Resolution:** The catalogue is current; any staff member can now identify that tile.
 - **Edge case:** The reference image she uploaded is blurry or badly lit — it's flagged as below the quality threshold so it can be re-shot before it degrades future match quality.
-- **Capability mapping:** CAP-4 (add product, automatic re-index).
+- **Capability mapping:** CAP-4 (add tile, automatic re-index).
 
 ## UJ-3. Ruwan deactivates a departing staff member
 

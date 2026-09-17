@@ -2,7 +2,7 @@
 title: Rocell Tile Identification App
 status: final
 created: 2026-08-25
-updated: 2026-08-30
+updated: 2026-09-17
 ---
 
 # PRD: Rocell Tile Identification App
@@ -38,18 +38,18 @@ The system is built to survive an independent penetration test before general st
 - **UJ-1. Kasun identifies an unlabelled tile mid-sale.** `[ASSUMPTION: narrated from the brief's described flow, not a user-provided session — confirm it matches reality.]`
   - **Persona + context:** Kasun, a showroom sales associate, is helping a customer who's brought in a leftover tile from a renovation and wants three more boxes of the same one.
   - **Entry state:** Already authenticated — his session has persisted through the shift. On the showroom floor, PWA installed to his home screen.
-  - **Path:** Opens the app → taps Scan → on-screen framing guide helps him fill the frame with the tile face → captures the photo → adjusts the crop selection to the tile face and confirms → brief processing → results screen shows three candidates, each with its reference image, cleaned code, and size/design.
+  - **Path:** Opens the app → taps Scan → on-screen framing guide helps him fill the frame with the tile face → captures the photo → adjusts the crop selection to the tile face and confirms → brief processing → results screen shows three candidates, each with its reference image, cleaned code, and size/category.
   - **Climax:** The top card's reference image visually matches the tile in his hand within a second or two of looking at it — he doesn't need to recognize a code, just recognize a picture.
   - **Resolution:** He reads the code to the customer and proceeds with the order. The scan is saved to his history.
   - **Edge case:** None of the three candidates look right — he retakes the photo with better framing, or falls back to asking a colleague (this is what Fallback Rate, §11, measures).
-  - **Capability mapping:** The system must let an authenticated user capture or upload a photo → FR-6. The system must let the user crop to the tile face before submitting → FR-24. The system must return ranked candidates with images, code, size, and design → FR-7. The system must log the scan to the user's history → FR-8.
+  - **Capability mapping:** The system must let an authenticated user capture or upload a photo → FR-6. The system must let the user crop to the tile face before submitting → FR-24. The system must return ranked candidates with images, code, size, and category → FR-7. The system must log the scan to the user's history → FR-8.
 
 - **UJ-2. Nadeesha adds a new tile range the day it arrives.** `[ASSUMPTION: narrated from the brief's described flow, not a user-provided session — confirm it matches reality.]`
   - **Persona + context:** Nadeesha, an operations admin, receives a new tile range and needs it identifiable before it hits the showroom floor.
   - **Entry state:** Authenticated as admin, in the catalogue management screen.
-  - **Path:** Opens Add Product → enters the product code → captures or uploads one or more reference images → saves.
-  - **Climax:** She runs a test scan against the physical sample in the same session — the new product appears as a match. No ticket filed with engineering, no wait for the next data import.
-  - **Resolution:** The catalogue is current; any staff member can now identify that product.
+  - **Path:** Opens Add Tile → enters the Code → captures or uploads its reference image → saves. (A whole new range is many Tiles — one per file — so bulk upload, FR-17, is the realistic path beyond a handful.)
+  - **Climax:** She runs a test scan against the physical sample in the same session — the new Tile appears as a match. No ticket filed with engineering, no wait for the next data import.
+  - **Resolution:** The catalogue is current; any staff member can now identify that tile.
   - **Edge case:** The reference image she uploaded is blurry or badly lit — it's flagged as below the quality threshold so it can be re-shot before it degrades future match quality (§4.4 notes).
   - **Capability mapping:** FR-14 (add product), FR-19 (automatic re-index).
 
@@ -57,15 +57,19 @@ The system is built to survive an independent penetration test before general st
 
 ## 3. Glossary
 
-- **Product** — A `Size` + `Design` pair; the unit of identity for the catalogue (e.g. `45X90 / CREMA MARMOL`). Distinct from a **Face**.
-- **Design** — A pattern name (e.g. `CREMA MARMOL`, `ASTORIA`).
-- **Size** — A tile dimension (e.g. `45X90`, `60X60`).
-- **Face** — One manufactured surface variation within a Product. Shade-varying ranges have several Faces; not all are necessarily photographed.
-- **Code** — The cleaned reference-image file name returned as the scan result (e.g. `RP.CMA.0001DJ.SM.0T`). Not a separately maintained SKU — see §9 Non-Goals.
-- **Reference Image** — A catalogue photo of a Product/Face, indexed for matching. Distinct from a **Scan**.
-- **Scan** — The cropped photo a Staff user submits to identify a Product — the result of capturing or uploading (FR-6), then cropping to the tile face (FR-24). The pre-crop capture/upload is an input, not itself the Scan.
-- **Candidate** — One of the (up to three) results returned for a Scan: a specific Reference Image — and therefore a specific Product and Face — ranked by visual similarity. Candidates are not deduplicated by Product: two or three Candidates may represent different Faces of the same Product (resolved, OQ-12).
-- **Catalogue** — The full set of indexed Products and their Reference Images.
+> **Corrected 2026-09-17, from a working POC** (architecture spine AD-18; mirrored in `_bmad-output/specs/spec-rcl_camera_app/glossary.md`). The original model below — `Product = Size + Design`, with the files inside a folder as `Faces` of it — was wrong, confirmed against the real source tree and with Rocell. **Product** and **Face** are retired as domain terms. Every consequence of the old model is silent rather than loud: it licensed deduplicating Candidates by folder (which discards correct answers), and it licensed an accuracy metric that counts "a different tile from the same range" as a hit.
+
+- **Tile** — **One catalogue file; the unit of identity.** Every file inside a Category folder is a different Tile, each with exactly one Reference Image. Identified by its **Code**, never by `Size + Category`. (381 files = 381 Tiles in 76 Category folders.)
+- **Category** — The second-level folder; a range or pattern name (e.g. `CREMA MARMOL`, `ASTORIA`, `POLISH`). A **grouping, never an identity** — the 22 files in `45X90/POLISH` are 22 Tiles. Previously called "Design"; that name survives only as a legacy field inside the POC index, for index compatibility.
+- **Size** — A tile dimension (e.g. `45X90`, `60X60`); the top-level folder. A grouping attribute — and the one attribute a photo cannot carry but the person holding the tile knows (see OQ-15).
+- **Code** — The cleaned reference-image file name returned as the scan result (e.g. `RP.CMA.0001DJ.SM.0T`). This is the Tile's identity and the answer the app returns. Not a separately maintained SKU — see §9 Non-Goals. A trailing number in a Code, where one is recoverable, is a display hint only.
+- **Reference Image** — A catalogue photo of a Tile, indexed for matching. Distinct from a **Scan**. Every Tile in the real catalogue has exactly one.
+- **Scan** — The cropped photo a Staff user submits to identify a Tile — the result of capturing or uploading (FR-6), then cropping to the tile face (FR-24). The pre-crop capture/upload is an input, not itself the Scan.
+- **Candidate** — One of the (up to three) results returned for a Scan: a specific **Tile**, ranked by visual similarity. Candidates are **never** deduplicated, collapsed, or diversified by Category — three Candidates from one folder are three distinct Tiles competing on merit (OQ-12, resolved and re-confirmed under the corrected model).
+- ~~**Product**~~, ~~**Face**~~, ~~**Design**~~ — retired 2026-09-17. Read **Tile** for the old *Product*, **Category** for the old *Design*, and nothing at all for *Face*: there is no entity between a Tile and its one Reference Image.
+- **Catalogue** — The full set of indexed Tiles and their Reference Images.
+
+"Tile face" in capture guidance (FR-6, FR-24, the framing guide microcopy) means the physical surface of the tile in the frame — ordinary English, not the retired **Face** entity.
 - **Staff** — A user role that can scan, view results, and view their own scan history.
 - **Administrator** — A user role with Staff capabilities plus user management and Catalogue management.
 - **Session** — An authenticated period of app use, bounded by inactivity and absolute expiry (§5), and immediately revocable by an Administrator.
@@ -133,12 +137,14 @@ An authenticated Staff or Administrator user can capture a live photo via the de
 
 #### FR-7: Ranked candidate results with images
 
-The system returns up to three Candidates for a submitted Scan, ranked by visual similarity, each displaying its Reference Image, Code, and folder-derived Size and Design. Realizes UJ-1.
+The system returns up to three Candidates for a submitted Scan, ranked by visual similarity, each displaying its Reference Image, Code, and folder-derived Size and Category. Realizes UJ-1.
 
 **Consequences (testable):**
 - The result screen never displays fewer than the available Candidates or a single "confidence-gated" answer — always up to three (§9 Non-Goals: no confidence-threshold single-result mode).
 - Every returned Candidate carries an image, a code, a size, and a design — never a code alone.
-- Candidates are ranked purely by visual similarity and are not deduplicated by Product — two or three Candidates may show different Faces of the same Product (resolved, OQ-12).
+- Candidates are ranked purely by visual similarity and are **never** deduplicated, collapsed, or diversified by Category — two or three Candidates may come from the same Category folder, and under the corrected identity model (§3, architecture spine AD-18) those are distinct Tiles, so collapsing them would discard correct answers rather than duplicates (resolved, OQ-12).
+- No similarity value is displayed, in any form — not a percentage, a bar, a star rating, or wording derived from it. A working POC measured the correct top-1 answer at a median 0.918 and the wrong one at 0.907, with the wrong answers' p10 and p90 both *higher*; a JPEG of pure noise still returned two candidates above 0.80. The number reads as confidence and carries almost none, and the reference image is what staff actually verify against (architecture spine AD-20). The score remains in the API response and server logs.
+- A Candidate's Code is shown as the answer even where Size and Category are unknown or unrecoverable; the folder-derived Size and Category make a bare Code readable, but they are never the identity.
 
 **Feature-specific NFRs:**
 - Crop-confirmation-to-result latency under 3 seconds (§5). Measured from crop confirmation, not initial capture — cropping is user-paced and isn't counted against system latency.
@@ -166,7 +172,7 @@ After capture or upload, the user can adjust a crop selection to isolate the til
 **Consequences (testable):**
 - The submitted Scan is the cropped region, not the original full-frame capture or upload. `[ASSUMPTION: crop defaults to a pre-filled selection — the framing-guide area on a live capture, or an auto-detected best-guess on an upload — which the user can drag/resize before confirming. See OQ-14.]`
 - Confirming the crop is required before submission proceeds — there is no skip path directly from capture/upload to matching. `[ASSUMPTION — see OQ-14: is a mandatory crop the right call, or should it be skippable for a photo that's already tight?]`
-- The crop selection is free-form (any rectangle within the source image), not locked to a fixed aspect ratio, since tile proportions vary by Product. `[ASSUMPTION — see OQ-14.]`
+- The crop selection is free-form (any rectangle within the source image), not locked to a fixed aspect ratio, since tile proportions vary by Size. `[ASSUMPTION — see OQ-14.]`
 
 **Notes:** This is a genuinely new capability, not previously in the brief or an earlier PRD draft — added by explicit request. It has an architecture consequence beyond this PRD's scope: unlike FR-9's blur check, a crop changes *what's in* the image, not just its quality, which interacts with the architecture spine's AD-1 (index/query preprocessing symmetry) and AD-2 (client-side resize is bandwidth-only, never the preprocessing boundary). Worth noting in the product's favor: reference images are already expected to be "tile face fills the frame, no background clutter" (brief `addendum.md`, Target State for the Reference Set) — so a tightened query-time crop likely *improves* index/query symmetry rather than breaking it, but the spine should say so explicitly rather than leave it implied. `[NOTE FOR PM]` Flag this FR for an architecture spine Update before or during Foundation build.
 
@@ -207,41 +213,42 @@ An Administrator can deactivate or delete a user. Deactivation revokes that user
 
 ### 4.4 Admin — Catalogue Management
 
-**Description:** The mechanism by which the Catalogue stays current without developer involvement. An Administrator can add, edit, remove, and bulk-load Products and their Reference Images directly; changes are searchable immediately. Realizes UJ-2.
+**Description:** The mechanism by which the Catalogue stays current without developer involvement. An Administrator can add, edit, remove, and bulk-load Tiles and their Reference Images directly; changes are searchable immediately. Realizes UJ-2. **FR-14–19 keep their original "product" phrasing below where an ID would otherwise churn; read every occurrence as Tile (§3) — one catalogue entry per file, keyed by Code.**
 
 **Functional Requirements:**
 
-#### FR-14: Add product
+#### FR-14: Add tile
 
-An Administrator can add a new Product by entering a code and uploading or capturing one or more Reference Images. The Product becomes matchable against new Scans without developer involvement or a data re-import. Realizes UJ-2.
+An Administrator can add a new Tile by entering its Code and uploading or capturing its Reference Image. The Tile becomes matchable against new Scans without developer involvement or a data re-import. Realizes UJ-2.
 
 **Consequences (testable):**
-- A Product added mid-session is returned as a Candidate for a Scan submitted later in that same session.
+- A Tile added mid-session is returned as a Candidate for a Scan submitted later in that same session.
+- The Code is the Tile's identity — adding a second Tile that shares a Size and Category with an existing one is ordinary, expected, and never treated as a duplicate (§3).
 
-#### FR-15: Edit product
+#### FR-15: Edit tile
 
-An Administrator can change a Product's code and add, replace, or remove its Reference Images.
+An Administrator can change a Tile's Code and add, replace, or remove its Reference Images. Where a Tile carries more than one image, those are views of one identity and it still occupies exactly one Candidate slot.
 
 **Consequences (testable):**
 - A removed Reference Image is no longer returned as a Candidate for any Scan submitted after the edit, even if it was returned before.
 
-#### FR-16: Remove product
+#### FR-16: Remove tile
 
-An Administrator can remove a Product from the Catalogue (e.g. a discontinued range); it no longer appears as a Candidate.
+An Administrator can remove a Tile from the Catalogue (e.g. a discontinued range); it no longer appears as a Candidate. Removing a whole range means removing each of its Tiles — a Category is a folder, not a deletable entity.
 
 **Consequences (testable):**
-- A Scan submitted after removal never returns the removed Product as a Candidate, regardless of visual similarity.
+- A Scan submitted after removal never returns the removed Tile as a Candidate, regardless of visual similarity.
 
 #### FR-17: Bulk upload
 
-An Administrator can bulk-load Products via a set of images plus a spreadsheet of codes, for initial Catalogue load and for large new ranges.
+An Administrator can bulk-load Tiles via a set of images plus a spreadsheet of codes, for initial Catalogue load and for large new ranges. This is the realistic path for a new range, since a range is many Tiles — one per file.
 
 **Consequences (testable):**
 - A bulk upload of N valid product/image pairs results in all N being individually searchable, with a per-row success/failure report for any that fail validation.
 
 #### FR-18: Catalogue search
 
-An Administrator can search and filter the Catalogue by product code to find an entry quickly.
+An Administrator can search and filter the Catalogue by Code to find an entry quickly. Whether Staff get the same lookup on the scan screen is OQ-16, not settled here.
 
 **Consequences (testable):**
 - A partial code match returns all Products whose Code contains it, not only exact matches.
@@ -310,11 +317,12 @@ The system rate-limits scan submissions per user, bounding the volume achievable
 
 | ID | Risk | Impact | Mitigation |
 |---|---|---|---|
-| R-1 | Visually identical products (same design, different size/finish) | High — may be unresolvable from an image alone | FR-7: always return top 3 with images, user confirms |
+| R-1 | Visually identical Tiles (same Category, different size/finish — `MONO COLOUR GLOSSY` vs `MONO COLOUR MATT`) | High — may be unresolvable from an image alone | FR-7: always return top 3 with images, user confirms. A staff-declared Size would narrow it further (OQ-15) |
 | R-2 | Reference images are studio assets; scans are phone photos under showroom lighting | High — pilot accuracy will overstate real-world accuracy | Supplement the index with phone-captured reference images before general rollout |
-| R-3 | Sparse reference coverage (~2 images/product against ~9 manufactured faces) | High — a user may scan a Face the system has never seen | Capture additional faces for high-variation, high-volume ranges before launch |
+| R-3 | **One reference image per Tile, full stop** — not "~2 images per product" as originally written (that figure assumed the retired Product/Face model). Every Tile is known to the index from exactly one studio photograph | High — nothing in the index shows a Tile under a second lighting, angle, or shade variation, and no leave-one-out evaluation can even measure the gap | Capture phone-shot second views for high-variation, high-volume Tiles before launch; treat `make eval`-style synthetic numbers as an upper bound and real staff photos as the only decisive measure |
 | R-4 | Canonical images live in personal accounts, not a Rocell-owned store | High business-continuity risk | Migrate to a Rocell-owned store before ingestion (Phase 0, §8) |
 | R-5 | Manual credential distribution / shared logins | High | FR-2 forced first-login change; individual accounts with visible last-login (FR-10) make sharing detectable |
+| R-6 | Accuracy falls as the catalogue grows, and the exact-Tile numbers are lower than earlier drafts claimed — POC synthetic exact-Tile accuracy is top-1 55.6% / top-3 78.7% on 381 Tiles, and synthetic queries are a loose upper bound on real photos | High — production targets a catalogue far larger than 381 Tiles, so SM-1/SM-6 targets set from these figures would be optimistic | Re-measure at realistic scale against real staff photos before committing rollout targets (OQ-1); a staff-declared narrowing attribute (OQ-15) and higher input resolution or local-feature re-ranking are the named levers, none committed yet |
 
 Full 14-item risk register: `_bmad-output/planning-artifacts/briefs/brief-rcl_camera_app-2026-08-25/addendum.md`.
 
@@ -335,14 +343,16 @@ Full 14-item risk register: `_bmad-output/planning-artifacts/briefs/brief-rcl_ca
 - Not customer- or dealer-facing, in any form, in v1.
 - Not an email-sending system — credentials are distributed by an Administrator outside the app.
 - Not an ERP, POS, or inventory integration.
-- Not a maintained `size + design → product code` mapping table — the returned Code is the cleaned Reference Image file name (§3).
+- Not a maintained `size + category → code` mapping table — the returned Code is the cleaned Reference Image file name, and it is the Tile's identity (§3).
 - `[NON-GOAL for MVP]` Not a single-answer / confidence-gated result — see FR-7.
+- `[NON-GOAL]` Not a display of similarity as a number, bar, or rating — see FR-7 and architecture spine AD-20. The measured score distributions for correct and wrong answers overlap almost entirely, so any such display is confidence theatre.
+- Not a `size + category → code` mapping table (wording updated 2026-09-17 with the glossary; the Code *is* the Tile's identity, so no mapping exists to maintain).
 
 ## 10. MVP Scope
 
 ### 10.1 In Scope
 
-- Everything in FR-1 through FR-24 (FR-24, crop before submit, added in a later update — see `.memlog.md`). Both phase-blocking forks flagged during the original review are resolved: FR-7's Candidate-dedup semantics (OQ-12 — Candidates are not deduplicated by Product) and the auth approach (OQ-6 — no existing IdP, local auth per FR-1–5 stands). FR-24's own open items are non-blocking (OQ-14) but its architecture-spine consequence should land before or during Foundation build (see FR-24 Notes).
+- Everything in FR-1 through FR-24 (FR-24, crop before submit, added in a later update — see `.memlog.md`). Both phase-blocking forks flagged during the original review are resolved: FR-7's Candidate-dedup semantics (OQ-12 — Candidates are never deduplicated by Category, re-confirmed under the corrected identity model) and the auth approach (OQ-6 — no existing IdP, local auth per FR-1–5 stands). Three POC-raised scope questions (OQ-15 staff-declared Size, OQ-16 staff catalogue lookup, OQ-17 expanding beyond three Candidates) are **not** in this scope range — each would be an addition, and none is adopted here. FR-24's own open items are non-blocking (OQ-14) but its architecture-spine consequence should land before or during Foundation build (see FR-24 Notes).
 
 ### 10.2 Out of Scope for MVP
 
@@ -354,14 +364,14 @@ Full 14-item risk register: `_bmad-output/planning-artifacts/briefs/brief-rcl_ca
 ## 11. Success Metrics
 
 **Primary**
-- **SM-1**: Top-3 accuracy — the correct Product appears among the returned Candidates. Target set after the Phase 2 pilot (§8). Validates FR-7.
+- **SM-1**: Top-3 accuracy — the **exact** correct Tile appears among the returned Candidates. A Candidate from the right Category folder but the wrong file is a **miss**, not a hit (§3, architecture spine AD-18). Target set after the Phase 2 pilot (§8), measured against real staff phone photos. Validates FR-7.
 - **SM-2**: Time to result — crop confirmation to displayed candidates, under 3 seconds. Validates FR-6, FR-7, FR-24.
 
 **Secondary**
 - **SM-3**: Adoption — proportion of showroom staff scanning at least weekly. Validates FR-6.
 - **SM-4**: Fallback rate — proportion of scan attempts abandoned in favor of manual lookup. Validates FR-7 (inverse indicator: high fallback means results aren't trustworthy enough to act on).
 - **SM-5**: Catalogue currency — time from a new range's arrival to being searchable. Validates FR-14, FR-19.
-- **SM-6**: Top-1 accuracy — the correct Product is the first-ranked Candidate. Diagnostic alongside SM-1 (top-3 is the metric that reflects real-world usefulness) — tracked to catch a system that's consistently close but wrong at #1. Validates FR-7.
+- **SM-6**: Top-1 accuracy — the exact correct Tile is the first-ranked Candidate. Diagnostic alongside SM-1 (top-3 is the metric that reflects real-world usefulness) — tracked to catch a system that's consistently close but wrong at #1. Validates FR-7.
 
 **Counter-metrics (do not optimize)**
 - **SM-C1**: Raw scan volume per user. A spike here without a corresponding drop in Fallback Rate (SM-4), or one concentrated in a single account, is a catalogue-exfiltration signal (§7) — not evidence of adoption. Counterbalances SM-3.
@@ -379,9 +389,12 @@ Full 14-item risk register: `_bmad-output/planning-artifacts/briefs/brief-rcl_ca
 9. Launch date and budget envelope — no target set yet.
 10. Does Rocell have an existing IT security or compliance policy this must align with? None is currently assumed; if one exists, §5 Security and §6 Privacy may need to expand.
 11. §5 Availability: is business-hours-only availability actually acceptable, or is there a real uptime expectation?
-12. **[RESOLVED]** Must the three Candidates in FR-7 be distinct Products, or can they include multiple Faces of the same Product? — Can repeat: Candidates are not deduplicated by Product. This means SM-1/SM-6 accuracy counts a Scan as correct if any returned Candidate matches the true Product, even if another Candidate is a different Face of that same Product.
+12. **[RESOLVED — re-confirmed and sharpened 2026-09-17]** Must the three Candidates in FR-7 be distinct Products, or can they include multiple Faces of the same Product? — The question's own framing is retired with the Product/Face model (§3). The answer stands and hardens: **never deduplicate by Category.** Each Candidate is a distinct Tile; two Candidates from one folder are two different answers, not a duplicate. The scoring consequence is now the opposite of what this entry originally said: SM-1/SM-6 count a Scan as correct only when the **exact Tile** is returned. An earlier POC measurement claiming +5.4 points for folder-level deduplication was an artefact of the wrong identity model and has been withdrawn.
 13. Four functional thresholds are referenced but not numerically set: FR-9's blur/framing threshold, FR-14/19's reference-image quality threshold, FR-22's anomaly baseline (login time/location, scan-volume pattern), and FR-23's scan-rate limit. Each needs a concrete bound — calibrated during the Foundation build and the Phase 2 pilot, not prescribed here.
 14. FR-24's crop UX isn't nailed down: is confirming the crop mandatory, or skippable for a photo that's already tight? Free-form rectangle or a fixed/suggested aspect ratio? Auto-detected default selection, or always starting from the full frame? Resolve during UX/build, not blocking the PRD.
+15. **[NEW 2026-09-17, from the POC]** Should the scan flow let Staff declare the tile's **Size** before submitting? Measured on 381 Tiles with exact-Tile scoring, a correctly declared Size moves top-3 from 78.7% to 81.9% — free at scan time, no model change, no re-index. Two caveats decide it: the gain tracks how much of the catalogue the filter removes, so it is +8.0 points on `45X90` (75 Tiles) and +1.2 on `60X30` (two thirds of the catalogue); and a *mis*-declared Size makes the true Tile unreachable rather than merely lower-ranked. If adopted, the mechanism is already pinned (architecture spine AD-19: hard pre-filter, validated value, explicit "All sizes" default). Owner: Rocell/product. Blocks nothing; decide before the Epic 3 scan story is built.
+16. **[NEW 2026-09-17, from the POC]** Should **Staff** get a text lookup of the Catalogue by Code, for "I have the code, show me the picture" — a code on an order, a half-remembered code, no physical tile to photograph? FR-18 already gives Administrators catalogue search; this would be the same capability on the scan screen, subordinate to the camera (a collapsed panel, not a second primary control, so nobody types a code they are unsure of instead of photographing the tile in front of them). Runs no inference. Owner: Rocell/product.
+17. **[NEW 2026-09-17, from the POC]** Should the results screen ever show **more than three** Candidates when several score closely, and at what bar? "Never one" (FR-7) is unaffected either way. The POC's own experience is cautionary: at its 0.75 bar the median scan expands to 19 of 20, which is long rather than selective. If adopted, AD-20 fixes the mechanics (one server-side rule, runtime-tunable, no re-index, never a silent back-fill of an empty result).
 
 ## 13. Assumptions Index
 
@@ -391,3 +404,4 @@ Full 14-item risk register: `_bmad-output/planning-artifacts/briefs/brief-rcl_ca
 - §1 Vision — the brief's own `[ASSUMPTION]` vision (extending the capability to warehouse checks, returns, and staff training) is deliberately not carried into this PRD's Vision, which scopes to the identification product only. Not an oversight — a scoping decision. Revisit as a separate initiative if Rocell wants it pursued.
 - FR-9, FR-19 Notes, FR-22, FR-23 — none of the four thresholds these FRs depend on is numerically set; consolidated as OQ-13.
 - FR-24 — crop-selection defaults, mandatory-vs-skippable, and free-form-vs-fixed-aspect are all inferred, not confirmed; consolidated as OQ-14.
+- §3 Glossary, FR-7, SM-1/SM-6, R-1/R-3/R-6 — revised 2026-09-17 against a working POC's measured findings and Rocell's confirmation that each catalogue file is a distinct tile. The pre-correction accuracy figures quoted in earlier revisions (79.5% → 70.0% top-3 as the catalogue grew) came from a harness that no longer exists and cannot be reproduced; the trend is probably real, the magnitude is not evidence.
