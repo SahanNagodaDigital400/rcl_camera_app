@@ -5,6 +5,10 @@ description = "Rocell Tile Scanner API — FastAPI service"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.141,<0.142",
+    # The same driver `infra` already uses, plus its connection pool. One
+    # driver for the whole product: two would mean two sets of type
+    # adaptation rules over the same columns.
+    "psycopg[binary,pool]>=3.2",
     "shared-schema",
     "uvicorn>=0.38",
 ]

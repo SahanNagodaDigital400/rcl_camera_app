@@ -6,8 +6,7 @@ claim about *all* of them, not just the ones we raise deliberately, so the four
 ways an error can reach a client are each handled here:
 
 * `ApiError` — raised by our own code.
-* `HTTPException` — raised by Starlette/FastAPI routing (404, 405, and the auth
-  failures Story 1.3 will add).
+* `HTTPException` — raised by Starlette/FastAPI routing (404, 405).
 * `RequestValidationError` — a malformed request body or query (422).
 * Anything else — an unhandled exception (500).
 
@@ -24,6 +23,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from shared_schema.errors import ApiError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from api import auth
+from api.db import lifespan
 
 #: Stable, machine-readable codes for the HTTP statuses routing produces. A
 #: client branches on these, so they are part of the API contract: rename one
@@ -131,6 +133,10 @@ def create_app() -> FastAPI:
         title="Rocell Tile Scanner API",
         version="0.1.0",
         description="Internal API for the Rocell Tile Scanner. Staff only.",
+        # Opens the connection pool and reads DATABASE_URL at startup, so a
+        # service with no database fails where an operator sees it rather than
+        # at the first sign-in.
+        lifespan=lifespan,
         # The interactive schema browsers are off from the scaffold on, not
         # retrofitted later. Catalogue exfiltration through a compromised
         # account is this product's primary commercial threat, and an
@@ -147,8 +153,18 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, str]:
-        """Liveness probe. Unauthenticated by design — it reveals nothing."""
+        """Liveness probe. Unauthenticated by design — it reveals nothing.
+
+        Deliberately does not touch the database: a probe that failed whenever
+        Postgres hiccuped would take the process down with it, and the one
+        thing this endpoint answers is whether the process is alive.
+        """
         return {"status": "ok"}
+
+    # Story 1.3. The only unauthenticated endpoints in the product are `/health`
+    # and `POST /auth/login`; everything a later story adds goes behind
+    # `api.sessions.lookup_session` (AD-3).
+    app.include_router(auth.router)
 
     return app
 

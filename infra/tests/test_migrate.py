@@ -33,6 +33,12 @@ from shared_schema.passwords import (
 
 SEED_VERSION = "20260917T1210_seed_administrator"
 CREATE_USERS_VERSION = "20260917T1200_create_users"
+CREATE_SESSIONS_VERSION = "20260917T1300_create_sessions"
+
+#: Every migration in `infra/migrations`, in the order the runner applies
+#: them. Listed once so adding a migration is one edit here rather than a
+#: sweep through every assertion in this file.
+ALL_VERSIONS = [CREATE_USERS_VERSION, SEED_VERSION, CREATE_SESSIONS_VERSION]
 
 SEED_EMAIL = "ruwan@rocell.lk"
 
@@ -92,7 +98,7 @@ def ledger_versions(conn: psycopg.Connection) -> list[str]:
 def test_a_clean_database_gets_the_user_table(conn: psycopg.Connection, seed_password: str) -> None:
     applied = up(conn)
 
-    assert applied == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert applied == ALL_VERSIONS
 
     columns = table_columns(conn, "users")
     assert {"role", "active", "must_change_password", "temp_credential_expires_at"} <= columns
@@ -172,7 +178,7 @@ def test_a_truncated_ledger_still_yields_one_administrator(
     up(conn)
     conn.execute("TRUNCATE schema_migrations")
 
-    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert up(conn) == ALL_VERSIONS
     assert administrator_count(conn) == 1
 
 
@@ -241,7 +247,7 @@ def test_a_missing_seed_variable_is_irrelevant_once_an_administrator_exists(
     for name in (SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD, SEED_ADMIN_NAME):
         monkeypatch.delenv(name)
 
-    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert up(conn) == ALL_VERSIONS
     assert administrator_count(conn) == 1
 
 
@@ -351,6 +357,47 @@ def test_a_duplicate_email_is_rejected_by_the_unique_index(
         )
 
 
+def test_a_duplicate_session_token_is_rejected_by_the_unique_index(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # The migration's own comment makes this uniqueness load-bearing: two rows
+    # sharing a hash make "which session is this" unanswerable, and both
+    # `lookup_session` and `delete_session` are written assuming at most one.
+    # Downgrading the index to a plain one changes no test anywhere else.
+    up(conn)
+    administrator = conn.execute("SELECT id FROM users LIMIT 1").fetchone()
+    assert administrator is not None
+    insert = (
+        "INSERT INTO sessions (user_id, token_hash, expires_at) "
+        "VALUES (%s, %s, now() + interval '1 day')"
+    )
+
+    conn.execute(insert, (administrator[0], "a-token-digest"))
+
+    with pytest.raises(pg_errors.UniqueViolation):
+        conn.execute(insert, (administrator[0], "a-token-digest"))
+
+
+def test_the_session_indexes_the_login_path_relies_on_exist(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # Both of these are load-bearing on the one endpoint reachable without a
+    # credential, and both were assertable only by eye. `expires_at` is scanned
+    # by the sweep that runs on every sign-in; `user_id` backs the cascade that
+    # ends a deleted user's sessions. Delete either from the migration and every
+    # other test stays green, because a sequential scan returns the same rows.
+    up(conn)
+
+    indexes = {
+        row[0]
+        for row in conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE tablename = %s", ("sessions",)
+        ).fetchall()
+    }
+
+    assert {"sessions_token_hash_key", "sessions_user_id_idx", "sessions_expires_at_idx"} <= indexes
+
+
 def test_the_table_refuses_an_address_that_is_not_lowercased(
     conn: psycopg.Connection, seed_password: str
 ) -> None:
@@ -410,21 +457,30 @@ def test_both_roles_are_accepted(conn: psycopg.Connection, seed_password: str, r
 def test_down_reverts_one_step(conn: psycopg.Connection, seed_password: str) -> None:
     up(conn)
 
+    # One step is one migration: the most recently applied, and nothing behind
+    # it. `sessions` goes and the seeded Administrator is still there.
+    assert down(conn) == CREATE_SESSIONS_VERSION
+    assert ledger_versions(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert administrator_count(conn) == 1
+    assert table_columns(conn, "sessions") == set()
+
     assert down(conn) == SEED_VERSION
     assert ledger_versions(conn) == [CREATE_USERS_VERSION]
     assert administrator_count(conn) == 0
     assert table_columns(conn, "users") != set()
 
 
-def test_down_twice_restores_the_previous_shape(
+def test_stepping_all_the_way_down_restores_the_previous_shape(
     conn: psycopg.Connection, seed_password: str
 ) -> None:
     up(conn)
-    down(conn)
+    for _ in range(len(ALL_VERSIONS) - 1):
+        down(conn)
 
     assert down(conn) == CREATE_USERS_VERSION
     assert ledger_versions(conn) == []
     assert table_columns(conn, "users") == set()
+    assert table_columns(conn, "sessions") == set()
 
 
 def test_down_refuses_a_ledger_version_whose_files_are_gone(
@@ -453,10 +509,10 @@ def test_down_on_an_unmigrated_database_reverts_nothing(conn: psycopg.Connection
 
 def test_up_after_down_reseeds(conn: psycopg.Connection, seed_password: str) -> None:
     up(conn)
-    down(conn)
-    down(conn)
+    for _ in ALL_VERSIONS:
+        down(conn)
 
-    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert up(conn) == ALL_VERSIONS
     assert administrator_count(conn) == 1
 
 
@@ -471,6 +527,7 @@ def test_down_leaves_a_claimed_administrator_alone(
         ("admin",),
     )
 
+    assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
     assert administrator_count(conn) == 1
 
@@ -486,6 +543,7 @@ def test_down_leaves_an_administrator_who_has_signed_in_alone(
     up(conn)
     conn.execute("UPDATE users SET last_login_at = now() WHERE role = %s", ("admin",))
 
+    assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
     assert administrator_count(conn) == 1
 
@@ -500,6 +558,7 @@ def test_down_leaves_an_administrator_who_set_their_own_password_alone(
         ("admin",),
     )
 
+    assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
     assert administrator_count(conn) == 1
 
@@ -514,6 +573,7 @@ def test_down_leaves_staff_accounts_alone(conn: psycopg.Connection, seed_passwor
         ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
     )
 
+    assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
 
     remaining = conn.execute("SELECT role FROM users").fetchall()
@@ -529,6 +589,7 @@ def test_down_leaves_a_second_administrator_alone(
         ("Second Admin", "second@rocell.lk", "$argon2id$placeholder", "admin"),
     )
 
+    assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
     assert administrator_count(conn) == 2
 
@@ -537,11 +598,11 @@ def test_down_leaves_a_second_administrator_alone(
 
 
 def test_status_reports_pending_then_applied(conn: psycopg.Connection, seed_password: str) -> None:
-    assert status(conn) == [(CREATE_USERS_VERSION, False), (SEED_VERSION, False)]
+    assert status(conn) == [(version, False) for version in ALL_VERSIONS]
 
     up(conn)
 
-    assert status(conn) == [(CREATE_USERS_VERSION, True), (SEED_VERSION, True)]
+    assert status(conn) == [(version, True) for version in ALL_VERSIONS]
 
 
 # --- A migration that fails --------------------------------------------------
@@ -741,7 +802,7 @@ def test_a_concurrent_runner_waits_for_the_migration_lock(
         assert ledger_versions(conn) == []
         other.execute("SELECT pg_advisory_unlock(%s)", (migrate.MIGRATION_LOCK_ID,))
 
-    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert up(conn) == ALL_VERSIONS
     assert administrator_count(conn) == 1
 
 
@@ -803,8 +864,8 @@ def test_apply_declines_a_version_that_became_applied_after_the_plan(
     with psycopg.connect(database_url, autocommit=True) as other:
         up(other, plan)
 
-    assert [migrate._apply(conn, migration) for migration in plan] == [False, False]
-    assert ledger_versions(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert [migrate._apply(conn, migration) for migration in plan] == [False] * len(ALL_VERSIONS)
+    assert ledger_versions(conn) == ALL_VERSIONS
     assert administrator_count(conn) == 1
 
 
@@ -814,7 +875,7 @@ def test_reseed_refuses_an_email_that_is_not_the_seeded_one(
     # Reissuing changes the password and the expiry and nothing else, so an
     # operator who supplies a different address would be told the credential
     # was reissued and then find nothing accepts what they typed.
-    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert up(conn) == ALL_VERSIONS
     before = the_administrator(conn)
 
     monkeypatch.setenv(SEED_ADMIN_EMAIL, "someone.else@rocell.lk")
@@ -832,7 +893,7 @@ def test_reseed_refuses_an_email_that_is_not_the_seeded_one(
 def test_reseed_names_the_address_that_would_have_worked(
     conn: psycopg.Connection, seed_password: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert up(conn) == ALL_VERSIONS
     monkeypatch.setenv(SEED_ADMIN_EMAIL, "someone.else@rocell.lk")
 
     with pytest.raises(seed.SeedRefused, match=SEED_EMAIL):
@@ -844,7 +905,7 @@ def test_the_unclaimed_credential_is_reportable(
 ) -> None:
     # What the runner prints after seeding: the address to type and the
     # deadline to type it by. Both had to be queried out of the database before.
-    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert up(conn) == ALL_VERSIONS
 
     record = seed.unclaimed_administrator(conn)
     assert record is not None
@@ -854,7 +915,7 @@ def test_the_unclaimed_credential_is_reportable(
 
 
 def test_a_claimed_credential_is_not_reported(conn: psycopg.Connection, seed_password: str) -> None:
-    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert up(conn) == ALL_VERSIONS
     conn.execute("UPDATE users SET must_change_password = false WHERE role = %s", ("admin",))
 
     assert seed.unclaimed_administrator(conn) is None
@@ -867,7 +928,7 @@ def test_the_reseed_remedy_is_only_offered_where_it_would_work(
     # this reads is the *earliest* unclaimed one — on an already-migrated
     # database that may be an account an Administrator created. Pointing the
     # operator at a command that will refuse is worse than saying nothing.
-    assert up(conn) == [CREATE_USERS_VERSION, SEED_VERSION]
+    assert up(conn) == ALL_VERSIONS
 
     migrate._report_credential(conn)
     assert "make reseed-admin" in capsys.readouterr().out
@@ -992,8 +1053,8 @@ def test_main_defaults_to_up(
     assert migrate.main([]) == 0
 
     out = capsys.readouterr().out
-    assert CREATE_USERS_VERSION in out
-    assert SEED_VERSION in out
+    for version in ALL_VERSIONS:
+        assert version in out
 
 
 def test_main_up_is_idempotent(
@@ -1014,7 +1075,7 @@ def test_main_status_lists_every_migration(
 
     assert migrate.main(["status"]) == 0
     out = capsys.readouterr().out
-    assert out.count("applied") == 2
+    assert out.count("applied") == len(ALL_VERSIONS)
     assert "pending" not in out
 
 
@@ -1083,6 +1144,9 @@ def test_main_steps_down_with_the_confirmation_flag(
 ) -> None:
     assert migrate.main(["up"]) == 0
     capsys.readouterr()
+
+    assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
+    assert CREATE_SESSIONS_VERSION in capsys.readouterr().out
 
     assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
     assert SEED_VERSION in capsys.readouterr().out

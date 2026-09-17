@@ -122,6 +122,16 @@
   --measure-prose: 64ch;
   /* Parks a skip link out of sight until it takes focus. */
   --offscreen-shift: -200%;
+  /* A single-column form (Login, Force Password Change). Narrower than the
+   * prose measure above: a form is short fields, and a wide one leaves each
+   * label and its input at opposite ends of the eye's travel. */
+  --measure-form: 22rem;
+  /* DESIGN.md calls for a hairline border on cards, inputs and table rows.
+   * This is that line, in one place, so "hairline" means one thickness. */
+  --border-hairline: 1px;
+  /* A control that is present but cannot be used yet — an in-flight submit.
+   * Dimmed rather than hidden, so the button does not move under the thumb. */
+  --disabled-opacity: 0.55;
 
   /* The one breakpoint in the system: below it, mobile scan surfaces with
    * generous spacing and a bottom tab bar; at and above it, desktop admin

@@ -50,7 +50,7 @@ scripts/ingest/    Drive → index ingestion
 
 ```bash
 make setup          # uv workspace venv + apps/web npm install
-make dev            # api + web with hot reload
+make dev            # api + web with hot reload -- apps/api needs DATABASE_URL
 make lint           # ruff check + ruff format --check, oxlint, tsc --noEmit
 make format         # apply ruff's formatting and import fixes
 make test           # full suite (pytest workspace + apps/web vitest)

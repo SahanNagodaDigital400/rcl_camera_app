@@ -11,7 +11,12 @@ retired by AD-18 and must not appear.
 """
 
 from shared_schema.errors import ApiError, ErrorBody, ErrorEnvelope
-from shared_schema.passwords import hash_password, verify_password
+from shared_schema.passwords import (
+    hash_password,
+    verify_dummy_password,
+    verify_password,
+    warm_password_verifier,
+)
 from shared_schema.user import Role, User
 
 __all__ = [
@@ -21,5 +26,7 @@ __all__ = [
     "Role",
     "User",
     "hash_password",
+    "verify_dummy_password",
     "verify_password",
+    "warm_password_verifier",
 ]

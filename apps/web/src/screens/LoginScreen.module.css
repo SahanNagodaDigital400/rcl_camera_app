@@ -1,0 +1,96 @@
+/* The login screen carries no chrome: no app bar, no nav (DESIGN.md:207 — the
+ * app bar is present on authenticated screens only). The form is the only
+ * thing on it, which is the same shape DESIGN.md gives the force-password-
+ * change screen, the nearest specified precedent.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target
+ * floor and the accent focus ring are already on `button` and `input` in
+ * global.css and are deliberately not restated. */
+
+.screen {
+  display: flex;
+  min-height: 100dvh;
+  align-items: center;
+  justify-content: center;
+  /* The safe-area inset is added on a notched phone: with no app bar above it,
+   * this screen's own content is what would otherwise sit under the status bar. */
+  padding: calc(var(--space-8) + env(safe-area-inset-top, 0px)) var(--space-4)
+    calc(var(--space-8) + env(safe-area-inset-bottom, 0px));
+  background: var(--color-background);
+}
+
+.panel {
+  width: 100%;
+  max-width: var(--measure-form);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+.lede {
+  margin-top: var(--space-2);
+  color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  margin-top: var(--space-8);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  color: var(--color-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+.input {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* The single primary action on this screen: accent fill, navy foreground.
+ * Never white on orange — 2.63:1, the one contrast pair DESIGN.md bans. */
+.submit {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.submit:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* The rejection. Red is destructive-or-failed and nothing else in this system,
+ * and it is never the only signal: the text says what happened. */
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}

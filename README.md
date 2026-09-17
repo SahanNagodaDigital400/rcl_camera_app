@@ -67,6 +67,24 @@ That creates the `users` table and seeds **exactly one** Administrator, in the
 created. Re-running `make migrate` never produces a second one, and on an already-seeded database
 it needs no `SEED_ADMIN_*` variables at all.
 
+`make dev` needs `DATABASE_URL` too: `apps/api` opens its connection pool at startup and exits
+naming the variable if it is unset, rather than starting and failing at the first sign-in. Point it
+at the same database you migrated.
+
+Signing in sets an HTTP-only, `Secure`, `SameSite=Strict` session cookie. Browsers treat
+`http://localhost` and `http://127.0.0.1` as trustworthy origins, so a `Secure` cookie is stored
+and sent over the dev proxy's plain HTTP exactly as it is in production — `make dev` needs no
+exemption on the development machine, and none is made. The token is in that cookie and nowhere
+else: no code in `apps/web` reads it, and a guard test fails the build if any file under
+`apps/web/src` touches browser storage or `document.cookie`.
+
+That exemption is for `localhost` only, which matters because this is a phone-first PWA: a handset
+reaching `make dev` across the LAN by IP over plain `http://` is **not** a trustworthy origin, so
+the browser silently discards the `Secure` cookie and sign-in never completes — the screen simply
+returns to itself. Testing on a real handset therefore needs a trustworthy origin for the dev
+server: a tunnel that terminates TLS, or a locally-trusted certificate. Do not reach for an
+insecure cookie to make it work.
+
 Nothing here is defaulted and nothing is committed: every value comes from the environment, and
 `make migrate` exits non-zero naming whatever is missing. The seeded credential expires after 72
 hours like any other admin-issued one; `make reseed-admin` reissues it while the account is still

@@ -44,3 +44,20 @@
   height: var(--app-bar-stripe-height);
   background: var(--color-accent);
 }
+
+/* Sign out: a secondary control on a navy bar, so it is outlined in its own
+ * foreground rather than filled. Orange would claim the screen's single
+ * primary action for the way *out* of the screen. */
+.signOut {
+  margin-inline-start: auto;
+  justify-content: center;
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-hairline) solid var(--color-primary-foreground);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}

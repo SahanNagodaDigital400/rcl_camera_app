@@ -8,15 +8,20 @@ would be one.
 from __future__ import annotations
 
 import secrets
+import threading
+from pathlib import Path
 
 import pytest
 from argon2.exceptions import InvalidHashError
+from shared_schema import passwords
 from shared_schema.passwords import (
     ARGON2ID_PREFIX,
     MAX_PASSWORD_LENGTH,
     MIN_PASSWORD_LENGTH,
     hash_password,
+    verify_dummy_password,
     verify_password,
+    warm_password_verifier,
 )
 
 #: RFC 9106's second recommended configuration, as the encoded digest spells it
@@ -148,3 +153,101 @@ def test_a_malformed_stored_digest_is_not_reported_as_a_wrong_password() -> None
     # fault. Returning False would hide it behind "wrong password" forever.
     with pytest.raises(InvalidHashError):
         verify_password("not-a-digest", a_password())
+
+
+# --- The decoy verifier (DW-24) ---------------------------------------------
+#
+# `verify_dummy_password` exists so `apps/api`'s login can spend the same work
+# on an address that does not exist as on one that does. Everything below is
+# about that equivalence holding: a decoy that returned early, hashed cheaply,
+# or was rebuilt per call would each leave the timing signal in place while the
+# login tests stayed green.
+
+
+def test_the_decoy_never_verifies() -> None:
+    assert verify_dummy_password(a_password()) is False
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    ["", a_password(1), a_password(MIN_PASSWORD_LENGTH), a_password(MAX_PASSWORD_LENGTH + 1)],
+)
+def test_the_decoy_rejects_every_input(candidate: str) -> None:
+    # Including the two `verify_password` refuses before hashing. The decoy has
+    # to answer those the same way, or the early return is itself a signal.
+    assert verify_dummy_password(candidate) is False
+
+
+def test_the_decoy_digest_is_argon2id_at_the_pinned_cost() -> None:
+    # A cheap decoy is measurably faster than a real verify and defeats the
+    # entire point. It is built by the same `_HASHER`, and this is what says so.
+    warm_password_verifier()
+    digest = passwords._DECOY_DIGEST
+
+    assert digest is not None
+    assert digest.startswith(ARGON2ID_PREFIX)
+    assert EXPECTED_PARAMETERS in digest
+
+
+def test_the_decoy_digest_is_built_once_and_reused() -> None:
+    warm_password_verifier()
+    first = passwords._DECOY_DIGEST
+
+    verify_dummy_password(a_password())
+    verify_dummy_password(a_password())
+
+    assert passwords._DECOY_DIGEST is first
+
+
+def test_concurrent_first_calls_share_one_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `apps/api` serves its sync endpoints from a threadpool, so two
+    # simultaneous rejections can both reach the lazy build. Unlocked, both
+    # allocate a 64 MiB Argon2id hash and one is thrown away — and the caller
+    # that loses the race would verify against a digest the module no longer
+    # holds. Every thread must come back with the *same object*.
+    monkeypatch.setattr(passwords, "_DECOY_DIGEST", None)
+    start = threading.Barrier(4)
+    seen: list[str] = []
+    lock = threading.Lock()
+
+    def build() -> None:
+        start.wait()
+        digest = passwords._decoy_digest()
+        with lock:
+            seen.append(digest)
+
+    threads = [threading.Thread(target=build) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(seen) == 4
+    assert all(digest is seen[0] for digest in seen)
+
+
+def test_the_decoy_digest_is_not_built_at_import_time() -> None:
+    # A 64 MiB Argon2id hash on import would be paid by every process that
+    # imports `shared_schema`, including every test run, for a path most of
+    # them never take. The module-level default is what keeps it lazy.
+    source = Path(passwords.__file__).read_text(encoding="utf-8")
+
+    assert "_DECOY_DIGEST: str | None = None" in source
+
+
+def test_warming_the_verifier_is_idempotent() -> None:
+    warm_password_verifier()
+    warmed = passwords._DECOY_DIGEST
+    warm_password_verifier()
+
+    assert passwords._DECOY_DIGEST is warmed
+
+
+def test_no_decoy_digest_is_committed_to_the_source() -> None:
+    # AGENTS.md Policy forbids a committed credential, fixtures included. The
+    # decoy's password is generated at runtime and thrown away; a digest
+    # pasted into the file would be a credential in the repository.
+    source = Path(passwords.__file__).read_text(encoding="utf-8")
+
+    assert source.count(ARGON2ID_PREFIX) == 1, "only the prefix constant may name it"
+    assert "secrets.token_urlsafe" in source

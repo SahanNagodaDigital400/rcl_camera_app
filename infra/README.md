@@ -41,6 +41,19 @@ A migration that fails halfway therefore leaves neither, and the next run
 retries it from a clean state rather than skipping something that only
 half-applied.
 
+### What is in `migrations/` today
+
+| Version | What it creates |
+|---|---|
+| `20260917T1200_create_users` | the `users` table and its `lower(email)` unique index |
+| `20260917T1210_seed_administrator` | the one seeded Administrator (a marker, see below) |
+| `20260917T1300_create_sessions` | the `sessions` table — the architecture spine's `SESSION` ERD block, with `ON DELETE CASCADE` from `users` so deleting an account ends its sessions rather than orphaning them, a unique index on `token_hash` and an index on `user_id` |
+
+`sessions.token_hash` holds the SHA-256 of the cookie's value, never the value
+itself, so a database read yields nothing that can be presented as a session.
+Passwords are Argon2id and session tokens are SHA-256 for different reasons —
+see the module docstring in `apps/api/api/sessions.py`.
+
 ### The one non-SQL step
 
 `20260917T1210_seed_administrator.up.sql` is a marker, not SQL: its body is the
@@ -72,6 +85,12 @@ migrate the wrong database.
 ```bash
 export DATABASE_URL=postgresql://rocell@localhost:5432/rocell
 ```
+
+**`apps/api` now needs the same variable.** Since Story 1.3 the service opens a
+connection pool at startup and reads `DATABASE_URL` to do it — pointed at the
+database `make migrate` migrated. It is not defaulted there either, for the
+same reason, and the process exits at startup naming the variable if it is
+missing rather than failing at the first sign-in. `make dev` says so too.
 
 ## The seeded Administrator
 

@@ -6,10 +6,38 @@
   color: var(--color-text);
 }
 
+.greeting {
+  margin-top: var(--space-3);
+  color: var(--color-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
 .lede {
   margin-top: var(--space-3);
   max-width: var(--measure-prose);
   color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The bootstrap placeholder. Occupies the viewport so the page does not
+ * collapse to nothing while the session is being read, and says what it is
+ * waiting for rather than showing a bare spinner. */
+.pending {
+  display: flex;
+  min-height: 100dvh;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+}
+
+/* A failure the signed-in shell has to report — today, a sign-out that the
+ * server did not accept. Red is destructive-or-failed and nothing else, and it
+ * is never the only signal: the text says what happened. */
+.error {
+  margin-top: var(--space-3);
+  color: var(--color-destructive);
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
 }

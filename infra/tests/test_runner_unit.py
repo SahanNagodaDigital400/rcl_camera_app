@@ -36,6 +36,7 @@ def test_the_repository_migrations_are_a_valid_plan() -> None:
     assert [migration.version for migration in plan] == [
         "20260917T1200_create_users",
         "20260917T1210_seed_administrator",
+        "20260917T1300_create_sessions",
     ]
     assert all(migration.up_path.is_file() for migration in plan)
     assert all(migration.down_path.is_file() for migration in plan)

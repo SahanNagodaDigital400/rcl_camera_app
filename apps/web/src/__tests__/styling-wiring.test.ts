@@ -186,6 +186,37 @@ describe('the app bar paints the colours DESIGN.md specifies', () => {
   });
 });
 
+describe('a rejection is written in the colour the matrix specifies', () => {
+  // "Inline error text in `--color-destructive`" is a clause of the story's own
+  // I/O matrix, and it was the one clause of that row asserted nowhere: the
+  // render tests check the `role="alert"`, the message and the focus, none of
+  // which can see a colour — `vite.config.ts` sets `css: false`, so jsdom
+  // applies no stylesheet and there is no computed style to read. Point either
+  // rule at `--color-text` and the alert renders as ordinary prose, indeed as
+  // *reassuring* prose, with every other check green.
+  it('colours the login screen error', () => {
+    const css = read(join(SRC, 'screens', 'LoginScreen.module.css'));
+
+    expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
+  it('colours the sign-out failure the same way', () => {
+    const css = read(join(SRC, 'App.module.css'));
+
+    expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
+  it('is the class the alert element actually carries', () => {
+    // The rule above is inert if the element points somewhere else. The
+    // dangling-reference check upstream proves `styles.error` resolves to a
+    // declared class; this proves it is the class on the live region.
+    const screen = read(join(SRC, 'screens', 'LoginScreen.tsx'));
+
+    expect(screen).toContain('className={styles.error}');
+    expect(screen).toContain('role="alert"');
+  });
+});
+
 describe('the token layer declares each property once', () => {
   it('has no repeated custom property', () => {
     // Both token readers in this suite resolve a property by its first

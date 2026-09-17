@@ -253,3 +253,59 @@ source_spec: `spec-1-2-user-schema-seeded-administrator.md`
 severity: low
 reason: tests/test_make_targets.py and infra/tests/test_make_targets_database.py each spawn `make` then `uv run` with 300s timeouts, and several cases hash or verify 64 MiB Argon2 digests. `make test` is the command CLAUDE.md says to run before considering any change complete, so its cost matters; adding a `slow`/`db` marker also decides how CI will select tests, which Story 1.1 left open.
 status: open
+
+### DW-33: `/health` answers 200 against an unreachable or wrong database, and `PoolTimeout`/`OperationalError` surface as a generic 500 rather than a 503, so `make dev`'s health gate can pass against a database
+origin: spec-deferred 73eedefaa78e
+location: apps/api/api/db.py
+source_spec: `spec-1-3-admin-provisioned-login.md`
+severity: medium
+reason: apps/api/api/db.py opens the pool with POOL_MIN_SIZE = 0 and pool.open(wait=False), so no connection is attempted at startup, and /health in api/main.py deliberately touches nothing. The startup guard catches an *unset* DATABASE_URL only. Adding a readiness endpoint and a 503 mapping (main.py's STATUS_CODES has no 503 entry) means choosing probe semantics and a Retry-After policy, which is a deployment decision the architecture spine still lists as open.
+status: open
+
+### DW-34: The connection pool's max size is smaller than Starlette's sync threadpool, so concurrent logins can each allocate a 64 MiB Argon2id hash while most of them queue for a connection and then time out.
+origin: spec-deferred 1a6f908bcbef
+location: apps/api/api/db.py
+source_spec: `spec-1-3-admin-provisioned-login.md`
+severity: medium
+reason: apps/api/api/db.py sets POOL_MAX_SIZE = 10; FastAPI runs the sync `login` handler in a threadpool defaulting to 40 workers, and the endpoint is unauthenticated. Bounding this is login throttling, which epics.md assigns to Story 1.6 over AD-8's Postgres counters, so the fix belongs with that story rather than as a drive-by limit here.
+status: open
+
+### DW-35: `apps/api/tests/conftest.py` duplicates ~110 lines of `infra/tests/conftest.py`'s initdb/pg_ctl cluster handling, and the two copies must now be changed in lockstep with nothing enforcing it.
+origin: spec-deferred 5c77ce34ab28
+location: apps/api/tests/conftest.py
+source_spec: `spec-1-3-admin-provisioned-login.md`
+severity: low
+reason: Both files carry their own _free_port, _with_database and _start_ephemeral_cluster. The standard fix is an importable test-support module referenced through pytest_plugins, or a root conftest.py — either one relocates Story 1.2's fixtures, which is a test-layout decision rather than a patch to this story's code.
+status: open
+
+### DW-36: `POST /auth/login` has no CSRF defence, so a cross-site form post can sign a victim's browser into an attacker-controlled account.
+origin: spec-deferred f99df62523c0
+location: apps/api/api/auth.py
+source_spec: `spec-1-3-admin-provisioned-login.md`
+severity: low
+reason: SameSite=Strict protects the authenticated routes but not login itself, which is unauthenticated by definition. Subsequent scans would then be attributed to the attacker's account. For an internal-only tool this may be an acceptable risk, but unlike every other security decision in this change it is currently neither mitigated nor written down; the independent penetration test AGENTS.md requires will raise it.
+status: open
+
+### DW-37: `apps/web` never revalidates a session the server has stopped honouring, so the shell keeps rendering after an expiry or a deactivation until the page is reloaded.
+origin: spec-deferred e76ef8673aec
+location: apps/web/src/auth/SessionProvider.tsx
+source_spec: `spec-1-3-admin-provisioned-login.md`
+severity: low
+reason: SessionProvider bootstraps once on mount and changes status only on an explicit sign-in or sign-out. EXPERIENCE.md line 90 owes a "session expired mid-flow" pattern, and epics.md Story 1.5 owns session persistence and expiry, so the revalidation trigger belongs there. No other authenticated route exists yet, so nothing observes the gap today.
+status: open
+
+### DW-38: The API sets no security response headers at all, so the login screen — the product's only unauthenticated surface — can be framed, and no response carries `X-Content-Type-Options` or a
+origin: spec-deferred 89a3b1d0ecaa
+location: apps/api/api/main.py
+source_spec: `spec-1-3-admin-provisioned-login.md`
+severity: medium
+reason: apps/api/api/main.py installs four exception handlers and no middleware. A clickjacking overlay over the sign-in form is free, and a MIME sniff on any response is unrestricted. The fix is one middleware, but its content is a deployment decision rather than a drive-by: apps/web is served as static files by something other than this API, so `frame-ancestors` belongs to that server, and a CSP needs the web app's real script and style sources — which Vite's dev server and a production build do not agree about yet. DW-4's unresolved production path is the same decision.
+status: open
+
+### DW-39: The whole apps/api database suite skips itself where PostgreSQL is absent, so `make test` reports green with zero coverage of login, logout, session lookup and the seeded-administrator composition.
+origin: spec-deferred 1202c238f1fe
+location: apps/api/tests/conftest.py
+source_spec: `spec-1-3-admin-provisioned-login.md`
+severity: medium
+reason: apps/api/tests/conftest.py calls pytest.skip from a session-scoped fixture when initdb/pg_ctl are not on PATH, mirroring the pattern infra/tests/conftest.py established in Story 1.2. On this machine all 320 tests run, but a CI image without PostgreSQL would report success for a suite that asserted nothing about the story. Fixing it means choosing a policy — an opt-in REQUIRE_POSTGRES that fails instead of skipping, or a floor on how many database tests must have run — and applying it to both packages at once, which is the same test-layout decision the conftest-duplication entry above is waiting on.
+status: open
