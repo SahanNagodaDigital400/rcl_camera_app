@@ -60,6 +60,20 @@ const rejected = (): SessionContextValue['signIn'] =>
     throw new ApiRequestError('unauthorized', 'Email or password is incorrect.', 401);
   });
 
+/**
+ * FR-4's lockout, as the API sends it: a 429 with its own code and its own
+ * sentence — and, on the wire, a `Retry-After` header the screen never sees
+ * because `ApiRequestError` deliberately does not carry one.
+ */
+const lockedOut = (): SessionContextValue['signIn'] =>
+  vi.fn(async () => {
+    throw new ApiRequestError(
+      'account_locked',
+      'Too many sign-in attempts. This account is temporarily locked.',
+      429,
+    );
+  });
+
 const unreachable = (): SessionContextValue['signIn'] =>
   vi.fn(async () => {
     throw new ApiRequestError(
@@ -244,6 +258,69 @@ describe('the login screen', () => {
     await screen.findByRole('alert');
     expect(screen.getByLabelText(/email/i).getAttribute('aria-invalid')).toBe('false');
     expect(screen.getByLabelText(/password/i).getAttribute('aria-invalid')).toBe('false');
+  });
+
+  describe('a locked account', () => {
+    it("shows the server's own sentence", async () => {
+      renderLogin(lockedOut());
+
+      fill('kasun@rocell.lk', 'a-long-enough-password');
+      submit();
+
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toBe(
+        'Too many sign-in attempts. This account is temporarily locked.',
+      );
+    });
+
+    it('marks neither field invalid', async () => {
+      // The credential was never looked at — the API refused before reading it
+      // — so nothing the user typed was malformed. Marking both inputs, as a
+      // refused credential does, would send them to retype a correct address
+      // and tell assistive technology something untrue.
+      renderLogin(lockedOut());
+
+      fill('kasun@rocell.lk', 'a-long-enough-password');
+      submit();
+
+      await screen.findByRole('alert');
+      expect(screen.getByLabelText(/email/i).getAttribute('aria-invalid')).toBe('false');
+      expect(screen.getByLabelText(/password/i).getAttribute('aria-invalid')).toBe('false');
+    });
+
+    it('keeps what was typed and leaves focus alone', async () => {
+      renderLogin(lockedOut());
+      const before = document.activeElement;
+
+      fill('kasun@rocell.lk', 'a-long-enough-password');
+      submit();
+
+      await screen.findByRole('alert');
+      expect((screen.getByLabelText(/password/i) as HTMLInputElement).value).toBe(
+        'a-long-enough-password',
+      );
+      expect((screen.getByLabelText(/email/i) as HTMLInputElement).value).toBe('kasun@rocell.lk');
+      expect(document.activeElement).toBe(before);
+    });
+
+    it('renders no countdown', async () => {
+      // EXPERIENCE.md's Login-lockout row: a different message from a
+      // wrong-password rejection, and no countdown. The API sends
+      // `Retry-After`; it is machine-facing, and a number in *this message*
+      // would be that header leaking into the UI — or a duration restated in
+      // the copy, which the same row forbids.
+      //
+      // Scoped to the alert rather than to `document.body`: a digit anywhere on
+      // the screen is not the thing being banned, and a body-wide check would
+      // fail the day unrelated copy gains a number.
+      renderLogin(lockedOut());
+
+      fill('kasun@rocell.lk', 'a-long-enough-password');
+      submit();
+
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent ?? '').not.toMatch(/\d/);
+    });
   });
 
   describe('an empty field', () => {

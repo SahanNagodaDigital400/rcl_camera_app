@@ -430,3 +430,99 @@ source_spec: `spec-1-5-session-persistence-expiry.md`
 severity: low
 reason: Both failures were in `session-expiry.test.tsx` and both were a `findBy*` exhausting testing-library's default 1000ms timeout rather than an assertion reporting a wrong value; the runs that failed were also the slowest overall (3.1s vs a steady 1.8s). Clearing `node_modules/.vite`, touching every source file and re-running did not reproduce it, so the cold-transform explanation is unconfirmed. Left alone it is a test that fails for one person, once, on the story's central assertion — worth either raising the timeout for the async screen-swap cases or finding the real cause before it is dismissed as noise.
 status: open
+
+### DW-55: A password spray — one password tried across every staff address — trips no counter at all, while every attempt still buys a full Argon2id verify.
+origin: spec-deferred 052f5bbfcc32
+location: apps/api/api/throttle.py
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: medium
+reason: `api/throttle.py` keys the counter on the submitted address, which is what removes the account-existence oracle a per-account ladder would create. The cost is that the per-address counter is blind to the attack that uses each address once. FR-4 is written per account and the architecture spine's review-security.md already raised this against it, so closing it means a second counter — per source IP, or a global failure rate — and a decision about what to key it on that FR-4 does not make. `throttle.py`'s "Not here" section names FR-22, FR-23 and DW-40 and is silent on this one.
+status: open
+
+### DW-56: `AttemptState.retry_after()` subtracts a Postgres-produced timestamp from the API host's clock, in a module whose whole argument is that every decision is made against the database clock.
+origin: spec-deferred bb27b144e021
+location: apps/api/api/throttle.py (AttemptState.retry_after)
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: low
+reason: `locked_until` is written by `now()` inside `_RECORD_FAILURE` and read back through `RETURNING`; `retry_after()` then compares it to `datetime.now(UTC)`. Skew between the two hosts mis-states the `Retry-After` header in either direction. Nothing in the product reads that header — `apps/web` is forbidden to render it — so the consequence is confined to a conforming third-party client. The fix is to have Postgres compute the remaining seconds alongside the lock, which means another column in the `RETURNING` list and a second value threaded through `AttemptState`, for a header nothing currently consumes.
+status: open
+
+### DW-57: `make reseed-admin` issues a fresh credential that the lock then refuses, and clears neither the `login_attempts` row nor `users.locked_until`.
+origin: spec-deferred 2f148bff9084
+location: infra/rocell_infra/seed.py
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: low
+reason: `infra/rocell_infra/seed.py`'s reissue updates `password_hash`, `must_change_password`, `temp_credential_expires_at` and `updated_at` only. An Administrator locked out by ten failures who reaches for the one console tool they have gets a credential that is refused for the remainder of `LOCKOUT_DURATION`, and an account whose status still reads locked afterwards. Bounded at fifteen minutes, so it is an inconvenience rather than the unreachable-product hazard DW-41 describes — but it is the same recovery path, and widening the reissue to clear the throttle is a decision about what `reseed-admin` is for.
+status: open
+
+### DW-58: `login_attempts` grows one row per invented address for a full `ATTEMPT_WINDOW`, and those rows are exactly the ones the sweep is forbidden to delete.
+origin: spec-deferred 9e2e1b69082a
+location: infra/migrations/20260918T1000_add_login_throttling.up.sql
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: low
+reason: `_SWEEP_ATTEMPTS` only removes rows whose `last_failure_at` is older than `ATTEMPT_WINDOW`, so a dictionary run against thousands of addresses leaves every row it creates untouchable for an hour — and `last_failure_at` carries no index, so each subsequent failed attempt scans them. The migration comment and `infra/README.md` now say this honestly rather than claiming a backlog never accumulates. Bounding it means either an index paid on every failure or a row-count ceiling with a policy for what to evict, and both are measurements this story has no numbers for.
+status: open
+
+### DW-59: Changing a user's email address (Story 1.10) leaves the lock on the old address string and a stale `users.locked_until` on the account.
+origin: spec-deferred 2ae5330307f1
+location: apps/api/api/throttle.py (_MIRROR_LOCK)
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: low
+reason: The counter's primary key is the submitted address, and `_MIRROR_LOCK` matches on `lower(email)`. After an edit, the old string keeps its live lock — reachable by anyone who still tries it, which is harmless — while the new address starts from zero, which is a lock-evasion path that requires an Administrator to walk it. The mirror is never cleared either, so the account's status keeps reporting a lock that no longer corresponds to anything. Deciding whether a rename carries its counter is Story 1.10's to make; nothing here can settle it.
+status: open
+
+### DW-60: The progressive delay is per-attempt only when attempts are serial: a burst that arrives together all reads the same count and pays one rung between them.
+origin: spec-deferred cf1acabbac1c
+location: apps/api/api/auth.py (login)
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: medium
+reason: `login` reads `attempt_state`, sleeps, and only then does the credential work that records the failure, so ten simultaneous guesses at a count of five all see rung one and all sleep one `DELAY_STEP` in parallel instead of paying 1+2+3+4+4 seconds between them. The lockout at `FAILURES_BEFORE_LOCKOUT` is unaffected — the increment is AD-8's single atomic statement and every failure still lands — and the re-read added after the sleep now stops any of them authenticating once the lock is written. What is left is that the ladder's *cost* is per round trip rather than per attempt. Closing it means making the delay a property of the request rather than of the row it read — a queue, a per-address semaphore, or counting the attempt before it is processed rather than after — and each of those is a different design from the one FR-4's "delay before it's processed" describes.
+status: open
+
+### DW-61: `_MIRROR_LOCK` moves `users.updated_at` on an account nobody edited, so the column stops meaning "an Administrator changed this".
+origin: spec-deferred 438c8fde6b20
+location: apps/api/api/throttle.py (_MIRROR_LOCK)
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: low
+reason: The mirror sets `updated_at = now()` alongside `locked_until` because DW-17 leaves the column to be maintained by hand, and the spec's task list asks for exactly that. The consequence is that ten wrong guesses from a stranger now bump a timestamp that Stories 1.9 and 1.10 are the most likely readers of — a "recently changed" sort, or an optimistic concurrency check on the edit form, would both be driven by an attacker. Separating them means either a second column or a rule that the mirror is not an edit, and which one is right depends on what 1.10 decides `updated_at` is for.
+status: open
+
+### DW-62: DW-54's `session-expiry.test.tsx` flake reproduced twice in three full `apps/web` runs during this pass, and not once in six runs of that file on its own.
+origin: spec-deferred 790a080b9cfa
+location: apps/web/src/__tests__/session-expiry.test.tsx:237
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: low
+reason: Recorded here as new evidence for an entry that already exists, not as a new defect: this pass changed no `apps/web` source. Both failures were `findByLabelText(/password/i)` at line 237 exhausting testing-library's default 1000ms, and both were on the slow runs (2.78s and 3.12s against a steady 1.78s for the 13-file suite). Running the file alone passed 6/6 at a flat 1.17s. That points at worker contention across the parallel suite rather than at anything in `SessionProvider`, and it narrows DW-54's open question — "raise the timeout or find the real cause" — to the first option, but raising an async timeout across another story's suite is a decision about the harness that this story has no authority to make.
+status: open
+
+### DW-63: A lockout is a free, repeatable denial of service against a named member of staff, and nothing in the product limits or records it.
+origin: spec-deferred 89c5eb0409bb
+location: apps/api/api/throttle.py
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: medium
+reason: A locked attempt is refused before any Argon2id work, any counter write and any sleep, so holding a colleague out costs an attacker ten cheap guesses per quarter hour and nothing else. There is no unlock to reach for (FR-5 sends the person to an Administrator; no story gives that Administrator a button until 1.10) and no audit entry until Story 1.12. This is the mirror image of DW-55 and the direct cost of keying the counter on the submitted address — the design note argues the other direction only. Closing it means something the requirement does not describe: a per-source-IP dimension, a shorter lock for a first offence, or an unlock surface. `README.md` now states the exposure plainly; the mitigation is a product decision.
+status: open
+
+### DW-64: FR-4's "visible to Administrators" and FR-5's recovery route are handed to Stories 1.9 and 1.10, whose acceptance clauses mention neither.
+origin: spec-deferred 462d4be7651d
+location: _bmad-output/planning-artifacts/epics.md:286-307
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: medium
+reason: `throttle.py`, `auth.py`, both READMEs and this spec all say Story 1.9 renders the lock and Story 1.10 gives an Administrator something to press. `epics.md` 1.9 (lines 286-294) asks only for active/deactivated status and a last-login timestamp; 1.10 (296-307) is scoped to name, email and role. Neither names a lock or an unlock, so as the epic stands the column ships and nothing renders it, and FR-5's "goes through an Administrator" has no owner. This story cannot widen another story's acceptance clauses, and the `User` contract work here is complete either way.
+status: open
+
+### DW-65: Every sign-in now takes two pooled connections instead of one, including the overwhelming majority that never sleep.
+origin: spec-deferred 665a05f86748
+location: apps/api/api/auth.py (login)
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: medium
+reason: `login` opens one `pool.connection()` for `attempt_state`, closes it, and opens a second for `_authenticate` whether or not `delay` is truthy. The split exists so the sleep holds nothing, which only the delayed path needs; against `POOL_MAX_SIZE = 10` and DW-34 it doubles acquisition pressure on the hottest unauthenticated path in the product to buy something the undelayed path does not use. Merging the two blocks when `delay` is falsy is straightforward, but it restructures the handler's connection lifetime around a cost nobody has measured, and CLAUDE.md is explicit that this is the order to do those things in.
+status: open
+
+### DW-66: An address holding a control character is the one rejection that is never counted, and it still spends a full Argon2id decoy each time.
+origin: spec-deferred 33025746a118
+location: apps/api/api/auth.py (_is_addressable)
+source_spec: `spec-1-6-login-rate-limiting.md`
+severity: low
+reason: `_is_addressable` refuses before the counter is ever reached — necessarily, since the counter's key *is* the string Postgres cannot accept — but it pays `verify_dummy_password` first, so appending a NUL to every guess buys unlimited unthrottled Argon2id work and leaves no row behind. The decoy predates this story; what is new is that this is now the only path with no counter behind it. There is no oracle in it (the caller already knows the address is malformed, and no account can hold one), so the exposure is CPU only, and it is the same class DW-55 records for a spray across real addresses. Dropping the decoy on this path alone would close it, but the decoy's placement is an identical-rejection decision this story should not make on its own.
+status: open

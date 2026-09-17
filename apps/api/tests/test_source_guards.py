@@ -54,9 +54,13 @@ HASHER_HOME = REPO_ROOT / "shared" / "schema" / "shared_schema" / "passwords.py"
 #: The one file allowed to read the `sessions` table (AD-3).
 SESSIONS_HOME = REPO_ROOT / "apps" / "api" / "api" / "sessions.py"
 
+#: The one file allowed to *write* the `login_attempts` table (AD-8).
+THROTTLE_HOME = REPO_ROOT / "apps" / "api" / "api" / "throttle.py"
+
 # Never spelled out in one piece. See the module docstring.
 _HASHER = "Password" + "Hasher"
 _SESSIONS = "sessions"
+_LOGIN_ATTEMPTS = "login_" + "attempts"
 
 #: A verb followed, on the same line, by an f-string or a `+`/`%` join. Matches
 #: `f"SELECT ... {value}"` and `"DELETE FROM " + table`; does not match a
@@ -86,7 +90,12 @@ def test_the_scan_reaches_the_files_it_claims_to() -> None:
     # the code rather than that the code became clean.
     sources = _sources()
     assert len(sources) > 20
-    for expected in (HASHER_HOME, SESSIONS_HOME, REPO_ROOT / "apps" / "api" / "api" / "auth.py"):
+    for expected in (
+        HASHER_HOME,
+        SESSIONS_HOME,
+        THROTTLE_HOME,
+        REPO_ROOT / "apps" / "api" / "api" / "auth.py",
+    ):
         assert expected in sources
 
 
@@ -159,6 +168,35 @@ def test_only_one_module_writes_the_sessions_table() -> None:
 
     assert offenders == [], (
         f"A session write outside {SESSIONS_HOME.relative_to(REPO_ROOT)} (AD-3): "
+        + ", ".join(offenders)
+    )
+
+
+def test_only_one_module_writes_the_login_attempts_table() -> None:
+    # AD-8: the failed-login counter is mutated by ONE atomic
+    # increment-and-check. That property is about which statements exist — an
+    # `UPDATE ... SET failure_count = %s` written somewhere else from a value
+    # read a moment earlier is the lost update AD-8 names, and it would look
+    # perfectly reasonable in the file that needed it. It survives only while
+    # every write lives in the one module somebody would think to check.
+    #
+    # Reads are deliberately **not** guarded. Story 1.9 has to join this table
+    # to render an account's lockout status, and a guard that forced that join
+    # through here would be a guard argued with rather than obeyed.
+    pattern = re.compile(
+        r"\b(?:INSERT\s+INTO\s+|UPDATE\s+|DELETE\s+FROM\s+)" + _LOGIN_ATTEMPTS + r"\b",
+        re.IGNORECASE,
+    )
+    offenders = [
+        str(path.relative_to(REPO_ROOT))
+        for path in _sources()
+        if path not in (THROTTLE_HOME, SELF)
+        and "tests" not in path.parts
+        and pattern.search(path.read_text(encoding="utf-8"))
+    ]
+
+    assert offenders == [], (
+        f"A failed-login counter write outside {THROTTLE_HOME.relative_to(REPO_ROOT)} (AD-8): "
         + ", ".join(offenders)
     )
 

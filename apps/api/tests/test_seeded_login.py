@@ -90,6 +90,10 @@ def test_the_seeded_administrator_signs_in(
     # temporary one, so even the very first sign-in is unclaimed.
     assert body["must_change_password"] is True
     assert body["temp_credential_expires_at"] is not None
+    # FR-4's status, on an account that has never failed a sign-in. Null rather
+    # than absent: the key is part of the contract on every body, and Story
+    # 1.9's user list reads it to decide whether to show "Locked".
+    assert body["locked_until"] is None
 
     rows = seeded_conn.execute("SELECT token_hash FROM sessions").fetchall()
     assert len(rows) == 1

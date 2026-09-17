@@ -21,6 +21,7 @@ EXPECTED_FIELDS = {
     "must_change_password",
     "temp_credential_expires_at",
     "last_login_at",
+    "locked_until",
     "created_at",
     "updated_at",
 }
@@ -36,6 +37,7 @@ def a_user_body(**overrides: object) -> dict[str, object]:
         "must_change_password": True,
         "temp_credential_expires_at": datetime(2026, 9, 20, 12, 0, tzinfo=UTC).isoformat(),
         "last_login_at": None,
+        "locked_until": None,
         "created_at": datetime(2026, 9, 17, 12, 0, tzinfo=UTC).isoformat(),
         "updated_at": datetime(2026, 9, 17, 12, 0, tzinfo=UTC).isoformat(),
     }
@@ -84,13 +86,35 @@ def test_the_roles_are_exactly_staff_and_administrator() -> None:
 
 
 def test_a_nullable_field_is_required_but_nullable() -> None:
-    # Required-but-nullable, so the JSON always carries all ten keys and the
+    # Required-but-nullable, so the JSON always carries all eleven keys and the
     # TypeScript twin's closed-shape check can look for them.
     body = a_user_body()
     del body["last_login_at"]
 
     with pytest.raises(ValidationError):
         User.model_validate(body)
+
+
+def test_the_lockout_status_is_required_but_nullable() -> None:
+    # FR-4's status is nullable — most accounts have never been locked — but it
+    # is not optional. Story 1.9's user list renders "Locked" from this key, and
+    # a body that simply omitted it would be indistinguishable from one saying
+    # "not locked" while the twin's closed-shape check refused the whole thing.
+    assert User.model_validate(a_user_body(locked_until=None)).locked_until is None
+
+    body = a_user_body()
+    del body["locked_until"]
+    with pytest.raises(ValidationError):
+        User.model_validate(body)
+
+
+def test_a_naive_lockout_status_is_refused() -> None:
+    # `AwareDatetime`, like every other timestamp on this model: "locked now" is
+    # `locked_until > now()`, and a value carrying no offset cannot be compared
+    # against an instant without guessing a zone. The twin's `isUtcTimestamp`
+    # rejects one too.
+    with pytest.raises(ValidationError):
+        User.model_validate(a_user_body(locked_until="2026-09-18T12:00:00"))
 
 
 def test_timestamps_are_timezone_aware() -> None:
@@ -193,6 +217,17 @@ def test_every_serialized_timestamp_is_utc_whatever_it_arrived_as(arrived_as: st
     assert datetime.fromisoformat(emitted["created_at"]) == datetime.fromisoformat(arrived_as)
 
 
+def test_a_lockout_status_is_emitted_in_utc() -> None:
+    # The serializer's field list is written out by hand, so a new timestamp
+    # added to the model and forgotten there reaches the wire in whatever offset
+    # the driver's session produced — and `isUtcTimestamp` refuses it.
+    body = a_user_body(locked_until="2026-09-18T12:00:00+05:30")
+
+    emitted = json.loads(User.model_validate(body).model_dump_json())
+
+    assert UTC_TIMESTAMP.match(emitted["locked_until"]), emitted["locked_until"]
+
+
 def test_a_serialized_user_satisfies_every_rule_the_twin_checks() -> None:
     # The round trip the key-set tests never made: what this model actually
     # emits, against the value rules `isUser` applies to it.
@@ -205,5 +240,5 @@ def test_a_serialized_user_satisfies_every_rule_the_twin_checks() -> None:
     assert emitted["role"] in {"staff", "admin"}
     for key in ("created_at", "updated_at"):
         assert UTC_TIMESTAMP.match(emitted[key]), (key, emitted[key])
-    for key in ("temp_credential_expires_at", "last_login_at"):
+    for key in ("temp_credential_expires_at", "last_login_at", "locked_until"):
         assert emitted[key] is None or UTC_TIMESTAMP.match(emitted[key])

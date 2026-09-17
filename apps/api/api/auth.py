@@ -28,11 +28,23 @@ login screen. The *gate* that makes the change unavoidable is not here — it is
 `api.dependencies.require_claimed_user`, declared by every route that serves
 real data.
 
-**Not here.** Failed-attempt counters, progressive delay and lockout are Story
-1.6 over AD-8's Postgres counters — this file adds none of them. A signed-in
-self-service change, with a current password and its own decision about
-re-authentication, is Story 1.7's endpoint: `POST /auth/password` refuses an
-already-claimed account rather than quietly becoming it. And none of this is
+**A sign-in is throttled before it is processed.** FR-4: a progressive delay
+from the 6th failure and a lockout on the 10th. The counter lives in
+`api.throttle` — AD-8's Postgres row, one atomic increment-and-check — and is
+keyed on the **submitted address**, never on `users.id`, because a ladder
+attached to an account is an account-existence oracle and would undo the
+identical-rejection rule above. The lockout is therefore the one rejection this
+endpoint is allowed to word differently: it is reachable identically for a real
+address and an invented one, so it leaks nothing, and EXPERIENCE.md requires
+the screen to say something other than "email or password is incorrect".
+
+**Not here.** A signed-in self-service change, with a current password and its
+own decision about re-authentication, is Story 1.7's endpoint:
+`POST /auth/password` refuses an already-claimed account rather than quietly
+becoming it. That endpoint is also **not** throttled (DW-40) — epics.md scopes
+Story 1.6 to login. There is no unlock surface either: the lock expires on its
+own, FR-5 sends a locked-out user to an Administrator, and Story 1.10 is what
+gives that Administrator something to press. And none of this is
 audited yet — AGENTS.md Policy requires the append-only audit log to cover
 logins, and that log arrives with Story 1.12, which owes both this endpoint and
 the login above their entries. Until then a sign-in leaves only `last_login_at`
@@ -42,6 +54,7 @@ behind and a password change leaves only `updated_at`.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Annotated
 
 # Imported for real, not under TYPE_CHECKING: FastAPI resolves a handler's
@@ -50,6 +63,7 @@ from typing import Annotated
 import psycopg
 from argon2.exceptions import InvalidHashError
 from fastapi import APIRouter, Cookie, Depends, Response, status
+from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 from shared_schema.errors import ApiError
 from shared_schema.passwords import (
@@ -61,7 +75,7 @@ from shared_schema.passwords import (
 )
 from shared_schema.user import User
 
-from api.db import get_connection
+from api.db import get_connection, get_pool
 from api.dependencies import (
     AUTH_CHALLENGE,
     NO_STORE,
@@ -78,6 +92,7 @@ from api.sessions import (
     issue_session,
     set_session_cookie,
 )
+from api.throttle import attempt_state, clear_failures, record_failure
 
 logger = logging.getLogger("rocell.api.auth")
 
@@ -104,6 +119,33 @@ WEAK_PASSWORD = "weak_password"
 #: self-service change, and it needs a current password this endpoint
 #: deliberately does not ask for.
 PASSWORD_CHANGE_NOT_REQUIRED = "password_change_not_required"
+
+#: FR-4's lockout, and the **one** rejection this endpoint is allowed to word
+#: differently from `INVALID_CREDENTIALS`.
+#:
+#: That is not a hole in the identical-rejection rule, because the branch is
+#: reachable in exactly the same way for an address with an account and for one
+#: without: `api.throttle`'s counter is keyed on the address the caller
+#: submitted, so ten failures against an invented address produce this same
+#: response at the same attempt. It therefore distinguishes *how many times you
+#: have failed*, which the caller already knows, and not *whether this account
+#: exists*, which is the thing the rule protects.
+#:
+#: Distinct from `unauthorized` because the client's answer is different:
+#: retyping the password will not help, so the screen must not mark either
+#: field invalid or wipe what was typed. EXPERIENCE.md's Login-lockout row
+#: requires the different message.
+ACCOUNT_LOCKED = "account_locked"
+
+#: What a locked-out caller is told. EXPERIENCE.md's register — short, factual,
+#: no exclamation mark — and deliberately **naming no duration**: the same row
+#: forbids a countdown, and the progressive delay has already been telling this
+#: caller for four attempts that something is slowing them down. The
+#: `Retry-After` header carries the number for a machine; nothing renders it.
+#:
+#: It says "this account" and not "your account": the address may well not be
+#: one, and the sentence has to be true either way.
+ACCOUNT_LOCKED_MESSAGE = "Too many sign-in attempts. This account is temporarily locked."
 
 #: The two states above, as the sentences the caller is shown.
 ALREADY_CLAIMED = "This account already has a password of its own."
@@ -161,7 +203,8 @@ UPDATE users
        updated_at = now()
  WHERE id = %s
 RETURNING id, name, email, role, active, must_change_password,
-          temp_credential_expires_at, last_login_at, created_at, updated_at
+          temp_credential_expires_at, last_login_at, locked_until,
+          created_at, updated_at
 """
 
 
@@ -221,6 +264,77 @@ def _rejected() -> ApiError:
     )
 
 
+def _locked(retry_after: int) -> ApiError:
+    """The lockout refusal. Beside `_rejected()`, and deliberately not part of it.
+
+    `429`, not `401`: nothing is wrong with the credential — it was not even
+    looked at — and a `401` would send `apps/web` to re-ask for one, which is
+    the opposite of what has to happen. It carries no `WWW-Authenticate`
+    challenge for the same reason: there is no credential that would work right
+    now.
+
+    `Retry-After` is machine-facing. RFC 9110 defines it on a 429, a client that
+    reads it can back off properly, and `apps/web` deliberately does not render
+    it — EXPERIENCE.md forbids a countdown on the login screen.
+
+    `NO_STORE` like every other response from this module: a shared shop-floor
+    tablet behind a caching proxy must not serve one person's lockout to the
+    next.
+    """
+    return ApiError(
+        ACCOUNT_LOCKED,
+        ACCOUNT_LOCKED_MESSAGE,
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        headers={"Retry-After": str(retry_after), **NO_STORE},
+    )
+
+
+def _count_and_refuse(conn: psycopg.Connection, email_key: str) -> ApiError:
+    """Record this failed attempt and build the refusal it has earned.
+
+    Every rejection path in `login` below goes through here, so "a failure is
+    counted" is a property of the one place the refusal is constructed rather
+    than of six `raise` statements agreeing with each other — the same argument
+    `_rejected()` itself is built on.
+
+    Returns rather than raises, so every call site still reads `raise ...` and
+    a path that forgot to raise is a visible mistake rather than a silently
+    continued handler.
+
+    **A counter write that fails does not fail the sign-in.** The credential was
+    already wrong; answering `500` for it would make a database fault into a
+    different response for one attempt than for every other, which is exactly
+    the signal this endpoint is built to remove. It fails in the safe direction
+    — the attempt goes uncounted, the rejection stands — and it is logged,
+    because a counter that never records anything is FR-4 silently absent. The
+    precedent is `login`'s own swallowed session sweep.
+    """
+    try:
+        state = record_failure(conn, email_key)
+    except psycopg.Error:
+        logger.warning(
+            "the failed-attempt counter could not be written; the rejection itself stands",
+            exc_info=True,
+        )
+        return _rejected()
+
+    if state.locked:
+        return _locked(state.retry_after())
+    return _rejected()
+
+
+class _SignInVanished(Exception):
+    """The user row disappeared between the credential read and the login write.
+
+    Raised and caught inside `login` alone. It exists because that failure is
+    discovered *inside* the sign-in transaction, and the failure has to be
+    counted like every other — but a `record_failure` issued in there would be
+    rolled back by the very `raise` that reports it. Unwinding the transaction
+    first and counting afterwards is the only order that leaves both the
+    transaction clean and the attempt recorded.
+    """
+
+
 def _weak_password(rule: str) -> ApiError:
     """Refuse a password, naming the rule it broke.
 
@@ -242,7 +356,7 @@ def _weak_password(rule: str) -> ApiError:
 def login(
     payload: LoginRequest,
     response: Response,
-    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    pool: Annotated[ConnectionPool, Depends(get_pool)],
     rocell_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
 ) -> User:
     """Verify a credential, issue a session, and return the signed-in `User`.
@@ -251,6 +365,21 @@ def login(
     Argon2id verification is CPU-bound for ~100ms. FastAPI runs a sync endpoint
     in its threadpool, so neither blocks the event loop; an `async def` around
     the same calls would block every other request in the process.
+
+    **This is the one handler in the product that takes the pool rather than a
+    connection**, and the reason is FR-4's delay. `Depends(get_connection)`
+    checks a connection out before the body runs and returns it in the
+    dependency's teardown, so a `time.sleep` anywhere in here would hold one for
+    the whole ladder. `api.db` caps the pool at `POOL_MAX_SIZE` (10) with a
+    `POOL_TIMEOUT_SECONDS` (10s) wait, so ten throttled sign-ins sleeping at
+    once would empty the pool and every other request in the product — not just
+    login — would start failing on pool acquisition. An attacker primes that
+    with five cheap failures per address, which makes the throttle itself the
+    denial of service it exists to prevent.
+
+    So the body takes two short-lived connections with the sleep *between*
+    them: the counter read in the first, the credential work and the sign-in in
+    the second. Nothing is checked out while this handler waits.
     """
     response.headers.update(NO_STORE)
 
@@ -266,16 +395,105 @@ def login(
         # one class of input and 401 for every other. Nothing that contains one
         # is an address, so it is refused here — through the same decoy work and
         # the same rejection, so it stays indistinguishable like the rest.
+        #
+        # Uncounted, and necessarily so: the counter's key *is* this string, and
+        # it is the one string that cannot be sent to Postgres at all. Nothing is
+        # lost by it — an attacker who appends a NUL to every guess never reaches
+        # the credential check either, so the attempts this skips are attempts
+        # that could not have succeeded.
         verify_dummy_password(payload.password)
         raise _rejected()
 
+    # FR-4, before anything is spent on the credential. Read from the counter
+    # keyed on the address *as submitted* — see `api.throttle` for why it is
+    # never keyed on `users.id`.
+    #
+    # Its own connection, given back at the end of this block. Everything this
+    # handler does between here and the credential read is arithmetic on
+    # `state`, and holding a connection through it is what the docstring above
+    # refuses to do.
+    with pool.connection() as conn:
+        state = attempt_state(conn, email)
+
+        if state.locked:
+            # Refused outright, and refused *here*: no Argon2id work, no counter
+            # write, no sleep, and no credential read. A locked address costs the
+            # server one indexed lookup however many times it is tried, which is
+            # the point of locking it — and a correct password gets this same
+            # answer, because the lock wins over the credential.
+            raise _locked(state.retry_after())
+
+    # The progressive delay, paid *before* the credential is read or hashed, so
+    # it is a delay on processing the attempt rather than on answering it, and
+    # paid **outside** both connection blocks — see the docstring.
+    #
+    # `time.sleep` in a sync handler: FastAPI runs this endpoint in its
+    # threadpool, so the event loop is untouched, and with no connection held
+    # the only resource this occupies is one of Starlette's 40 threadpool
+    # workers. `MAX_DELAY` still caps the ladder, and is still worth having —
+    # it bounds how long an attacker can pin a worker — but it is no longer
+    # standing between a throttled attempt and the connection pool, and it is
+    # not an answer to DW-34, which remains open for the threadpool/pool size
+    # mismatch on its own terms.
+    #
+    # A `Retry-After` refusal instead would be a different behaviour, not a
+    # delayed one, and epics.md 1.6 asks for a delay.
+    #
+    # Paid on a *correct* credential too. Skipping it there would make the delay
+    # a password oracle: a fast answer on the sixth attempt would mean the
+    # guess was right before the session cookie ever arrived.
+    delay = state.delay()
+    if delay:
+        time.sleep(delay.total_seconds())
+
+    with pool.connection() as conn:
+        if delay:
+            # The state above was read before the sleep, so on a delayed attempt
+            # it is up to `MAX_DELAY` old — and the attempts that put this one on
+            # the ladder in the first place are, by definition, still arriving.
+            # One of them can write the lock while this request is asleep, and
+            # without this re-read that request would go on to spend a full
+            # Argon2id verify on a locked address and, if the credential happened
+            # to be correct, be issued a session and then *delete the counter row
+            # the lock lives in* — ending everyone else's lockout with it. The
+            # matrix is unambiguous that the lock wins over the credential, so it
+            # has to be re-asked after the wait rather than before it.
+            #
+            # Only on a delayed attempt: an undelayed one acts on a state read
+            # microseconds earlier, which is the same window every other
+            # statement in this handler already runs in, and paying a second
+            # lookup on every ordinary sign-in to close it would buy nothing.
+            state = attempt_state(conn, email)
+            if state.locked:
+                raise _locked(state.retry_after())
+
+        return _authenticate(conn, response, payload, email, rocell_session)
+
+
+def _authenticate(
+    conn: psycopg.Connection,
+    response: Response,
+    payload: LoginRequest,
+    email: str,
+    rocell_session: str | None,
+) -> User:
+    """The credential half of `login`, on a connection taken after the delay.
+
+    Split out for one reason: `login` must not hold a connection across its
+    sleep, and a second `with pool.connection()` block wrapping the whole of
+    this would re-indent it under a context manager that has nothing to do with
+    what it is doing. The ordering inside is unchanged from Story 1.3 —
+    `_SELECT_CREDENTIAL`, the verify, the `active` and `credential_expired`
+    checks, `_RECORD_LOGIN`, `issue_session`, the swallowed sweep — and every
+    rejection is still the one `_rejected()` builds.
+    """
     row = conn.execute(_SELECT_CREDENTIAL, (email,)).fetchone()
 
     if row is None:
         # No account: spend the same Argon2id work a real verify would, so the
         # response time does not tell the caller the address is unknown (DW-24).
         verify_dummy_password(payload.password)
-        raise _rejected()
+        raise _count_and_refuse(conn, email)
 
     try:
         verified = verify_password(row["password_hash"], payload.password)
@@ -295,15 +513,15 @@ def login(
         # thing the identical-rejection rule is for. The decoy pays the
         # difference.
         verify_dummy_password(payload.password)
-        raise _rejected() from None
+        raise _count_and_refuse(conn, email) from None
 
     if not verified:
-        raise _rejected()
+        raise _count_and_refuse(conn, email)
 
     # Both checks below come *after* a real verify, so they cost the same as a
     # wrong password by construction — no decoy is needed on these two paths.
     if not row["active"]:
-        raise _rejected()
+        raise _count_and_refuse(conn, email)
 
     # AGENTS.md Policy gives an admin-issued temporary credential 72 hours,
     # without exception, and this endpoint is the only place a credential is
@@ -311,26 +529,61 @@ def login(
     # forced-change *screen* — would ship a window in which an expired
     # credential authenticates.
     if row["must_change_password"] and row["credential_expired"]:
-        raise _rejected()
+        raise _count_and_refuse(conn, email)
 
-    with conn.transaction():
-        user_row = conn.execute(_RECORD_LOGIN, (row["id"],)).fetchone()
-        if user_row is None:
-            # Deleted between the credential read and this write. Rare, and the
-            # alternative is `User.model_validate(None)` raising a 500 after the
-            # password has already been verified — an answer no other outcome of
-            # this endpoint gives.
-            raise _rejected()
-        # The cookie this request arrived with is about to be overwritten, so
-        # its row would otherwise stay live and unreachable until one of its two
-        # deadlines caught it: the browser can no longer present it, logout only
-        # revokes the cookie it is given, and nothing in the product revokes a
-        # user's sessions in bulk on their behalf. Signing in again is the one
-        # moment the old token is still in hand, so it is spent here. This ends
-        # exactly the session this browser was holding, and no other device is
-        # touched.
-        delete_session(conn, rocell_session)
-        raw_token = issue_session(conn, row["id"])
+    try:
+        with conn.transaction():
+            user_row = conn.execute(_RECORD_LOGIN, (row["id"],)).fetchone()
+            if user_row is None:
+                # Deleted between the credential read and this write. Rare, and
+                # the alternative is `User.model_validate(None)` raising a 500
+                # after the password has already been verified — an answer no
+                # other outcome of this endpoint gives. Reported out of the
+                # transaction rather than refused inside it, so the failure can
+                # be counted like every other: see `_SignInVanished`.
+                raise _SignInVanished
+            # The cookie this request arrived with is about to be overwritten,
+            # so its row would otherwise stay live and unreachable until one of
+            # its two deadlines caught it: the browser can no longer present it,
+            # logout only revokes the cookie it is given, and nothing in the
+            # product revokes a user's sessions in bulk on their behalf. Signing
+            # in again is the one moment the old token is still in hand, so it
+            # is spent here. This ends exactly the session this browser was
+            # holding, and no other device is touched.
+            delete_session(conn, rocell_session)
+            raw_token = issue_session(conn, row["id"])
+            # The run of failures ends here, in the same transaction as the
+            # sign-in that ended it: a session issued while the counter still
+            # held nine failures would leave the next mistyped password locking
+            # an account whose owner has just proved they are its owner. If the
+            # transaction unwinds, the count stands — which is the safe
+            # direction.
+            #
+            # On a savepoint, because this is the last counter write in the
+            # product that could still fail a request. `record_failure`, the
+            # status mirror and both sweeps all swallow `psycopg.Error` so a
+            # fault in the counter never decides the response; unguarded here,
+            # a statement timeout or a lost connection on this one `DELETE`
+            # would roll back the whole block and answer 500 to a *correct*
+            # password, leaving the user with no cookie and the count still at
+            # nine — strictly worse than the outcome below, which keeps the
+            # session and leaves the count exactly where the unguarded version
+            # would have left it too. The nested `conn.transaction()` is a
+            # SAVEPOINT: it unwinds the delete alone and the sign-in above
+            # commits.
+            try:
+                with conn.transaction():
+                    clear_failures(conn, email)
+            except psycopg.Error:
+                logger.warning(
+                    "the failure counter could not be cleared; the sign-in itself stands",
+                    exc_info=True,
+                )
+    except _SignInVanished:
+        # The transaction has already rolled back, so the counter write below is
+        # the first statement of a fresh autocommit sequence and will not be
+        # undone with it.
+        raise _count_and_refuse(conn, email) from None
 
     # The token leaves in the cookie and nowhere else — never in this body,
     # never anywhere page script can read it (AGENTS.md Policy, AD-3). Set
@@ -477,7 +730,8 @@ UPDATE users
  WHERE id = %s
    AND must_change_password
 RETURNING id, name, email, role, active, must_change_password,
-          temp_credential_expires_at, last_login_at, created_at, updated_at
+          temp_credential_expires_at, last_login_at, locked_until,
+          created_at, updated_at
 """
 
 

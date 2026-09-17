@@ -45,9 +45,13 @@ half-applied.
 separate steps and nothing enforces their order: `api.sessions` names
 `last_seen_at` in three of its statements, so a revision that ships ahead of
 `20260917T1400_track_session_activity` fails *every authenticated request and
-every sign-in* on an undefined column for the length of the gap. A rollback is
-the same requirement mirrored — roll the application back first, then step the
-schema down, or the running code loses a column it is still selecting.
+every sign-in* on an undefined column for the length of the gap.
+`20260918T1000_add_login_throttling` is the same requirement again and wider —
+`api.throttle` names `login_attempts` in all four of its statements, and
+`users.locked_until` is selected by `api.sessions` and returned by both of
+`api.auth`'s writes. A rollback is the requirement mirrored — roll the
+application back first, then step the schema down, or the running code loses a
+table and a column it is still selecting.
 
 ### What is in `migrations/` today
 
@@ -57,6 +61,43 @@ schema down, or the running code loses a column it is still selecting.
 | `20260917T1210_seed_administrator` | the one seeded Administrator (a marker, see below) |
 | `20260917T1300_create_sessions` | the `sessions` table — the architecture spine's `SESSION` ERD block, with `ON DELETE CASCADE` from `users` so deleting an account ends its sessions rather than orphaning them, a unique index on `token_hash` and an index on `user_id` |
 | `20260917T1400_track_session_activity` | `sessions.last_seen_at` — the idle half of a session's two deadlines (see below). No index on it, on purpose |
+| `20260918T1000_add_login_throttling` | the `login_attempts` table — FR-4's failed-sign-in counter, keyed on the **submitted address** and never on `users.id` — plus `users.locked_until`, which mirrors a lock onto the account's status and is never read to decide anything. No index on either, on purpose (see below) |
+
+### The login throttle
+
+`login_attempts` holds one row per address that has failed a sign-in recently.
+The delay starts at the 6th consecutive attempt — the first one made after
+five failures are already recorded — and the 10th failure locks the address
+out for 15 minutes; the lock clears itself, and **no unlock command exists** —
+`make migrate` has no counterpart for it and none is owed until Story 1.10
+gives an Administrator a way to edit a user. Waiting it out is the recovery,
+and it resets the run, so the ladder is available again from the start.
+
+The key is the address as typed, lowercased and stripped — not an account.
+An address that has never been a user accrues the same count, the same delays
+and the same lock, which is what stops the ladder being a way to find out which
+addresses are accounts. Two consequences for an operator: rows exist for
+addresses that are not users and are expected, and a lock says nothing about a
+person until you look at the account.
+
+`users.locked_until` is the mirror, written on the failure that locks and never
+cleared. A value in the past means "locked recently, not locked now". Nothing
+enforces from it — `apps/api` reads `login_attempts` for every decision it
+makes — so editing it changes what an Administrator sees and nothing else.
+
+Neither object carries an index. The primary key serves every read; the only
+scan is the sweep, which runs on each failed attempt and deletes rows older
+than an hour that are not under a live lock. That bounds the table's growth
+over time — it does **not** bound its size during an attack. A guessing run
+against a dictionary of addresses leaves a row per address that the sweep
+cannot touch for an hour, and each failed attempt in the meantime scans them,
+because `last_failure_at` is unindexed and the sweep's `LIMIT` bounds the rows
+it returns rather than the rows it reads.
+
+That is accepted on a bet about the steady-state row count, the same one
+`sessions.last_seen_at` states. If you see the table grow, or see a run against
+invented addresses, measure before adding an index on `last_failure_at` — it
+would be paid on every failed sign-in.
 
 ### A session's two deadlines
 

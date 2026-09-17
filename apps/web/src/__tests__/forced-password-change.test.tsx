@@ -41,6 +41,7 @@ const UNCLAIMED: User = {
   must_change_password: true,
   temp_credential_expires_at: '2026-09-20T08:00:00Z',
   last_login_at: '2026-09-17T08:00:00Z',
+  locked_until: null,
   created_at: '2026-09-17T08:00:00Z',
   updated_at: '2026-09-17T08:00:00Z',
 };

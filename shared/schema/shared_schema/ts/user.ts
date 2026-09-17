@@ -26,6 +26,17 @@ export interface User {
   temp_credential_expires_at: string | null;
   /** ISO 8601 UTC, or null when the account has never signed in. */
   last_login_at: string | null;
+  /**
+   * FR-4's lockout, as an Administrator sees it on the account's status.
+   *
+   * **Status, never enforcement.** "Locked now" is `locked_until > now()`; a
+   * value in the *past* means the account was locked recently and is not locked
+   * any more, and the column is never cleared, so it is history as much as
+   * state. Nothing decides anything from it — the API's login throttle keeps
+   * its own counter and only mirrors the decision here — so a screen renders it
+   * and never gates on it. Null when the account has never been locked.
+   */
+  locked_until: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -38,7 +49,11 @@ export interface User {
 const REQUIRED_STRING_KEYS = ['name', 'email'] as const;
 const BOOLEAN_KEYS = ['active', 'must_change_password'] as const;
 const TIMESTAMP_KEYS = ['created_at', 'updated_at'] as const;
-const NULLABLE_TIMESTAMP_KEYS = ['temp_credential_expires_at', 'last_login_at'] as const;
+const NULLABLE_TIMESTAMP_KEYS = [
+  'temp_credential_expires_at',
+  'last_login_at',
+  'locked_until',
+] as const;
 
 const CONTRACT_KEYS: readonly (keyof User)[] = [
   'id',

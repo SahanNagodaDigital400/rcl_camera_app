@@ -12,6 +12,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ACCOUNT_LOCKED,
   API_PREFIX,
   ApiRequestError,
   MALFORMED_RESPONSE,
@@ -19,6 +20,7 @@ import {
   REQUEST_TIMEOUT_MS,
   TIMEOUT,
   apiRequest,
+  onUnauthorized,
 } from '../api/client';
 
 afterEach(() => {
@@ -179,6 +181,56 @@ describe('the API client', () => {
     await apiRequest('/auth/login', { method: 'POST', body: { email: 'a@b.lk' } });
 
     expect(seen[0]?.headers).toEqual({ 'content-type': 'application/json' });
+  });
+
+  it('does not treat a lockout as the session ending', async () => {
+    // FR-4's refusal is a 429, and the session observer keys off the **401
+    // status** — deliberately, so a proxy answering 401 with its own HTML still
+    // counts. Widen that condition to `!response.ok`, or key it off the
+    // envelope code, and a locked-out staff member sees the shell drop to
+    // "Your session has ended" over a session that is perfectly alive, with
+    // their typed password wiped by a notice that is simply untrue.
+    //
+    // `client.ts`'s comment on `ACCOUNT_LOCKED` makes exactly this claim; this
+    // is what holds it.
+    const told: string[] = [];
+    const deregister = onUnauthorized(() => told.push('session ended'));
+    stubReply(429, {
+      error: { code: ACCOUNT_LOCKED, message: 'This account is temporarily locked.' },
+    });
+
+    try {
+      const code = await apiRequest('/auth/login', {
+        method: 'POST',
+        body: { email: 'a@b.lk', password: 'x' },
+      }).then(
+        () => 'resolved',
+        (failure: unknown) => (failure instanceof ApiRequestError ? failure.code : 'other'),
+      );
+
+      // The caller still gets its own rejection, carrying the API's code...
+      expect(code).toBe(ACCOUNT_LOCKED);
+      // ...and nothing was told the session ended.
+      expect(told).toEqual([]);
+    } finally {
+      deregister();
+    }
+  });
+
+  it('still tells the observer when a 401 arrives', async () => {
+    // The other half of the pair. Without it, the test above passes if the
+    // observer is deleted outright.
+    const told: string[] = [];
+    const deregister = onUnauthorized(() => told.push('session ended'));
+    stubReply(401, { error: { code: 'unauthorized', message: 'Not signed in.' } });
+
+    try {
+      await apiRequest('/auth/session').catch(() => undefined);
+
+      expect(told).toEqual(['session ended']);
+    } finally {
+      deregister();
+    }
   });
 
   it('sends every request to the API behind its one prefix', async () => {

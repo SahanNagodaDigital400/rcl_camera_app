@@ -63,6 +63,27 @@ export const PASSWORD_CHANGE_REQUIRED = 'password_change_required';
  */
 export const PASSWORD_CHANGE_NOT_REQUIRED = 'password_change_not_required';
 
+/**
+ * The envelope code for "too many failed sign-ins against this address".
+ *
+ * Deliberately **not** `unauthorized`, and the distinction is behavioural, not
+ * cosmetic: the credential is not what was refused — it was never looked at —
+ * so nothing the user typed is at fault. The login screen therefore marks
+ * neither field invalid, keeps the typed password and leaves focus alone, which
+ * is the same treatment it gives a network failure and the opposite of what it
+ * does to a rejected credential.
+ *
+ * It also arrives as a `429`, so `notifyUnauthorized` does not fire for it: the
+ * session observer keys off the 401 status, and a lockout is not a session
+ * ending.
+ *
+ * **No countdown is ever rendered from it.** The API sends `Retry-After`
+ * alongside this code; that header is machine-facing, and EXPERIENCE.md's
+ * Login-lockout row is explicit that the screen shows the message without one.
+ * The API's own sentence is the whole of what the user is told.
+ */
+export const ACCOUNT_LOCKED = 'account_locked';
+
 /** The code this module invents when the request never reached the API. */
 export const NETWORK_ERROR = 'network_error';
 

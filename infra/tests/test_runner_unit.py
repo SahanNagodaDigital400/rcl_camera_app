@@ -38,6 +38,7 @@ def test_the_repository_migrations_are_a_valid_plan() -> None:
         "20260917T1210_seed_administrator",
         "20260917T1300_create_sessions",
         "20260917T1400_track_session_activity",
+        "20260918T1000_add_login_throttling",
     ]
     assert all(migration.up_path.is_file() for migration in plan)
     assert all(migration.down_path.is_file() for migration in plan)

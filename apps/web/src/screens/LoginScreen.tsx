@@ -1,7 +1,7 @@
 import { useId, useRef, useState } from 'react';
 import type { FormEvent, JSX } from 'react';
 
-import { ApiRequestError, UNAUTHORIZED } from '../api/client';
+import { ACCOUNT_LOCKED, ApiRequestError, UNAUTHORIZED } from '../api/client';
 import { useSession } from '../auth/SessionProvider';
 import { MAIN_REGION_ID } from '../components/AppShell';
 import styles from './LoginScreen.module.css';
@@ -76,6 +76,49 @@ function missingFields(email: string, password: string): FormError | null {
   return { message, fields: blank };
 }
 
+/** A failed sign-in, and whether the user has to retype the password. */
+interface Rejection {
+  error: FormError;
+  retype: boolean;
+}
+
+/**
+ * Turn a failed `signIn` into what the screen shows and does about it.
+ *
+ * Branched on the API's own **code**, never on the status: a 401 and a 429 are
+ * different situations, and a later screen keying off `status >= 400` would
+ * collapse them back together. Three outcomes:
+ *
+ * - `unauthorized` — the credential was refused. Both fields are marked, the
+ *   password is wiped and focus returns to it, because retyping it is the
+ *   thing that might work.
+ * - `account_locked` — FR-4's throttle. Nothing the user typed was even looked
+ *   at, so neither field is marked, what they typed survives, and focus stays
+ *   where it is: the same treatment a network failure gets, and the opposite of
+ *   a refused credential. **No countdown**, in any form — EXPERIENCE.md's
+ *   Login-lockout row forbids one, and the API's `Retry-After` header is for a
+ *   machine. The server's own sentence is the whole of what is shown.
+ * - anything else — a timeout, an unreachable server, or a body that was not
+ *   the shared envelope. Nothing the user typed is at fault there either.
+ *
+ * The message is always the API's, so the screen cannot say more than the
+ * server did.
+ */
+function rejectionFor(failure: unknown): Rejection {
+  if (!(failure instanceof ApiRequestError)) {
+    return { error: { message: UNEXPECTED, fields: [] }, retype: false };
+  }
+
+  switch (failure.code) {
+    case UNAUTHORIZED:
+      return { error: { message: failure.message, fields: BOTH_FIELDS }, retype: true };
+    case ACCOUNT_LOCKED:
+      return { error: { message: failure.message, fields: [] }, retype: false };
+    default:
+      return { error: { message: failure.message, fields: [] }, retype: false };
+  }
+}
+
 export function LoginScreen(): JSX.Element {
   const { signIn, sessionEnded } = useSession();
   const emailId = useId();
@@ -113,23 +156,17 @@ export function LoginScreen(): JSX.Element {
       // No navigation and no success state: the shell replaces this screen as
       // soon as the session context reports `signed-in`.
     } catch (failure) {
-      // The API's own message for a rejection, so the screen cannot say more
-      // than the server did. The *code* is what decides whether a field is at
-      // fault: a rejected credential is the user's to fix, a timeout or an
-      // unreachable server is not, and marking both inputs invalid for the
-      // latter would be a lie told to assistive technology.
-      const rejected = failure instanceof ApiRequestError && failure.code === UNAUTHORIZED;
-      setError({
-        message: failure instanceof ApiRequestError ? failure.message : UNEXPECTED,
-        fields: rejected ? BOTH_FIELDS : [],
-      });
-      if (rejected) {
+      // What to show, and whether anything the user typed was at fault, is
+      // decided in one place — see `rejectionFor`.
+      const { error: rejection, retype } = rejectionFor(failure);
+      setError(rejection);
+      if (retype) {
         // Only the password, and only when the credential is what was refused.
         // Retyping an address that was almost certainly correct is a punishment
         // for a typo elsewhere — and wiping a *correct* password because the
-        // Wi-Fi dropped says the opposite of what `fields: []` just told
-        // assistive technology. On a timeout or an unreachable server the form
-        // keeps what the user typed, and the retry costs one keystroke.
+        // Wi-Fi dropped, or because the account is throttled, says the opposite
+        // of what `fields: []` just told assistive technology. In those cases
+        // the form keeps what the user typed, and the retry costs one click.
         setPassword('');
         // Focus stays in the form, on the field the user has to retype.
         passwordRef.current?.focus();

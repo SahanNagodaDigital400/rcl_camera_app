@@ -20,6 +20,7 @@ function aUser(overrides: Record<string, unknown> = {}): Record<string, unknown>
     must_change_password: true,
     temp_credential_expires_at: '2026-09-20T12:00:00Z',
     last_login_at: null,
+    locked_until: null,
     created_at: '2026-09-17T12:00:00Z',
     updated_at: '2026-09-17T12:00:00Z',
     ...overrides,
@@ -109,6 +110,8 @@ describe('the shared User', () => {
     ['an updated_at with no UTC designator', { updated_at: '2026-09-17T12:00:00' }],
     ['a last_login_at that is not a timestamp', { last_login_at: 'yesterday' }],
     ['a temp_credential_expires_at that is empty', { temp_credential_expires_at: '' }],
+    ['a locked_until that is not a timestamp', { locked_until: 'in a bit' }],
+    ['a locked_until with no UTC designator', { locked_until: '2026-09-18T12:00:00' }],
   ])('rejects %s', (_label, overrides) => {
     expect(isUser(aUser(overrides))).toBe(false);
   });
@@ -128,7 +131,7 @@ describe('the shared User', () => {
   });
 
   it('checks every key the contract declares', () => {
-    expect(USER_KEYS).toHaveLength(10);
+    expect(USER_KEYS).toHaveLength(11);
     expect(new Set(Object.keys(aUser()))).toEqual(new Set(USER_KEYS));
   });
 });

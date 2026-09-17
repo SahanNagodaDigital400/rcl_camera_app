@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  ACCOUNT_LOCKED,
   PASSWORD_CHANGE_NOT_REQUIRED,
   PASSWORD_CHANGE_REQUIRED,
   UNAUTHORIZED,
@@ -48,6 +49,7 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   password_change_required: { file: 'dependencies.py', name: 'PASSWORD_CHANGE_REQUIRED' },
   weak_password: { file: 'auth.py', name: 'WEAK_PASSWORD' },
   password_change_not_required: { file: 'auth.py', name: 'PASSWORD_CHANGE_NOT_REQUIRED' },
+  account_locked: { file: 'auth.py', name: 'ACCOUNT_LOCKED' },
 };
 
 const TYPESCRIPT: Record<string, string> = {
@@ -55,6 +57,7 @@ const TYPESCRIPT: Record<string, string> = {
   password_change_required: PASSWORD_CHANGE_REQUIRED,
   weak_password: WEAK_PASSWORD,
   password_change_not_required: PASSWORD_CHANGE_NOT_REQUIRED,
+  account_locked: ACCOUNT_LOCKED,
 };
 
 describe('the envelope codes are one contract in two languages', () => {

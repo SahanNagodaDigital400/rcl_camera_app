@@ -106,6 +106,7 @@ def test_the_response_body_satisfies_the_shared_user_contract(
         "must_change_password",
         "temp_credential_expires_at",
         "last_login_at",
+        "locked_until",
         "created_at",
         "updated_at",
     }

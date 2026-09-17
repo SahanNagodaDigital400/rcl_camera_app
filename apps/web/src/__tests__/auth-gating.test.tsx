@@ -27,6 +27,7 @@ const STAFF: User = {
   must_change_password: false,
   temp_credential_expires_at: null,
   last_login_at: null,
+  locked_until: null,
   created_at: '2026-09-17T08:00:00Z',
   updated_at: '2026-09-17T08:00:00Z',
 };

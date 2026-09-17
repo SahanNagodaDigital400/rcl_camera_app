@@ -226,6 +226,7 @@ def test_the_lookup_returns_exactly_the_user_contract_and_nothing_else(
         "must_change_password",
         "temp_credential_expires_at",
         "last_login_at",
+        "locked_until",
         "created_at",
         "updated_at",
     }

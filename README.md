@@ -97,6 +97,30 @@ HTTP-only and unreadable by page script, so a freshly loaded tab genuinely canno
 session that just ended from a browser that never had one, and guessing would tell people who
 never signed in that they had been signed out.
 
+Repeated failed sign-ins are slowed down and then blocked. From the 6th attempt — the first one
+after five recorded failures — each attempt waits before it is processed, one second, then two,
+three, four, and four again, so the ladder runs out exactly as the lock arrives: the 10th failed
+attempt locks out further attempts for 15 minutes, answering a distinct message instead of "email or
+password is incorrect". **The lock clears itself; there is no admin unlock and none is owed until
+Story 1.10.** Waiting it out is the whole of the recovery, and it restores the full ladder: one
+mistyped password an hour later does not re-lock anything. A correct password is refused while the
+lock holds, and any successful sign-in clears the count outright.
+
+The counter is keyed on **the address that was typed**, not on the account, which is why an address
+that has never existed accrues exactly the same delays and the same lockout. That is deliberate: a
+ladder attached to real accounts would answer instantly for an address that is not one, and six
+wrong passwords would then be enough to tell an attacker which addresses are accounts. The cost is
+that a lockout is not proof an account exists — and that a lock on `ruwan@rocell.lk` is a lock on
+that *string*, so it says nothing about the person until you check the user list. An Administrator
+sees the lock on the account's status (`users.locked_until`); a value in the past there means
+"locked recently, not locked now".
+
+The cost runs the other way too, and it is not mitigated: a locked attempt is refused before any
+work, so anyone who knows a colleague's address can spend ten wrong guesses to hold that person out
+for fifteen minutes, then do it again. There is nothing to press and nothing to wait for but the
+clock. That is the price of a lock that does not need an account to exist, and it is the reason the
+lockout is fifteen minutes rather than a day.
+
 Nothing here is defaulted and nothing is committed: every value comes from the environment, and
 `make migrate` exits non-zero naming whatever is missing. The seeded credential expires after 72
 hours like any other admin-issued one; `make reseed-admin` reissues it while the account is still

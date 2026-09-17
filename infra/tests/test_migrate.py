@@ -35,6 +35,7 @@ SEED_VERSION = "20260917T1210_seed_administrator"
 CREATE_USERS_VERSION = "20260917T1200_create_users"
 CREATE_SESSIONS_VERSION = "20260917T1300_create_sessions"
 TRACK_ACTIVITY_VERSION = "20260917T1400_track_session_activity"
+LOGIN_THROTTLING_VERSION = "20260918T1000_add_login_throttling"
 
 #: Every migration in `infra/migrations`, in the order the runner applies
 #: them. Listed once so adding a migration is one edit here rather than a
@@ -44,6 +45,7 @@ ALL_VERSIONS = [
     SEED_VERSION,
     CREATE_SESSIONS_VERSION,
     TRACK_ACTIVITY_VERSION,
+    LOGIN_THROTTLING_VERSION,
 ]
 
 SEED_EMAIL = "ruwan@rocell.lk"
@@ -498,10 +500,11 @@ def test_the_activity_migration_upgrades_a_database_that_already_holds_sessions(
         ("nimal@rocell.lk", "a" * 64, timedelta(days=3), timedelta(days=4)),
     )
 
-    # The upgrade itself, against a populated table. This is the assertion that
-    # fails outright — not merely reports a different value — if the column is
-    # added `NOT NULL` with no default.
-    assert up(conn, plan) == [TRACK_ACTIVITY_VERSION]
+    # The upgrade itself, against a populated table, and only it — the plan is
+    # cut again so a migration added after this one does not silently ride
+    # along and make the assertion below about somebody else's DDL.
+    activity = plan[: [m.version for m in plan].index(TRACK_ACTIVITY_VERSION) + 1]
+    assert up(conn, activity) == [TRACK_ACTIVITY_VERSION]
 
     row = conn.execute(
         "SELECT last_seen_at, issued_at, now() - last_seen_at AS idle_for FROM sessions"
@@ -524,6 +527,101 @@ def test_the_activity_migration_upgrades_a_database_that_already_holds_sessions(
     assert idle_for < timedelta(hours=12)
 
 
+def test_the_throttling_migration_upgrades_a_database_that_already_holds_users(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    """The one path `20260918T1000_add_login_throttling`'s `ALTER TABLE` exists for.
+
+    Every other test in this file applies the whole plan to an empty database in
+    one go, so the `ADD COLUMN` only ever meets a `users` table with no rows —
+    which is not the table any deployed system has. The failure this guards is
+    the same one the activity migration guards, with a different cause: added
+    `NOT NULL` with no default, or with a backfill, the column either refuses
+    every existing row or declares live accounts locked. A nullable column with
+    no default is the only shape that means "this account has never been
+    locked" for a row that predates the feature.
+
+    So the plan is applied in two halves with real users written in between —
+    the seeded Administrator among them — and both properties are asserted on
+    those pre-existing rows.
+    """
+    plan = discover_migrations()
+    cut = [m.version for m in plan].index(TRACK_ACTIVITY_VERSION) + 1
+
+    # Everything up to and including the session-activity column: the shape a
+    # database deployed before this story is in.
+    assert up(conn, plan[:cut]) == [m.version for m in plan[:cut]]
+
+    conn.execute(
+        "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+        ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
+    )
+
+    # The upgrade itself, against a populated table. This is the assertion that
+    # fails outright — not merely reports a different value — if the column is
+    # added `NOT NULL` with no default.
+    #
+    # Cut at this migration rather than run to the end of the plan, for the same
+    # reason the activity test above is: a later story's migration would
+    # otherwise ride along in the return value and fail this test for a reason
+    # that has nothing to do with the `ADD COLUMN` it exists to prove.
+    through = [m.version for m in plan].index(LOGIN_THROTTLING_VERSION) + 1
+    assert up(conn, plan[:through]) == [LOGIN_THROTTLING_VERSION]
+
+    rows = conn.execute("SELECT email, locked_until FROM users ORDER BY email").fetchall()
+    # Both the seeded Administrator and the account written above, and neither
+    # of them locked by the migration that introduced the column.
+    assert len(rows) == 2
+    assert all(row[1] is None for row in rows), rows
+
+    # The counter table arrives empty, with its own constraints in force.
+    empty = conn.execute("SELECT count(*) FROM login_attempts").fetchone()
+    assert empty is not None
+    assert empty[0] == 0
+    assert table_columns(conn, "login_attempts") == {
+        "email_key",
+        "failure_count",
+        "locked_until",
+        "last_failure_at",
+    }
+
+
+def test_a_negative_failure_count_is_refused_by_the_database(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # The CHECK is the database's own copy of a rule the one statement that
+    # writes this table already keeps. It is here for the next statement
+    # somebody adds, which is exactly the statement no test will have been
+    # written for.
+    up(conn)
+
+    with pytest.raises(pg_errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO login_attempts (email_key, failure_count) VALUES (%s, %s)",
+            ("someone@rocell.lk", -1),
+        )
+
+
+def test_the_throttling_pair_round_trips(conn: psycopg.Connection, seed_password: str) -> None:
+    # Up, down, up. A `down` that drops the table but forgets the column leaves
+    # the second `up` running `ADD COLUMN IF NOT EXISTS` against a column that
+    # is still there — green, and a revert that did not revert. Asserted on the
+    # way back up rather than only on the way down, because that is the
+    # direction a deployment actually takes after a rollback.
+    up(conn)
+    assert "locked_until" in table_columns(conn, "users")
+
+    assert down(conn) == LOGIN_THROTTLING_VERSION
+    assert table_columns(conn, "login_attempts") == set()
+    assert "locked_until" not in table_columns(conn, "users")
+    assert ledger_versions(conn) == ALL_VERSIONS[:-1]
+
+    assert up(conn) == [LOGIN_THROTTLING_VERSION]
+    assert "locked_until" in table_columns(conn, "users")
+    assert table_columns(conn, "login_attempts") != set()
+    assert ledger_versions(conn) == ALL_VERSIONS
+
+
 # --- down --------------------------------------------------------------------
 
 
@@ -531,8 +629,15 @@ def test_down_reverts_one_step(conn: psycopg.Connection, seed_password: str) -> 
     up(conn)
 
     # One step is one migration: the most recently applied, and nothing behind
-    # it. The activity column goes first and `sessions` itself survives that
-    # step — proof the step really is one file and not "everything on top".
+    # it. The throttling pair goes first — both objects, and neither anything
+    # under them — proof the step really is one file and not "everything on
+    # top".
+    assert down(conn) == LOGIN_THROTTLING_VERSION
+    assert table_columns(conn, "login_attempts") == set()
+    assert "locked_until" not in table_columns(conn, "users")
+    assert "last_seen_at" in table_columns(conn, "sessions")
+
+    # Then the activity column, and `sessions` itself survives that step.
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert ledger_versions(conn) == [CREATE_USERS_VERSION, SEED_VERSION, CREATE_SESSIONS_VERSION]
     assert "last_seen_at" not in table_columns(conn, "sessions")
@@ -561,6 +666,7 @@ def test_stepping_all_the_way_down_restores_the_previous_shape(
     assert ledger_versions(conn) == []
     assert table_columns(conn, "users") == set()
     assert table_columns(conn, "sessions") == set()
+    assert table_columns(conn, "login_attempts") == set()
 
 
 def test_down_refuses_a_ledger_version_whose_files_are_gone(
@@ -607,6 +713,7 @@ def test_down_leaves_a_claimed_administrator_alone(
         ("admin",),
     )
 
+    assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
@@ -624,6 +731,7 @@ def test_down_leaves_an_administrator_who_has_signed_in_alone(
     up(conn)
     conn.execute("UPDATE users SET last_login_at = now() WHERE role = %s", ("admin",))
 
+    assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
@@ -640,6 +748,7 @@ def test_down_leaves_an_administrator_who_set_their_own_password_alone(
         ("admin",),
     )
 
+    assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
@@ -656,6 +765,7 @@ def test_down_leaves_staff_accounts_alone(conn: psycopg.Connection, seed_passwor
         ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
     )
 
+    assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
@@ -673,6 +783,7 @@ def test_down_leaves_a_second_administrator_alone(
         ("Second Admin", "second@rocell.lk", "$argon2id$placeholder", "admin"),
     )
 
+    assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
     assert down(conn) == SEED_VERSION
@@ -1229,6 +1340,9 @@ def test_main_steps_down_with_the_confirmation_flag(
 ) -> None:
     assert migrate.main(["up"]) == 0
     capsys.readouterr()
+
+    assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
+    assert LOGIN_THROTTLING_VERSION in capsys.readouterr().out
 
     assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
     assert TRACK_ACTIVITY_VERSION in capsys.readouterr().out

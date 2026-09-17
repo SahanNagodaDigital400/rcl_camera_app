@@ -40,7 +40,8 @@ class User(BaseModel):
     arriving from anywhere must be a loud failure, not a quiet drop.
 
     Nullable fields are required-but-nullable rather than optional, so the JSON
-    the API emits always carries all ten keys and the twin can check for them.
+    the API emits always carries all eleven keys and the twin can check for
+    them.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -59,12 +60,23 @@ class User(BaseModel):
     # the two halves disagree about a body pydantic had already validated.
     temp_credential_expires_at: AwareDatetime | None
     last_login_at: AwareDatetime | None
+    # FR-4's lockout, as an Administrator sees it on the account's status.
+    #
+    # **Status, never enforcement.** "Locked now" is `locked_until > now()`;
+    # a value in the past means the account was locked recently and is not
+    # locked any more, and the column is never cleared, so it is history as
+    # much as state. Nothing decides anything from it — `apps/api`'s login
+    # throttle reads its own `login_attempts` row and only mirrors its decision
+    # here. A client that treats a past value as "locked" is reading it wrong;
+    # one that treats it as authoritative is reading a copy.
+    locked_until: AwareDatetime | None
     created_at: AwareDatetime
     updated_at: AwareDatetime
 
     @field_serializer(
         "temp_credential_expires_at",
         "last_login_at",
+        "locked_until",
         "created_at",
         "updated_at",
         when_used="json",

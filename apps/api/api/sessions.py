@@ -142,6 +142,13 @@ VALUES (%s, %s, now() + %s)
 #:
 #: `role` comes back from this query every time. Nothing is cached at login.
 #:
+#: `u.locked_until` is selected because `User` carries it (FR-4's admin-facing
+#: status) and this model is `extra="forbid"` — a column missing here is a 500
+#: on every authenticated request, not a missing field. It is **not** a
+#: condition: a live session is not ended by a lockout. FR-4 blocks *attempts*;
+#: Story 1.11's deactivation is what ends sessions, and `api.throttle` reads
+#: `login_attempts` rather than this column for every decision it makes.
+#:
 #: The two trailing columns are not `User` fields and must not reach it —
 #: `User` is `extra="forbid"`. `lookup_session` pops them off the row. They are
 #: here rather than in a second query because AD-3 permits exactly one read of
@@ -149,7 +156,8 @@ VALUES (%s, %s, now() + %s)
 #: database clock the bounds above are already measured against.
 _SELECT_SESSION = """
 SELECT u.id, u.name, u.email, u.role, u.active, u.must_change_password,
-       u.temp_credential_expires_at, u.last_login_at, u.created_at, u.updated_at,
+       u.temp_credential_expires_at, u.last_login_at, u.locked_until,
+       u.created_at, u.updated_at,
        s.id AS session_id,
        (s.last_seen_at <= now() - %s) AS needs_touch
   FROM sessions s
