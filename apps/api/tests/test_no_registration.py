@@ -137,21 +137,27 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_four_auth_routes_and_health() -> None:
+def test_the_route_table_is_the_five_auth_routes_and_health() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
     #
     # `/auth/password` sets a password on an *existing* account signed in on an
-    # admin-issued temporary credential (Story 1.4). It creates nothing, and
-    # `test_forced_change_gate.py` holds the same table to the forced-change
-    # allowlist.
+    # admin-issued temporary credential (Story 1.4). `/auth/password/change` is
+    # the signed-in self-service change (Story 1.7, FR-5): it takes the caller's
+    # current password, refuses an account that has not yet claimed its
+    # temporary credential, and — like the other — creates nothing. Neither is a
+    # way to bring an account into existence, and neither is reachable without a
+    # session. `test_forced_change_gate.py` holds the same table to the
+    # forced-change allowlist, and `test_no_password_reset.py` holds it to FR-5's
+    # "no self-service option for a signed-out user".
     assert {path for path, _ in _routes()} == {
         "/health",
         "/auth/login",
         "/auth/session",
         "/auth/logout",
         "/auth/password",
+        "/auth/password/change",
     }
 
 

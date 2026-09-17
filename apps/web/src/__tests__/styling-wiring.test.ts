@@ -184,6 +184,47 @@ describe('the app bar paints the colours DESIGN.md specifies', () => {
   it('stripes the bottom edge with the accent', () => {
     expect(declaration(rule(css(), '.stripe'), 'background')).toBe('var(--color-accent)');
   });
+
+  it('leaves both trailing controls outlined, never filled', () => {
+    // DESIGN.md gives the accent-filled primary to the one action a screen is
+    // for. The bar is on every authenticated screen, so an accent control here
+    // is a second primary on all of them — and nothing could see it:
+    // `app-shell.test.tsx` reads the label and the decorative icon, and
+    // `vite.config.ts` sets `css: false`, so jsdom has no computed style.
+    for (const name of ['.account', '.signOut']) {
+      const control = rule(css(), name);
+
+      expect(declaration(control, 'background'), name).toBe('transparent');
+      expect(declaration(control, 'color'), name).toBe('var(--color-primary-foreground)');
+      expect(declaration(control, 'border'), name).toBe(
+        'var(--border-hairline) solid var(--color-primary-foreground)',
+      );
+    }
+  });
+
+  it('paints nothing but the stripe with the accent', () => {
+    const accents = [...css().matchAll(/var\(--color-accent\)/g)];
+
+    expect(accents).toHaveLength(1);
+  });
+
+  it('makes the brand the element that gives way on a phone', () => {
+    // The 375px overflow fix, and the one regression in this file that a render
+    // test cannot see: jsdom performs no layout, so with `min-width: 0` deleted
+    // every button is still in the document, still in order, still clickable —
+    // and Sign out is off the edge of the screen this product is built for.
+    const brand = rule(css(), '.brand');
+    const title = rule(css(), '.title');
+    const actions = rule(css(), '.actions');
+
+    expect(declaration(brand, 'min-width')).toBe('0');
+    expect(declaration(title, 'text-overflow')).toBe('ellipsis');
+    expect(declaration(title, 'white-space')).toBe('nowrap');
+    // The trailing group never shrinks instead: `global.css` holds every button
+    // to the touch-target floor, so a shrunk group spills its labels rather than
+    // narrowing.
+    expect(declaration(actions, 'flex')).toBe('none');
+  });
 });
 
 describe('a rejection is written in the colour the matrix specifies', () => {
@@ -215,6 +256,25 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
   });
 
+  it('colours the account settings rejection the same way', () => {
+    // The newest screen to carry a rejection, and the one furthest from
+    // DESIGN.md's named blocks — it has no spec block of its own, so this rule
+    // is held by nothing but the convention the two screens above set.
+    const css = read(join(SRC, 'screens', 'AccountSettingsScreen.module.css'));
+
+    expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
+  it('writes the account settings save indicator in the brand primary', () => {
+    // DESIGN.md's `save-indicator`: muted while it is working, `{colors.primary}`
+    // once it has. Point `.saved` at `--color-muted-text` and the two states
+    // become indistinguishable, with every render test still finding "Saved."
+    const css = read(join(SRC, 'screens', 'AccountSettingsScreen.module.css'));
+
+    expect(declaration(rule(css, '.indicator'), 'color')).toBe('var(--color-muted-text)');
+    expect(declaration(rule(css, '.saved'), 'color')).toBe('var(--color-primary)');
+  });
+
   it('writes the session-ended notice in muted text, not in the destructive red', () => {
     // A session reaching its idle window or its absolute ceiling is not a
     // failure of anything the user did, and red means destructive-or-failed in
@@ -240,6 +300,7 @@ describe('a rejection is written in the colour the matrix specifies', () => {
   it.each([
     ['LoginScreen', 'LoginScreen.tsx'],
     ['ForcedPasswordChangeScreen', 'ForcedPasswordChangeScreen.tsx'],
+    ['AccountSettingsScreen', 'AccountSettingsScreen.tsx'],
   ])('is the class %s\'s alert element actually carries', (_label, file) => {
     // The rules above are inert if the element points somewhere else. The
     // dangling-reference check upstream proves `styles.error` resolves to a
@@ -277,6 +338,34 @@ describe('the forced password change is the one action on its screen', () => {
     // A second orange element on the screen would make neither of them the one
     // action. Counted over the whole stylesheet rather than rule by rule, so a
     // new rule cannot introduce one unseen.
+    const accents = [...css().matchAll(/var\(--color-accent\)/g)];
+
+    expect(accents).toHaveLength(1);
+  });
+});
+
+describe('changing a password is the one action on account settings', () => {
+  // DESIGN.md's "exactly one per screen" for the accent-filled primary, on a
+  // screen that carries two buttons: Change password takes the accent, Back is
+  // the navy outline. A second orange control would make neither of them the
+  // action.
+  const css = (): string => read(join(SRC, 'screens', 'AccountSettingsScreen.module.css'));
+
+  it('fills the submit with the accent and writes on it in navy', () => {
+    const submit = rule(css(), '.submit');
+
+    expect(declaration(submit, 'background')).toBe('var(--color-accent)');
+    expect(declaration(submit, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('leaves Back as the navy outline, not a second filled control', () => {
+    const back = rule(css(), '.back');
+
+    expect(declaration(back, 'color')).toBe('var(--color-primary)');
+    expect(declaration(back, 'background')).not.toBe('var(--color-accent)');
+  });
+
+  it('paints nothing else with the accent', () => {
     const accents = [...css().matchAll(/var\(--color-accent\)/g)];
 
     expect(accents).toHaveLength(1);

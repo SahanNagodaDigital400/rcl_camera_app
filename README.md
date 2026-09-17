@@ -97,6 +97,31 @@ HTTP-only and unreadable by page script, so a freshly loaded tab genuinely canno
 session that just ended from a browser that never had one, and guessing would tell people who
 never signed in that they had been signed out.
 
+A signed-in user can change their own password at any time, from **Account** in the app bar. It
+asks for the current password as well as the new one and proves the current one before it writes
+anything, so an unlocked phone left on a counter is not a permanent takeover of the account — and a
+wrong current password is reported on the screen without signing anybody out. The change takes
+effect immediately: the old password stops working at the very next sign-in, with no sign-out or
+re-login in between. It also **signs that person out on every other device** — that is the point of
+it, because the usual reason for changing a password you already chose is that you think somebody
+else has it — while the browser that made the change stays signed in on a fresh cookie. The screen
+shows the account's name and email as well, read-only; changing either is an Administrator's job
+(Story 1.10).
+
+One thing that change does **not** do yet is leave a record. Nothing is written down about who
+changed a password, when, or how many other devices it signed out: the only trace is the account's
+`updated_at`, and the next sign-in overwrites that column too. So if somebody asks later whether a
+password was changed on a given day, the honest answer today is that the system cannot say. The
+audit log that answers it is Story 1.12.
+
+**A forgotten password has no self-service path at all.** There is no reset link, no reset email and
+no mail transport anywhere in the product — the app sends no email, by design, and a test fails the
+build if a mail package is so much as declared in a manifest. A user who cannot sign in goes to an
+Administrator, who issues a fresh temporary credential and hands it over in person. Changing a
+password also does **not** clear a lockout, since the lock belongs to the address under attack
+rather than to the credential — see the next two paragraphs for how a lockout is reached and how it
+ends.
+
 Repeated failed sign-ins are slowed down and then blocked. From the 6th attempt — the first one
 after five recorded failures — each attempt waits before it is processed, one second, then two,
 three, four, and four again, so the ladder runs out exactly as the lock arrives: the 10th failed

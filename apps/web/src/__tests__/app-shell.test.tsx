@@ -67,6 +67,12 @@ describe('the app shell', () => {
     // would be a control that does nothing.
     expect(screen.queryByRole('button', { name: /sign out/i })).toBeNull();
   });
+
+  it('renders no account control when none is supplied', () => {
+    // Optional on exactly the same terms, and for the same reason: a control
+    // that opens nothing is worse than no control.
+    expect(screen.queryByRole('button', { name: /^account$/i })).toBeNull();
+  });
 });
 
 describe('the app bar sign-out control', () => {
@@ -86,6 +92,54 @@ describe('the app bar sign-out control', () => {
     expect(control.tagName).toBe('BUTTON');
     expect(control.getAttribute('type')).toBe('button');
     expect(control.getAttribute('tabindex')).toBeNull();
+  });
+});
+
+describe('the app bar account control', () => {
+  it('appears only when a handler is given, and calls it', () => {
+    const onOpenAccount = vi.fn();
+    render(<AppShell onOpenAccount={onOpenAccount}>content</AppShell>);
+
+    fireEvent.click(screen.getByRole('button', { name: /^account$/i }));
+
+    expect(onOpenAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a real button, so the keyboard reaches it without a tabindex', () => {
+    render(<AppShell onOpenAccount={() => undefined}>content</AppShell>);
+
+    const control = screen.getByRole('button', { name: /^account$/i });
+    expect(control.tagName).toBe('BUTTON');
+    expect(control.getAttribute('type')).toBe('button');
+    expect(control.getAttribute('tabindex')).toBeNull();
+  });
+
+  it('precedes the sign-out control when both are present', () => {
+    // Opening a screen is a lesser action than leaving the app, and the way out
+    // stays where it has always been: last.
+    render(
+      <AppShell onOpenAccount={() => undefined} onSignOut={() => undefined}>
+        content
+      </AppShell>,
+    );
+
+    const account = screen.getByRole('button', { name: /^account$/i });
+    const signOut = screen.getByRole('button', { name: /sign out/i });
+
+    expect(account.compareDocumentPosition(signOut)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('is named by its label, with the icon hidden from assistive technology', () => {
+    // Named for what it checks. Whether the control carries an accent fill is a
+    // question about CSS, which this file cannot answer — `vite.config.ts` sets
+    // `css: false`, so jsdom applies no stylesheet and there is no computed
+    // style to read. DESIGN.md's one-accent-per-screen rule is pinned in
+    // `styling-wiring.test.ts` instead, against `AppBar.module.css` itself.
+    render(<AppShell onOpenAccount={() => undefined}>content</AppShell>);
+
+    const control = screen.getByRole('button', { name: /^account$/i });
+    expect(control.textContent).toBe('Account');
+    expect(control.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
   });
 });
 

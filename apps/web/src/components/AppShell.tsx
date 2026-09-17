@@ -14,6 +14,8 @@ interface AppShellProps {
   children: ReactNode;
   /** Forwarded to the app bar; see `AppBar`. Omitted, no control is rendered. */
   onSignOut?: (() => void) | undefined;
+  /** Forwarded to the app bar; see `AppBar`. Omitted, no control is rendered. */
+  onOpenAccount?: (() => void) | undefined;
 }
 
 /**
@@ -29,13 +31,13 @@ interface AppShellProps {
  * below `--breakpoint-md` a single column with room for a bottom tab bar, at
  * and above it a leading sidebar column.
  */
-export function AppShell({ children, onSignOut }: AppShellProps): JSX.Element {
+export function AppShell({ children, onSignOut, onOpenAccount }: AppShellProps): JSX.Element {
   return (
     <div className={styles.shell}>
       <a className={styles.skipLink} href={`#${MAIN_REGION_ID}`}>
         Skip to main content
       </a>
-      <AppBar onSignOut={onSignOut} />
+      <AppBar onSignOut={onSignOut} onOpenAccount={onOpenAccount} />
       <div className={styles.body}>
         <main className={styles.main} id={MAIN_REGION_ID} tabIndex={-1} data-testid="app-main">
           {children}

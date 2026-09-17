@@ -19,10 +19,17 @@
   color: var(--color-primary-foreground);
 }
 
+/* `min-width: 0` so the brand is the thing that gives way. A flex item's
+ * default `min-width: auto` refuses to shrink below its content, so with two
+ * controls in the trailing group the row's content exceeds a 375px viewport and
+ * the bar overflows — on a phone-first PWA, pushing the way out of the app off
+ * the screen. The product name is the one part of this bar that can be read
+ * from half of itself. */
 .brand {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  min-width: 0;
 }
 
 .icon {
@@ -31,10 +38,15 @@
   height: var(--icon-size);
 }
 
+/* Ellipsised rather than wrapped: the bar is a fixed-height row, and a second
+ * line of title would push the accent stripe off its bottom edge. */
 .title {
   font-size: var(--type-heading-size);
   font-weight: var(--type-heading-weight);
   line-height: var(--type-heading-line);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .stripe {
@@ -45,11 +57,44 @@
   background: var(--color-accent);
 }
 
+/* The trailing control group. One `auto` margin, on the group rather than on
+ * each control: two independently auto-margined buttons would have the bar's
+ * free space split between them and would drift apart as it widened. */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-inline-start: auto;
+  /* Never the element that shrinks. `global.css` holds every button to the
+   * touch-target floor on both axes, so shrinking this group would not make it
+   * narrower — it would spill its labels out of their own boxes. */
+  flex: none;
+}
+
+/* Account: a secondary control on a navy bar, outlined in its own foreground
+ * rather than filled — the same treatment as sign-out below, because opening a
+ * screen and leaving the app are both lesser than whatever the screen is for.
+ * Orange is reserved for that one action and never appears on the bar. */
+.account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  justify-content: center;
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-hairline) solid var(--color-primary-foreground);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
 /* Sign out: a secondary control on a navy bar, so it is outlined in its own
  * foreground rather than filled. Orange would claim the screen's single
  * primary action for the way *out* of the screen. */
 .signOut {
-  margin-inline-start: auto;
   justify-content: center;
   padding: var(--space-2) var(--space-4);
   border: var(--border-hairline) solid var(--color-primary-foreground);

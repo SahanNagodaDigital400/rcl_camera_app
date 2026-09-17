@@ -6,6 +6,7 @@ import { ApiRequestError, HTTP_UNAUTHORIZED } from './api/client';
 import { useSession, SessionProvider } from './auth/SessionProvider';
 import type { SessionStatus } from './auth/SessionProvider';
 import { AppShell, MAIN_REGION_ID } from './components/AppShell';
+import { AccountSettingsScreen } from './screens/AccountSettingsScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
 import { LoginScreen } from './screens/LoginScreen';
 import type { User } from '@rocell/schema/user';
@@ -14,19 +15,33 @@ import type { User } from '@rocell/schema/user';
 const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 
 /**
- * Which of the four screens the session state selects.
+ * Which surface inside the shell is showing.
+ *
+ * Two values because two surfaces exist. This is not a router and is not the
+ * beginning of one: EXPERIENCE.md's nav is role-conditional, spans six surfaces
+ * and changes shape at a breakpoint, and five of those six do not exist yet.
+ * When they arrive this becomes whatever the nav needs; until then it is one
+ * piece of state and a swap.
+ */
+type Section = 'home' | 'account';
+
+/**
+ * Which of the five screens the session state selects.
  *
  * Named separately from `SessionStatus` because the two are not the same shape:
- * `'signed-in'` covers both the forced-change screen and the shell, and the
- * move between them is a screen swap that the status cannot see. Focus
- * management keys off this, not off the status.
+ * `'signed-in'` covers the forced-change screen, the shell and Account Settings,
+ * and the moves between them are screen swaps that the status cannot see. Focus
+ * management keys off this, not off the status — which is why the section is
+ * folded in here rather than handled beside it: swapping the home panel for
+ * Account Settings unmounts whatever had focus exactly as the other swaps do.
  */
-type Screen = 'loading' | 'login' | 'password-change' | 'shell';
+type Screen = 'loading' | 'login' | 'password-change' | 'shell' | 'account';
 
-function currentScreen(status: SessionStatus, user: User | null): Screen {
+function currentScreen(status: SessionStatus, user: User | null, section: Section): Screen {
   if (status === 'loading') return 'loading';
   if (status === 'signed-out' || user === null) return 'login';
-  return user.must_change_password ? 'password-change' : 'shell';
+  if (user.must_change_password) return 'password-change';
+  return section === 'account' ? 'account' : 'shell';
 }
 
 /**
@@ -52,7 +67,34 @@ function currentScreen(status: SessionStatus, user: User | null): Screen {
 function Gate(): JSX.Element {
   const { status, user, signOut } = useSession();
   const [signOutError, setSignOutError] = useState<string | null>(null);
-  const screen = currentScreen(status, user);
+  const [section, setSection] = useState<Section>('home');
+  const [lastStatus, setLastStatus] = useState<SessionStatus>(status);
+
+  if (lastStatus !== status) {
+    setLastStatus(status);
+    // `Gate` is one component with conditional returns rather than a tree that
+    // unmounts, so nothing clears the section on the way out. `currentScreen`
+    // already ignores it while there is no session — which is exactly what makes
+    // a stale one invisible until somebody signs back in, and then lands the
+    // next person on a shared shop-floor handset on a password form instead of
+    // the home panel. Not reading it is not the same as not keeping it.
+    //
+    // Keyed on the status rather than done in the sign-out handler: a session
+    // also ends by expiry, by revocation from another device and by
+    // deactivation, and all three arrive through `onUnauthorized` without
+    // anybody pressing anything on this screen.
+    //
+    // Adjusted during render rather than in an effect. React re-runs this
+    // component immediately, before it commits anything and before any child
+    // renders, so the stale section never reaches the DOM — where an effect
+    // would paint it first and correct it a frame later. It is React's own
+    // pattern for resetting state when the thing it belongs to changes, and it
+    // is what `oxlint`'s `set-state-in-effect` rule asks for in place of the
+    // effect this started as.
+    if (status !== 'signed-in') setSection('home');
+  }
+
+  const screen = currentScreen(status, user, section);
   const previous = useRef<Screen>('loading');
 
   useEffect(() => {
@@ -140,17 +182,54 @@ function Gate(): JSX.Element {
     });
   }
 
+  function showSection(next: Section): void {
+    // The app bar keeps its Account control on the account screen — a bar whose
+    // controls come and go as you move between surfaces is worse than one that
+    // repeats itself — so this is reachable with `next` already showing. That
+    // press is not a swap, and it must not behave like one: clearing the alert
+    // below would make a control that visibly does nothing the only way to
+    // dismiss a sign-out failure.
+    if (next === section) return;
+    // The sign-out failure belongs to the surface it was raised on: it describes
+    // a click made *there*, and carrying it across a swap would put an alert
+    // about a button pressed minutes ago on a panel the user has just arrived
+    // at. Cleared in both directions, which is why both swaps go through here.
+    setSignOutError(null);
+    setSection(next);
+  }
+
+  // One node, rendered on whichever surface the click was made on. Written once
+  // rather than twice: the account branch below forwards `handleSignOut` to the
+  // same app bar, so a failure raised there has to be visible there — without
+  // this it was silent, and pressing Back then showed it on the home panel,
+  // describing a click made on a different screen.
+  const signOutFailure =
+    signOutError === null ? null : (
+      <p className={styles.error} role="alert">
+        {signOutError}
+      </p>
+    );
+
+  if (screen === 'account') {
+    // Inside the shell, in place of the home panel — not instead of it. The app
+    // bar stays, so Sign out stays, and Account Settings supplies its own way
+    // back. The screen renders no `<main>` of its own: `AppShell` already
+    // provides the one the focus effect above moves focus to.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <AccountSettingsScreen onBack={() => showSection('home')} />
+      </AppShell>
+    );
+  }
+
   return (
-    <AppShell onSignOut={handleSignOut}>
+    <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
       <h1 className={styles.title}>Rocell Tile Scanner</h1>
       {/* The session made visible: if this name is right, the cookie, the
           session row and the per-request lookup all worked. */}
       <p className={styles.greeting}>Signed in as {user.name}.</p>
-      {signOutError !== null && (
-        <p className={styles.error} role="alert">
-          {signOutError}
-        </p>
-      )}
+      {signOutFailure}
       <p className={styles.lede}>
         Internal staff tool. Photograph a tile and get the three closest matches from the
         catalogue, each with its reference image, Size and Category.

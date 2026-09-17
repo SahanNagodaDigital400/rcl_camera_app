@@ -1,6 +1,7 @@
-"""`POST /auth/login`, `GET /auth/session`, `POST /auth/logout`, `POST /auth/password`.
+"""`POST /auth/login`, `GET /auth/session`, `POST /auth/logout`, `POST /auth/password`,
+`POST /auth/password/change`.
 
-The product's whole auth surface. Four things about it are load-bearing:
+The product's whole auth surface. Five things about it are load-bearing:
 
 **There is no registration endpoint, and there never will be.** FR-1: accounts
 are provisioned by an Administrator, and the first one is written by the
@@ -38,17 +39,35 @@ endpoint is allowed to word differently: it is reachable identically for a real
 address and an invented one, so it leaks nothing, and EXPERIENCE.md requires
 the screen to say something other than "email or password is incorrect".
 
-**Not here.** A signed-in self-service change, with a current password and its
-own decision about re-authentication, is Story 1.7's endpoint:
-`POST /auth/password` refuses an already-claimed account rather than quietly
-becoming it. That endpoint is also **not** throttled (DW-40) — epics.md scopes
-Story 1.6 to login. There is no unlock surface either: the lock expires on its
-own, FR-5 sends a locked-out user to an Administrator, and Story 1.10 is what
-gives that Administrator something to press. And none of this is
-audited yet — AGENTS.md Policy requires the append-only audit log to cover
-logins, and that log arrives with Story 1.12, which owes both this endpoint and
-the login above their entries. Until then a sign-in leaves only `last_login_at`
-behind and a password change leaves only `updated_at`.
+**The two password writes are one behaviour behind two contracts.**
+`POST /auth/password` exchanges a temporary credential for a real one and
+refuses a claimed account; `POST /auth/password/change` (FR-5) is the signed-in
+self-service change and refuses an *un*claimed one, because it declares
+`require_claimed_user`. Between them they cover every account exactly once, and
+neither is reachable for the other's state. What they do once they have decided
+to write is deliberately identical — replace the digest, revoke every session of
+that user, issue the caller a fresh one — so `delete_sessions_for_user` has one
+meaning in this module rather than two.
+
+**Not here.** There is **no signed-out recovery of any kind** — no reset route,
+no token, no link, no mail transport, not even a dependency (FR-5, AGENTS.md
+Policy: admins distribute credentials manually). A user who has forgotten their
+password goes through an Administrator, and `tests/test_no_password_reset.py`
+asserts the absence over the route table, over a live probe *and* over the
+source tree and the dependency manifests. Neither password endpoint is
+throttled (DW-40) — epics.md scopes Story 1.6 to login, and the self-service
+change is a direct extension of that same open question rather than a new one.
+There is no unlock surface either: the lock expires on its own, FR-5 sends a
+locked-out user to an Administrator, and Story 1.10 is what gives that
+Administrator something to press. And none of this is audited yet — AGENTS.md
+Policy requires the append-only audit log to cover logins, and that log arrives
+with Story 1.12, which owes the login and *both* password writes their entries.
+Until then a sign-in leaves `last_login_at` behind, and a password change leaves
+**nothing durable at all**: it moves `updated_at`, and `_RECORD_LOGIN` sets that
+same column on the very next sign-in, so the one trace a change leaves is
+overwritten by the user's next visit — and by anyone else's, if the password
+went where it should not have. There is no record of the change, and none of the
+sessions it silently revoked, until that log exists.
 """
 
 from __future__ import annotations
@@ -79,9 +98,12 @@ from api.db import get_connection, get_pool
 from api.dependencies import (
     AUTH_CHALLENGE,
     NO_STORE,
+    PASSWORD_CHANGE_REQUIRED,
+    SET_A_PASSWORD_FIRST,
     UNAUTHORIZED,
     current_user,
     not_signed_in,
+    require_claimed_user,
 )
 from api.sessions import (
     SESSION_COOKIE_NAME,
@@ -147,9 +169,37 @@ ACCOUNT_LOCKED = "account_locked"
 #: one, and the sentence has to be true either way.
 ACCOUNT_LOCKED_MESSAGE = "Too many sign-in attempts. This account is temporarily locked."
 
+#: The self-service change's own refusal: the caller is signed in, but the
+#: `current_password` they submitted is not the one behind the stored digest.
+#:
+#: **Deliberately not `unauthorized`, and deliberately not a `401`.** The session
+#: is fine — it is the field that was mistyped — and `apps/web`'s `apiRequest`
+#: fires `notifyUnauthorized` on *status* 401, which `SessionProvider` answers by
+#: dropping the shell to the login screen. Answering 401 here would therefore
+#: sign a user out for mistyping a box, and hand them a login form that wants the
+#: very password they have just failed to remember. `403` with a code of its own
+#: is a refusal no observer watches, which is exactly what is wanted: the screen
+#: marks the current-password field invalid and nothing else moves.
+#:
+#: It is also not `WEAK_PASSWORD`: nothing is wrong with the *new* password, and
+#: the field the screen has to mark and focus is the other one.
+INVALID_CURRENT_PASSWORD = "invalid_current_password"
+
 #: The two states above, as the sentences the caller is shown.
 ALREADY_CLAIMED = "This account already has a password of its own."
 PASSWORD_REUSES_TEMPORARY = "The new password must be different from the temporary one."
+
+#: What a wrong `current_password` is told. EXPERIENCE.md's register — short,
+#: factual, no exclamation mark — and it names the field that was wrong, because
+#: this endpoint takes two and the user has to know which one to retype.
+CURRENT_PASSWORD_WRONG = "Your current password is incorrect."
+
+#: A `WEAK_PASSWORD` *message*, not a code of its own, for exactly the reason
+#: `PASSWORD_REUSES_TEMPORARY` is one: it is a rule about one account's stored
+#: digest rather than about the string, so `shared_schema.passwords` cannot
+#: decide it — and a client that already branches on `weak_password` and renders
+#: the sentence needs nothing new to show it.
+PASSWORD_UNCHANGED = "The new password must be different from your current one."
 
 #: The point past which a submitted password stops being a password and becomes
 #: a payload. Deliberately far above `MAX_PASSWORD_LENGTH` (128) rather than
@@ -711,7 +761,7 @@ SELECT password_hash,
 #: `updated_at` is set by hand — `users` carries no BEFORE UPDATE trigger
 #: (DW-17), and the column's DEFAULT applies to inserts only.
 #:
-#: The `RETURNING` list is `_RECORD_LOGIN`'s, exactly: it is the ten-column
+#: The `RETURNING` list is `_RECORD_LOGIN`'s, exactly: it is the eleven-column
 #: shape `User.model_validate` wants, and the two must not drift.
 #:
 #: `AND must_change_password` is what makes "the credential works exactly once"
@@ -860,6 +910,269 @@ def set_password(
         # Issued inside the same transaction, so the caller is never left
         # holding a revoked cookie: either the whole change lands or none of it
         # does.
+        raw_token = issue_session(conn, user.id)
+
+    # The token leaves in the cookie and nowhere else (AGENTS.md Policy, AD-3).
+    set_session_cookie(response, raw_token)
+
+    return User.model_validate(user_row)
+
+
+class PasswordSelfChangeRequest(BaseModel):
+    """The self-service change's body: the current password, and the new one.
+
+    **`current_password` is the whole difference from `PasswordChangeRequest`.**
+    That body deliberately omits it because the caller proved it at sign-in
+    minutes ago and is holding the session it issued — a temporary credential is
+    exchanged once, under a gate, and asking for it again would be a second
+    hurdle in front of the only door the account has. This body is the opposite
+    case: the account is claimed, the session may be hours old, and the thing
+    being replaced is a password its owner chose. Proving the current one is the
+    only thing standing between a borrowed unlocked phone and a permanent
+    takeover of the account, so it is required and it is checked first.
+
+    **No confirm field, no reveal toggle, no strength meter** — the same three
+    absences the forced-change form documents, for the same reasons: none is
+    specified anywhere, and a second box with no rule behind it is another thing
+    to type for no enforcement.
+
+    `extra="forbid"`, like every other body in this module: a field this endpoint
+    does not read is a caller with a different idea of the contract.
+
+    **Neither field carries a minimum**, and the new one carries no password
+    rule — because validation answers `422 validation_error`, "the request was
+    not in the expected shape", which is exactly the generic rejection
+    EXPERIENCE.md:87 forbids for a password. Both bounds are the handler's, so an
+    empty candidate and a
+    129-character one are each answered by `password_rule_violation` with the
+    sentence naming the rule they broke. `MAX_PASSWORD_FIELD_LENGTH` is not a
+    password rule; it is the point past which a body stops being a password at
+    all, and nothing past it reaches a `verify_password` or a `hash_password`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str = Field(max_length=MAX_PASSWORD_FIELD_LENGTH)
+    new_password: str = Field(max_length=MAX_PASSWORD_FIELD_LENGTH)
+
+
+#: The stored digest, for the one thing this endpoint proves before it does
+#: anything else. Read by id, from the session the caller already presented.
+#:
+#: No `credential_expired` expression, unlike `_SELECT_CREDENTIAL_STATE`: the
+#: route declares `require_claimed_user`, so by the time this runs the account is
+#: known not to be on a temporary credential and there is no 72-hour deadline
+#: left to check. A row that *is* on one never reaches this statement.
+_SELECT_PASSWORD_HASH = """
+SELECT password_hash
+  FROM users
+ WHERE id = %s
+"""
+
+#: Whether the row is still there, re-read when the write matched nothing. Its
+#: only job is to tell "the account was deleted" from "an Administrator reissued
+#: a temporary credential a microsecond ago", which are the only two ways
+#: `_CHANGE_PASSWORD` can return no row — so row existence is the whole question
+#: and `1` is the whole answer. Reading `must_change_password` back would look
+#: more careful and be less true: the flag it returns is the flag *now*, which is
+#: a third instant, and a value read after the fact cannot say why a statement in
+#: the past refused. `_CHANGE_PASSWORD`'s own predicate is what decides that.
+_SELECT_ROW_EXISTS = """
+SELECT 1
+  FROM users
+ WHERE id = %s
+"""
+
+#: The self-service change, in one statement.
+#:
+#: `must_change_password` and `temp_credential_expires_at` are **not** touched,
+#: and that is the difference from `_SET_PASSWORD`: this account has no temporary
+#: credential to clear, so writing either column would be inventing state. The
+#: flag is false here by the gate's own guarantee and stays false.
+#:
+#: `updated_at` is set by hand — `users` carries no BEFORE UPDATE trigger
+#: (DW-17), and the column's DEFAULT applies to inserts only.
+#:
+#: `AND NOT must_change_password` is the same trick `_SET_PASSWORD`'s
+#: `AND must_change_password` plays, in mirror image. `require_claimed_user` read
+#: the flag through a separate query some microseconds earlier; an Administrator
+#: reissuing a temporary credential in that window would otherwise have this
+#: request overwrite the credential they had just issued. With the predicate, the
+#: loser matches no row, `RETURNING` is empty, and the handler answers the gate's
+#: own 403 — making "the gate's fact is still true at the moment of the write" a
+#: property of the statement rather than of a check taken earlier.
+#:
+#: The `RETURNING` list is `_RECORD_LOGIN`'s and `_SET_PASSWORD`'s, character for
+#: character: it is the eleven-column shape `User.model_validate` wants, and the
+#: three must not drift. Repeated rather than shared through a constant because
+#: `tests/test_source_guards.py` forbids a statement assembled from a value;
+#: `tests/test_self_service_password_change.py` is what holds the three lists
+#: together instead.
+_CHANGE_PASSWORD = """
+UPDATE users
+   SET password_hash = %s,
+       updated_at = now()
+ WHERE id = %s
+   AND NOT must_change_password
+RETURNING id, name, email, role, active, must_change_password,
+          temp_credential_expires_at, last_login_at, locked_until,
+          created_at, updated_at
+"""
+
+
+def _invalid_current_password() -> ApiError:
+    """The submitted `current_password` is not the one behind the stored digest.
+
+    Beside `_weak_password`, and deliberately not part of it: nothing is wrong
+    with the new password — it has not even been looked at — so the field the
+    screen marks and focuses is the other one.
+
+    `403`, never `401`. See `INVALID_CURRENT_PASSWORD` for why a 401 here would
+    sign the user out of a session that is perfectly good.
+    """
+    return ApiError(
+        INVALID_CURRENT_PASSWORD,
+        CURRENT_PASSWORD_WRONG,
+        status_code=status.HTTP_403_FORBIDDEN,
+        headers=NO_STORE,
+    )
+
+
+def _password_change_required() -> ApiError:
+    """The gate's refusal, raised from inside the write rather than in front of it.
+
+    Built from `api.dependencies`' own code and sentence rather than restating
+    either, so the two answers to "this account is on a temporary credential"
+    cannot drift apart. It is constructed here instead of routed through
+    `require_claimed_user` because that dependency takes a whole `User` and this
+    branch has re-read exactly one column — building a `User` to throw it away
+    would be a second full query for a case that never happens.
+    """
+    return ApiError(
+        PASSWORD_CHANGE_REQUIRED,
+        SET_A_PASSWORD_FIRST,
+        status_code=status.HTTP_403_FORBIDDEN,
+        headers=NO_STORE,
+    )
+
+
+@router.post("/auth/password/change", response_model=User)
+def change_password(
+    payload: PasswordSelfChangeRequest,
+    response: Response,
+    user: Annotated[User, Depends(require_claimed_user)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> User:
+    """FR-5 — a signed-in user replaces the password they already chose.
+
+    **A separate path from `/auth/password`, not a second method on it.** Three
+    guards in this repository address a route by `(method, path)` or by path
+    alone — `tests/test_forced_change_gate.py`'s allowlist, the exact path set in
+    `tests/test_no_registration.py`, and whatever counter DW-40 eventually brings
+    — and two contracts sharing one path would have to be taught the distinction
+    in all three, where the one that forgot would fail open. `PUT` is wrong on
+    its own terms as well: this is not idempotent, because a replay cannot prove
+    a current password that is no longer current.
+
+    **It declares `require_claimed_user`**, so a user still holding an
+    admin-issued temporary credential is refused `403 password_change_required`
+    and sent to `POST /auth/password`, which is the route for that account.
+    Answering both from one place would make the forced change skippable.
+
+    **The current password is proved before anything else happens.** Before the
+    new password's rules are read, before the two are compared, and before
+    `hash_password`. Both orderings would "work"; this one is the only one where
+    a caller who cannot prove the current password learns nothing about the new
+    one and gets no decision at all out of an endpoint they have not
+    authenticated to. The cost is one Argon2id verify on a request that was going
+    to be refused anyway.
+
+    **The change revokes every session of its user and issues the caller a fresh
+    one**, inside the same transaction as the digest write — `POST /auth/password`
+    exactly. The reason people change a password they already chose is that they
+    think somebody else has it, and a change that leaves that somebody's session
+    alive has not done the thing the user asked for. The caller's own browser is
+    handed a new token in the same response, so the change does not bounce them
+    to the login screen.
+
+    Nothing else is cleared. `login_attempts` and `users.locked_until` are
+    untouched: a lock is a property of the address under attack, not of the
+    credential, and letting a signed-in user clear it would hand an attacker a
+    way to reset the ladder (DW-57 is the related reissue gap).
+
+    Sync, not `async def`, for the reason `set_password` is: psycopg is a
+    synchronous driver and the verify and hash below are CPU-bound for ~100ms
+    each. FastAPI runs a sync endpoint in its threadpool.
+
+    Story 1.12 owes this endpoint **two** audit entries, exactly as it owes
+    `POST /auth/password` two: the password change itself, and the silent
+    revocation of every session the user holds on every device. No private log
+    path is built here in the meantime. And DW-40 — "a second Argon2id-backed
+    endpoint the gate cannot close" — becomes a third with this route: it costs
+    one verify plus one hash per call, it is deliberately not throttled (Story
+    1.6 is scoped to login by epics.md), and closing it is still a decision about
+    what a counter would be keyed on.
+    """
+    response.headers.update(NO_STORE)
+
+    row = conn.execute(_SELECT_PASSWORD_HASH, (user.id,)).fetchone()
+    if row is None:
+        # Deleted between the session lookup and this read. The session is gone
+        # with it; saying so is the honest answer and the cookie goes too.
+        raise not_signed_in()
+
+    # First, and before anything is spent on the candidate. `InvalidHashError`
+    # is left to propagate for the reason `set_password` leaves it: it means the
+    # column holds something `shared_schema.passwords` did not write, such an
+    # account cannot sign in at all so it cannot reach this line, and swallowing
+    # it would let a corrupt digest be silently overwritten.
+    if not verify_password(row["password_hash"], payload.current_password):
+        raise _invalid_current_password()
+
+    # The length rules, in their one statement (`shared_schema.passwords`). This
+    # is also where an empty or oversized candidate is answered — the request
+    # model deliberately bounds neither, so that both get the sentence naming the
+    # rule rather than a generic 422.
+    violation = password_rule_violation(payload.new_password)
+    if violation is not None:
+        raise _weak_password(violation)
+
+    # The twin of `PASSWORD_REUSES_TEMPORARY`, and it costs nothing extra: the
+    # current password has just been proved correct against the stored digest, so
+    # a plain string comparison against it is equivalent to a second verify and
+    # spends no hash. A history rule — "not any of your last five" — is
+    # deliberately not here: that needs a history table, a retention policy and a
+    # decision about how many, none of which this epic asks for.
+    if payload.new_password == payload.current_password:
+        raise _weak_password(PASSWORD_UNCHANGED)
+
+    # Hashed before the transaction opens. ~100ms of CPU inside an open
+    # transaction is ~100ms of held row locks on `users` for no benefit.
+    new_hash = hash_password(payload.new_password)
+
+    with conn.transaction():
+        user_row = conn.execute(_CHANGE_PASSWORD, (new_hash, user.id)).fetchone()
+        if user_row is None:
+            # `AND NOT must_change_password` matched nothing. Exactly two things
+            # produce that, and they are different answers: the row is gone, or
+            # an Administrator reissued a temporary credential in the
+            # microseconds since the gate ran. One re-read tells them apart, and
+            # neither writes — the transaction unwinds having done nothing.
+            if conn.execute(_SELECT_ROW_EXISTS, (user.id,)).fetchone() is None:
+                raise not_signed_in()
+            # The row is still there, so `AND NOT must_change_password` is what
+            # refused it: the account is back on a temporary credential and
+            # belongs on `POST /auth/password`. That is an inference from the
+            # predicate, not a second reading of the flag — see
+            # `_SELECT_ROW_EXISTS` for why re-reading it would answer a different
+            # question than the one being asked.
+            raise _password_change_required()
+        # The password may be being changed *because* somebody else has it. Every
+        # session of this user goes with it, in the same transaction as the digest
+        # — a device left signed in is exactly what the user is trying to close.
+        delete_sessions_for_user(conn, user.id)
+        # Issued inside the same transaction, so the caller is never left holding
+        # a revoked cookie: either the whole change lands or none of it does.
         raw_token = issue_session(conn, user.id)
 
     # The token leaves in the cookie and nowhere else (AGENTS.md Policy, AD-3).

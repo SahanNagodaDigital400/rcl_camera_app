@@ -64,6 +64,25 @@ export const PASSWORD_CHANGE_REQUIRED = 'password_change_required';
 export const PASSWORD_CHANGE_NOT_REQUIRED = 'password_change_not_required';
 
 /**
+ * The envelope code for "the current password you typed is not the right one".
+ *
+ * Answered by `POST /auth/password/change` alone, and it arrives as a **403**,
+ * not a 401 — which is the whole reason it exists as a code of its own.
+ * `notifyUnauthorized` below fires on *status* 401, and `SessionProvider`
+ * answers that by dropping the shell to the login screen; a 401 here would
+ * therefore sign a user out for mistyping a field, and hand them a login form
+ * asking for the very password they have just failed to remember. At 403 no
+ * observer watches, and the screen is free to treat it as what it is: one field
+ * to retype.
+ *
+ * **The field at fault is the *current* password, not the new one.** That is the
+ * difference from `WEAK_PASSWORD`, which is always about the new one. A screen
+ * that marked the wrong box would send the user to correct something that is
+ * perfectly fine.
+ */
+export const INVALID_CURRENT_PASSWORD = 'invalid_current_password';
+
+/**
  * The envelope code for "too many failed sign-ins against this address".
  *
  * Deliberately **not** `unauthorized`, and the distinction is behavioural, not

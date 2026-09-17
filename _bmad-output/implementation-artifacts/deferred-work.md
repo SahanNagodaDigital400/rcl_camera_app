@@ -526,3 +526,83 @@ source_spec: `spec-1-6-login-rate-limiting.md`
 severity: low
 reason: `_is_addressable` refuses before the counter is ever reached — necessarily, since the counter's key *is* the string Postgres cannot accept — but it pays `verify_dummy_password` first, so appending a NUL to every guess buys unlimited unthrottled Argon2id work and leaves no row behind. The decoy predates this story; what is new is that this is now the only path with no counter behind it. There is no oracle in it (the caller already knows the address is malformed, and no account can hold one), so the exposure is CPU only, and it is the same class DW-55 records for a spray across real addresses. Dropping the decoy on this path alone would close it, but the decoy's placement is an identical-rejection decision this story should not make on its own.
 status: open
+
+### DW-67: `_CHANGE_PASSWORD` pins the claimed flag but not the digest it just verified, so two concurrent changes both write and the loser is told the change succeeded.
+origin: spec-deferred 7a26d9e1c0a0
+location: apps/api/api/auth.py (_CHANGE_PASSWORD)
+source_spec: `spec-1-7-self-service-password-reset.md`
+severity: medium
+reason: `_SELECT_PASSWORD_HASH` runs outside `conn.transaction()`, and the write's only predicate is `AND NOT must_change_password`. Two posts arriving together verify the same stored digest, both match the row, and the last writer wins — the first caller gets a `200` and a `User` body for a password that is not the live one. The same argument the `_CHANGE_PASSWORD` comment makes for the flag ("a property of the statement rather than of a check taken earlier") applies to the digest, and `AND password_hash = %s` would give it. Closing it means deciding what a third empty-`RETURNING` arm answers, which is a contract decision this story's intent does not make; the realistic second trigger — an Administrator resetting a password under the user — arrives with Story 1.10.
+status: open
+
+### DW-68: A `403 password_change_required` from the write's race arm renders on Account Settings as a neutral form error, with no route to the forced-change screen and no refresh of the cached user.
+origin: spec-deferred 89c4ad0f094c
+location: apps/web/src/screens/AccountSettingsScreen.tsx (fieldFor)
+source_spec: `spec-1-7-self-service-password-reset.md`
+severity: medium
+reason: `fieldFor()` in `AccountSettingsScreen.tsx` maps that code to `null`, so the gate's sentence appears as an unattributed form error while `currentScreen()` keeps the user on Account Settings — the cached `must_change_password` is still false until the next `/auth/session` revalidation. It is honest and actionable copy, and the branch is currently unreachable in the product: nothing sets `must_change_password` back to true except a manual UPDATE. Stories 1.8 and 1.10 are what make an Administrator able to reissue, and whether the front end should re-fetch the session or route to the forced-change screen is a decision that belongs with them.
+status: open
+
+### DW-69: DW-40 is now a three-endpoint problem — `POST /auth/password/change` adds a 64 MiB Argon2id verify plus a hash per call, reachable by any live session and bounded by nothing.
+origin: spec-deferred c8a25df7d33a
+location: apps/api/api/auth.py (change_password)
+source_spec: `spec-1-7-self-service-password-reset.md`
+severity: medium
+reason: The handler spends one `verify_password` on every call and one `hash_password` on every success, and is sync, so FastAPI runs it in a threadpool defaulting to 40 workers against `POOL_MAX_SIZE = 10` (DW-34). epics.md scopes Story 1.6's counters to login, so the spec forbids closing it here and the docstring records it — but DW-40's own text names two endpoints and predates this one. Recorded as new evidence for that entry: the memory amplification is now three deep and no test or ceiling acknowledges it.
+status: open
+
+### DW-70: The two-field form gives a password manager no username to associate, so managers routinely fail to offer to update the stored credential.
+origin: spec-deferred 6c56033268fb
+location: apps/web/src/screens/AccountSettingsScreen.tsx
+source_spec: `spec-1-7-self-service-password-reset.md`
+severity: medium
+reason: The form carries `autocomplete="current-password"` and `"new-password"` and no field carrying the identity. Chrome, Safari and 1Password commonly need an associated username — a visually-hidden readonly input with `autocomplete="username"` — before they offer to *update* a saved entry rather than save a second one. The user then changes their password and the manager keeps serving the old one, which is the friction FR-5 exists to remove. `hidden` is not the fix (managers skip it) and jsdom cannot verify any of it, so the correct shape wants checking on a real browser — the same kind of task as DW-51.
+status: open
+
+### DW-71: The change signs the user out on every other device and the screen never says so.
+origin: spec-deferred 19a3d780168b
+location: apps/web/src/screens/AccountSettingsScreen.tsx
+source_spec: `spec-1-7-self-service-password-reset.md`
+severity: medium
+reason: `test_every_other_device_is_signed_out` proves the server does it and README calls it "the point of it", but the whole of what the user is told is "Saved." — the save indicator EXPERIENCE.md specifies. Someone changing a password because they believe a colleague has it gets no confirmation that the thing they actually wanted has happened. Adding a factual line is small and in EXPERIENCE.md's register, but it is copy no file in the pair specifies, and the Save indicator row is what the surface was built to.
+status: open
+
+### DW-72: Anyone holding a live session cookie can guess `current_password` without limit, so a borrowed unlocked phone is a path to permanent account takeover rather than only to CPU burn.
+origin: spec-deferred e6f61953baa0
+location: apps/api/api/auth.py (change_password)
+source_spec: `spec-1-7-self-service-password-reset.md`
+severity: medium
+reason: `change_password` spends a `verify_password` per call and answers `403 invalid_current_password`. Nothing counts the failures: no `login_attempts` row, no `users.locked_until` check, no ceiling, and no record anywhere until Story 1.12's audit log. The existing DW-40 note frames this endpoint as the third Argon2id consumer — a memory-amplification problem — which is a different property from the one here: login refuses an attacker after ten tries and this route refuses them never. The intent's Never list forbids throttling in this story ("Story 1.6 scoped throttling to login"), so it cannot be closed here, but a counter keyed on the session or the user is a smaller decision than DW-40's address-vs-account question and could land ahead of it.
+status: open
+
+### DW-73: "The API's sentence, verbatim" is asserted only against sentences retyped into the test files, so the API's copy and the strings the suite checks can drift apart with everything green.
+origin: spec-deferred 795103637527
+location: apps/web/src/__tests__/error-code-parity.test.ts
+source_spec: `spec-1-7-self-service-password-reset.md`
+severity: low
+reason: `error-code-parity.test.ts` spans the API/web boundary for error *codes* and nothing spans it for *messages*. `account-settings.test.tsx` builds its `ApiRequestError`s from literals authored in that file, and the new real-provider case stubs `WRONG_CURRENT`, also a literal. At run time the screen does render whatever the API sent, so this is a test-fidelity gap rather than a product defect: change `CURRENT_PASSWORD_WRONG` or `MIN_PASSWORD_LENGTH` in Python and the suite keeps passing while its claim to be checking the API's wording stops being true. Closing it wants a message row in the parity test, which is a decision about how much of EXPERIENCE.md's copy belongs under a build-time guard.
+status: open
+
+### DW-74: `ROUTE_WORDS` is three words, so a recovery surface named anything but reset, forgot or recover passes the route-table guard.
+origin: spec-deferred 3ec5e752085f
+location: apps/api/tests/test_no_password_reset.py (ROUTE_WORDS)
+source_spec: `spec-1-7-self-service-password-reset.md`
+severity: low
+reason: `/auth/magic-link`, `/auth/otp` and `/auth/unlock` would all serve exactly the signed-out recovery FR-5 forbids and clear `test_the_route_table_holds_no_recovery_path`. The vocabulary was not widened in this pass on purpose: `reissue` is the obvious next candidate and is also the correct name for the Administrator route Stories 1.8 and 1.10 add, so a wider list risks the same false accusation the bare `boto3` pattern was just narrowed to avoid. Widening it safely means deciding the word list against the routes those stories will actually serve.
+status: open
+
+### DW-75: A change can land on the server while the screen reports it as failed, leaving the user typing a password that is no longer theirs.
+origin: spec-deferred 527196708cdc
+location: apps/web/src/auth/SessionProvider.tsx (changeOwnPassword)
+source_spec: `spec-1-7-self-service-password-reset.md`
+severity: medium
+reason: `changeOwnPassword` stores the response through `asUser`, which throws on a body it does not recognise — and `apiRequest` throws on a transport failure. Either way the write, the revocation and the fresh cookie have already happened: the browser holds the new session, the digest is the new one, and the screen shows a rejection. The user then retypes the *old* password and is answered `invalid_current_password`, with no way to tell which of the two passwords is live. Closing it means re-fetching `/auth/session` on a failure whose status is not 401 — which the spec's own task list forecloses ("Errors propagate untouched … nothing has to be rescued here"), so it is a contract decision rather than a patch. The window is narrow today: the only reachable trigger is a transport failure between the commit and the response.
+status: open
+
+### DW-76: The mail-transport guard reads only a fixed extension set and a fixed package vocabulary, so a transport reached for in a Dockerfile, a shell script or an SMS SDK passes it.
+origin: spec-deferred 0e93ca3c5b56
+location: apps/api/tests/test_no_password_reset.py (SCANNED_EXTENSIONS, _TRANSPORTS)
+source_spec: `spec-1-7-self-service-password-reset.md`
+severity: low
+reason: `SCANNED_EXTENSIONS` has no `.tf`, no `.sh`, and cannot match an extensionless file at all — `Dockerfile`, `Makefile`, a compose override — although `CLAUDE.md` puts IaC in `infra/`, which is the same argument the file already makes for `.yml`/`.yaml`. Separately, `_TRANSPORTS` is a mail vocabulary and FR-5's clause is about *recovery*: an SMS one-time code (`twilio`, `vonage`, `messagebird`, `publish_sms`) is exactly the signed-out path the clause forbids and reads clean through every check in the file. Both are the same decision as DW-74's: widening a word list safely means deciding it against the surfaces later stories will actually build, and a list widened on a guess is the false accusation the bare `boto3` pattern was already narrowed to avoid.
+status: open

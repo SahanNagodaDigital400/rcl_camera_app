@@ -37,6 +37,9 @@ function renderLogin(
     user: null,
     signIn,
     changePassword: vi.fn(async () => undefined),
+    // Story 1.7's self-service change. Never called from this screen — it is
+    // Account Settings' — and present because the context is one object.
+    changeOwnPassword: vi.fn(async () => undefined),
     signOut: vi.fn(async () => undefined),
     sessionEnded,
   };

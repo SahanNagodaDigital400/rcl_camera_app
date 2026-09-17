@@ -25,6 +25,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACCOUNT_LOCKED,
+  INVALID_CURRENT_PASSWORD,
   PASSWORD_CHANGE_NOT_REQUIRED,
   PASSWORD_CHANGE_REQUIRED,
   UNAUTHORIZED,
@@ -50,6 +51,7 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   weak_password: { file: 'auth.py', name: 'WEAK_PASSWORD' },
   password_change_not_required: { file: 'auth.py', name: 'PASSWORD_CHANGE_NOT_REQUIRED' },
   account_locked: { file: 'auth.py', name: 'ACCOUNT_LOCKED' },
+  invalid_current_password: { file: 'auth.py', name: 'INVALID_CURRENT_PASSWORD' },
 };
 
 const TYPESCRIPT: Record<string, string> = {
@@ -58,6 +60,7 @@ const TYPESCRIPT: Record<string, string> = {
   weak_password: WEAK_PASSWORD,
   password_change_not_required: PASSWORD_CHANGE_NOT_REQUIRED,
   account_locked: ACCOUNT_LOCKED,
+  invalid_current_password: INVALID_CURRENT_PASSWORD,
 };
 
 describe('the envelope codes are one contract in two languages', () => {

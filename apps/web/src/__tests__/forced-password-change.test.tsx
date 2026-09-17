@@ -52,6 +52,9 @@ function renderScreen(changePassword: SessionContextValue['changePassword']): vo
     user: UNCLAIMED,
     signIn: vi.fn(async () => undefined),
     changePassword,
+    // Story 1.7's self-service change. Never called from this screen — it is
+    // Account Settings' — and present because the context is one object.
+    changeOwnPassword: vi.fn(async () => undefined),
     signOut: vi.fn(async () => undefined),
     // The change screen never renders the notice — it is the login screen's,
     // and a user trapped on this one has a session, not the absence of one.

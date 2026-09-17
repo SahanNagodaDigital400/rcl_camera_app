@@ -1,0 +1,171 @@
+/* Account Settings — the one surface where a signed-in user changes their own
+ * password (FR-5).
+ *
+ * Unlike the login and forced-change screens, this one renders *inside* the
+ * shell: the app bar is above it and `AppShell`'s `<main>` is around it, so
+ * there is no full-height centring and no chrome-less panel here. What it shares
+ * with them is the form rhythm — a single narrow column, label above input,
+ * `--space-5` between fields — because a user meeting the forced change on their
+ * first sign-in and this screen a month later should not read them as two
+ * different applications.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target floor
+ * and the accent focus ring are already on `button` and `input` in global.css
+ * and are deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: var(--measure-form);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+/* Name and address, read-only. Editing either is an Administrator's job (FR-11,
+ * Story 1.10), so they are description-list rows and not disabled inputs — a
+ * greyed-out box invites a click that will never do anything. */
+.identity {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2) var(--space-4);
+}
+
+.term {
+  color: var(--color-muted-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+/* `overflow-wrap: anywhere` because an address has no break opportunity in it:
+ * at 375px the column is already at its `--measure-form` ceiling, and one long
+ * `firstname.lastname@rocell.lk` would otherwise push the whole page into a
+ * horizontal scroll rather than wrap. */
+.value {
+  color: var(--color-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  overflow-wrap: anywhere;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: var(--border-hairline) solid var(--color-border);
+}
+
+.subtitle {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: var(--color-text);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  color: var(--color-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+.input {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* The rejection, carrying the API's own sentence — which names the rule that
+ * failed, or the field that was wrong (EXPERIENCE.md:87). Red is
+ * destructive-or-failed in this system and nothing else, and it is never the
+ * only signal: the text says what happened and `aria-invalid` marks the field. */
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The submit, the Back control and the save indicator on one row, so the
+ * indicator sits beside the thing that triggered it rather than in a corner
+ * (EXPERIENCE.md's Save indicator row). Wraps rather than shrinks: at the
+ * narrowest phone width three items on one line would push the buttons below
+ * the touch-target floor. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* The single primary action on this screen: accent fill, navy foreground.
+ * Never white on orange — 2.63:1, the one contrast pair DESIGN.md bans. */
+.submit {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.submit:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* Back: DESIGN.md's secondary button — navy outline, navy text, transparent
+ * fill. The default for every non-primary action, and the reason this screen
+ * still has exactly one accent control. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* Dimmed on the same terms as the submit, and for the same reason it is
+ * disabled at all: while the change is in flight, leaving is not available. */
+.back:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* Muted at rest and while saving; primary once it has saved. Deliberately not
+ * orange — orange stays reserved for the action that has not fired yet, not the
+ * confirmation that it did (DESIGN.md's `save-indicator`). */
+.indicator {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+.saved {
+  color: var(--color-primary);
+}

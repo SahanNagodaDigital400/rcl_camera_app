@@ -42,6 +42,22 @@ export interface SessionContextValue {
    * shell — there is no separate "done" flag to keep in step with the server.
    */
   changePassword: (newPassword: string) => Promise<void>;
+  /**
+   * Replace the password this user already chose, proving the current one
+   * (FR-5).
+   *
+   * Beside `changePassword` and deliberately needing none of its two rescue
+   * branches. That one runs on a screen with no sign-out control and no way out,
+   * so a failure that makes the cached user wrong has to be resolved there or
+   * the only escape is clearing cookies. This screen is reachable *and*
+   * escapable — it sits inside the shell with a Back control — so every failure
+   * is the screen's to show, and a `401` is already handled by the
+   * `onUnauthorized` observer registered above.
+   *
+   * On success the API returns the same `User` with `updated_at` moved, and
+   * storing it keeps the cached copy from going stale.
+   */
+  changeOwnPassword: (currentPassword: string, newPassword: string) => Promise<void>;
   signOut: () => Promise<void>;
   /**
    * A session that existed has ended — expired, revoked, or its owner
@@ -248,6 +264,27 @@ export function SessionProvider({ children }: { children: ReactNode }): JSX.Elem
     setStatus('signed-in');
   }, []);
 
+  const changeOwnPassword = useCallback(
+    async (currentPassword: string, newPassword: string): Promise<void> => {
+      // Errors propagate untouched — no `try`, and that is the difference from
+      // `changePassword` above rather than an omission. Nothing here can trap
+      // the user: the screen has a Back control, the shell around it still
+      // renders, and the one failure that would make the cached user wrong is a
+      // `401`, which `onUnauthorized` has already turned into a sign-out by the
+      // time this rejection arrives.
+      const body = await apiRequest('/auth/password/change', {
+        method: 'POST',
+        body: { current_password: currentPassword, new_password: newPassword },
+      });
+      // The server's own answer, narrowed by the same contract check as every
+      // other user body. The change revoked every session of this user and
+      // issued this browser a fresh cookie in the same response, so the app is
+      // still signed in — `status` is deliberately left alone.
+      setUser(asUser(body));
+    },
+    [],
+  );
+
   const signOut = useCallback(async (): Promise<void> => {
     // The server's copy is the session. If the revocation did not land, the
     // cookie is still valid and still in the browser, so clearing local state
@@ -277,8 +314,8 @@ export function SessionProvider({ children }: { children: ReactNode }): JSX.Elem
   }, []);
 
   const value = useMemo<SessionContextValue>(
-    () => ({ status, user, signIn, changePassword, signOut, sessionEnded }),
-    [status, user, signIn, changePassword, signOut, sessionEnded],
+    () => ({ status, user, signIn, changePassword, changeOwnPassword, signOut, sessionEnded }),
+    [status, user, signIn, changePassword, changeOwnPassword, signOut, sessionEnded],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
