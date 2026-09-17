@@ -1,4 +1,5 @@
 .bmad-loop/runs/
+.bmad-loop/archive/
 .bmad-loop/cache/
 .bmad-loop/policy.toml
 _bmad/render/
@@ -11,13 +12,4 @@ __pycache__/
 .pytest_cache/
 poc/Tiles-prepared/
 poc/certs/
-
-# apps/web
-apps/web/node_modules/
-apps/web/dist/
-apps/web/*.tsbuildinfo
-
-# Python (root workspace + all members)
-.venv/
-*.egg-info/
-
+node_modules/
