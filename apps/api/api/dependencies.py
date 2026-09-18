@@ -1,6 +1,7 @@
 """The authorization dependencies every authenticated route is built from.
 
-Two of them, and the difference between them is the whole of Story 1.4's gate:
+Three of them, each built on the one above it, so a route declares the highest
+it needs and inherits the rest:
 
 * `current_user` — there is a usable session, so we know who this is. Says
   nothing about what they may do.
@@ -9,6 +10,12 @@ Two of them, and the difference between them is the whole of Story 1.4's gate:
   password. **Every route that serves real data declares this one.** AGENTS.md
   line 18: never grant further access on a temporary credential before the
   forced change.
+* `require_administrator` — `require_claimed_user`, and the account's role is
+  `admin`. **Every route under `/admin/` declares this one**, and
+  `tests/test_admin_authorization.py` reads that off the path so the rule is a
+  property of the route table rather than of each route's author. AGENTS.md
+  Policy: authorization is enforced server-side on every endpoint, independent
+  of what the UI hides.
 
 **Why a dependency and a route-table test rather than middleware.** Middleware
 would have to know which paths are exempt by matching strings, and three routes
@@ -22,7 +29,7 @@ allowlist is written down once, in a test, and everything else has to opt in.
 That is what makes `lookup_session`'s obligation enforceable rather than
 aspirational.
 
-**Neither of these queries `sessions`.** Both go through
+**None of these queries `sessions`.** They all go through
 `api.sessions.lookup_session`, the one lookup AD-3 permits — which is also why
 a role change or a deactivation takes effect on the very next request rather
 than at the next sign-in. `tests/test_source_guards.py` enforces the absence of
@@ -43,7 +50,7 @@ from typing import Annotated
 import psycopg
 from fastapi import Cookie, Depends, Response, status
 from shared_schema.errors import ApiError
-from shared_schema.user import User
+from shared_schema.user import Role, User
 
 from api.db import get_connection
 from api.sessions import SESSION_COOKIE_NAME, cleared_cookie_headers, lookup_session
@@ -95,6 +102,27 @@ PASSWORD_CHANGE_REQUIRED = "password_change_required"
 #: this app's front end has only this sentence to go on.
 SET_A_PASSWORD_FIRST = "Set a new password before you can use the rest of the app."
 
+#: The role check's own code, for a caller who is signed in, has claimed their
+#: account, and is not an Administrator.
+#:
+#: Distinct from both codes above, because the caller's answer is different from
+#: both: there is nothing to sign in again for and nothing to set. The surface
+#: is simply not theirs.
+#:
+#: **`403`, and never `401`.** `apps/web`'s `apiRequest` fires
+#: `notifyUnauthorized` on *status* 401, which `SessionProvider` answers by
+#: dropping the shell to the login screen — so a 401 here would sign a user out
+#: for a race the server won (an Administrator demoted between two requests, or
+#: a Staff caller reaching a route the shell never offered them). At 403 no
+#: observer watches, and the screen renders the sentence like any other refusal.
+ADMINISTRATOR_REQUIRED = "administrator_required"
+
+#: What a Staff caller is told. EXPERIENCE.md's register — short, factual, no
+#: exclamation mark — and it names the role the route needs rather than the one
+#: the caller holds, because a client that is not this app's front end has only
+#: this sentence to go on.
+NOT_AN_ADMINISTRATOR = "Only an Administrator can do this."
+
 
 def not_signed_in() -> ApiError:
     """No usable session. Carries the cookie clearance so a stale one goes.
@@ -125,7 +153,7 @@ def current_user(
     is to sign in again.
 
     Authorization is *not* decided here. This says who the caller is; what they
-    may do is `require_claimed_user` below and, later, a role check.
+    may do is `require_claimed_user` and `require_administrator` below.
     """
     # Set on the injected response, so every route built on this dependency is
     # uncacheable whether or not its handler remembered to say so. The error
@@ -156,6 +184,46 @@ def require_claimed_user(user: Annotated[User, Depends(current_user)]) -> User:
         raise ApiError(
             PASSWORD_CHANGE_REQUIRED,
             SET_A_PASSWORD_FIRST,
+            status_code=status.HTTP_403_FORBIDDEN,
+            headers=NO_STORE,
+        )
+    return user
+
+
+def require_administrator(user: Annotated[User, Depends(require_claimed_user)]) -> User:
+    """`require_claimed_user`, refused unless the account's role is `admin`.
+
+    **Every route under `/admin/` declares this**, and nothing else does.
+    `tests/test_admin_authorization.py` asserts both halves of that over the
+    served route table — every `/admin/` route declares it, and every route
+    declaring it is under `/admin/` — so the authorization boundary can be read
+    off the path instead of out of each handler, exactly as
+    `tests/test_forced_change_gate.py` does for the gate.
+
+    **It chains on `require_claimed_user`, not on `current_user`, and the
+    ordering is the point.** An Administrator still holding an admin-issued
+    temporary credential is refused by the gate *before* this check ever runs,
+    so a credential that travelled by note cannot be used to provision a second
+    one. Chaining on `current_user` would have opened exactly that path. It is
+    also what keeps `tests/test_forced_change_gate.py` passing with no allowlist
+    entry for this route: that file's walker finds a dependency at any depth.
+
+    **A check here rather than a line in the handler.** A handler that decides
+    its own authorization is a handler that can forget to, and nothing outside
+    it would know; declared as a dependency, the requirement is visible in the
+    route's signature and readable from the route table by a test.
+
+    AD-3 is what makes a demotion effective immediately: `lookup_session`
+    re-reads `role` and `active` from Postgres on every request and nothing is
+    cached at sign-in, so the request after the role flips is refused here — no
+    sign-out, no new sign-in, no session sweep in between.
+
+    `403`, never `401`. See `ADMINISTRATOR_REQUIRED`.
+    """
+    if user.role is not Role.ADMIN:
+        raise ApiError(
+            ADMINISTRATOR_REQUIRED,
+            NOT_AN_ADMINISTRATOR,
             status_code=status.HTTP_403_FORBIDDEN,
             headers=NO_STORE,
         )

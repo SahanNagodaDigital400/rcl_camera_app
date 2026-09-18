@@ -114,6 +114,42 @@ changed a password, when, or how many other devices it signed out: the only trac
 password was changed on a given day, the honest answer today is that the system cannot say. The
 audit log that answers it is Story 1.12.
 
+An Administrator provisions everybody else, from **Create user** on the home panel — the entry is
+rendered only for an Administrator, and a Staff user never sees it. It asks for a name, an email
+address, a role (Staff or Administrator) and a temporary password that the Administrator types
+themselves: there is no generator, because the value has to be transcribed by hand and a password
+you chose is one you can read back over a counter. It is shown in plain text on screen for the same
+reason — it is not the Administrator's own secret, and masking it would hide a typing mistake until
+the new user came back unable to sign in.
+
+On success the screen shows the name, address, role, the temporary password exactly as typed, and
+the moment it expires. **Hand that over yourself.** The app sends no mail of any kind — no
+invitation, no notification, no control on the screen that offers to send one — and the credential
+is gone from the product the moment you navigate away: nothing stores it in readable form and no
+screen can show it again. If it is lost before it reaches the person, provision them afresh under a
+different address: nothing in Epic 1 reissues a credential for a provisioned user, and the
+address they were first given stays consumed until Story 1.10 can edit it or Story 1.11 can
+remove the row.
+
+The credential is good for **72 hours**, or until it is claimed — whichever comes first. The new
+user can sign in with it straight away — no migration, no console command, no developer — and the
+first and only thing they can reach is the forced password-change screen; everything else answers
+`403` until they set a real password. It is not a one-use code: inside those 72 hours it signs in
+as many times as it is tried, and each time it lands on the same screen. Setting a real password is
+what retires it, and that also ends every session the credential had opened, on every device. Left
+unclaimed past 72 hours it stops working and the account needs a fresh one. The role
+takes effect on that user's very next request rather than at their next sign-in, in both directions:
+an Administrator you provision can provision others as soon as they claim their credential, and one
+you later demote is refused on the request after the change.
+
+Two limits worth knowing. The address must be unique, case and surrounding spaces ignored —
+`Nadeesha@Rocell.LK` and `nadeesha@rocell.lk` are the same login — and a second attempt at one
+already in use is refused without writing anything. And **nothing is written down about who
+provisioned whom**: as with a password change, the only trace today is the row's own timestamps,
+and the audit log that answers "who was given access, by whom, and when" is Story 1.12. Listing,
+editing and deactivating users are Stories 1.9 to 1.11; until they land, provisioning is the one
+thing the admin surface can do.
+
 **A forgotten password has no self-service path at all.** There is no reset link, no reset email and
 no mail transport anywhere in the product — the app sends no email, by design, and a test fails the
 build if a mail package is so much as declared in a manifest. A user who cannot sign in goes to an

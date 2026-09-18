@@ -30,14 +30,16 @@ from datetime import datetime
 import psycopg
 from psycopg import errors as pg_errors
 from shared_schema.passwords import hash_password
-from shared_schema.user import Role
+from shared_schema.user import TEMP_CREDENTIAL_LIFETIME_HOURS, Role
 
 from rocell_infra.config import SEED_ADMIN_EMAIL, ConfigurationError, seed_admin_config
 
-#: AGENTS.md Policy: an admin-issued temporary credential expires after 72
-#: hours, without exception. The seeded credential is one, so it expires too —
-#: `reseed_administrator` exists because of that, see `infra/README.md`.
-TEMP_CREDENTIAL_LIFETIME_HOURS = 72
+# The 72 hours is `shared_schema.user`'s, not this module's, since Story 1.8
+# gave `apps/api` a second writer of admin-issued credentials. The seeded
+# credential is one of them, so it expires too — `reseed_administrator` exists
+# because of that, see `infra/README.md`. Re-exported through `__all__` below,
+# so `seed.TEMP_CREDENTIAL_LIFETIME_HOURS` still resolves for the callers and
+# tests that read it from here.
 
 _ADMINISTRATOR_EXISTS = "SELECT 1 FROM users WHERE role = %s LIMIT 1"
 

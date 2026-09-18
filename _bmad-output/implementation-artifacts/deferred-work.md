@@ -606,3 +606,83 @@ source_spec: `spec-1-7-self-service-password-reset.md`
 severity: low
 reason: `SCANNED_EXTENSIONS` has no `.tf`, no `.sh`, and cannot match an extensionless file at all — `Dockerfile`, `Makefile`, a compose override — although `CLAUDE.md` puts IaC in `infra/`, which is the same argument the file already makes for `.yml`/`.yaml`. Separately, `_TRANSPORTS` is a mail vocabulary and FR-5's clause is about *recovery*: an SMS one-time code (`twilio`, `vonage`, `messagebird`, `publish_sms`) is exactly the signed-out path the clause forbids and reads clean through every check in the file. Both are the same decision as DW-74's: widening a word list safely means deciding it against the surfaces later stories will actually build, and a list widened on a guess is the false accusation the bare `boto3` pattern was already narrowed to avoid.
 status: open
+
+### DW-77: Provisioning a user writes no audit entry, so the product's first privileged write has no record of who granted whose access.
+origin: spec-deferred bc85a1da746b
+location: apps/api/api/users.py (create_user)
+source_spec: `spec-1-8-create-user-account.md`
+severity: medium
+reason: AGENTS.md Policy requires the append-only log to cover user changes, and `POST /admin/users` is the clearest one there is. Story 1.12 owns the write path and this endpoint's docstring names the entry it owes; no private log path was built in the meantime. Until that log exists the only trace is the row's own `created_at`, which does not say by whom.
+status: open
+
+### DW-78: DW-69 is now a four-endpoint problem — `POST /admin/users` adds a 64 MiB Argon2id hash per call, reachable by any Administrator session and bounded by nothing.
+origin: spec-deferred 087e6af07b3d
+location: apps/api/api/users.py (create_user)
+source_spec: `spec-1-8-create-user-account.md`
+severity: medium
+reason: The handler hashes on every request that gets past the length rules, and no counter keys on the calling Administrator. FastAPI admits ~40 concurrent sync handlers, so one account can hold ~40 hashes at once. DW-40 and DW-69 are both open and are decisions about what a counter would be keyed on; Story 1.6 scoped throttling to login, and this story could not settle it.
+status: open
+
+### DW-79: A mistyped address is permanently consumed by the unique index, and nothing in the product can edit, reissue or remove the row until Stories 1.10/1.11.
+origin: spec-deferred 12c9f10f8e76
+location: apps/api/api/users.py (_INSERT_USER)
+source_spec: `spec-1-8-create-user-account.md`
+severity: medium
+reason: `users_email_lower_key` refuses the corrected second attempt with `409 email_already_exists`, and the only remaining surface is `POST /admin/users` itself. README.md states the workaround as advice — provision them afresh under a different address — which leaves an unusable row behind with no way to reach it. Story 1.10 owns the edit and 1.11 the delete.
+status: open
+
+### DW-80: A `201` whose body or transport fails after the row is committed is reported to the Administrator as a failure, and nothing in the product can tell them which it was.
+origin: spec-deferred 720bbb51db01
+location: apps/web/src/screens/CreateUserScreen.tsx (handleSubmit)
+source_spec: `spec-1-8-create-user-account.md`
+severity: medium
+reason: `asUser` throws `ApiRequestError(MALFORMED_RESPONSE, ..., 201)` after the INSERT has committed, and the screen's `catch` treats it exactly like a refusal; a timeout or dropped connection after the commit does the same. The retry answers `409 email_already_exists`, and with no user list until Story 1.9 there is no surface that shows whether the row exists. This is DW-75's shape on a new endpoint and needs the same decision.
+status: open
+
+### DW-81: Back, Account, Sign out and a mid-session demotion all unmount the screen with no warning, discarding a half-typed form and a result panel holding a credential nothing can recover.
+origin: spec-deferred b10777d62e53
+location: apps/web/src/App.tsx (showSection), apps/web/src/screens/CreateUserScreen.tsx
+source_spec: `spec-1-8-create-user-account.md`
+severity: medium
+reason: EXPERIENCE.md line 90 asks for exactly this warning — "never silently dropping an in-progress admin form — warn before navigating away from unsaved catalogue/user edits". The temporary password is held only in this screen's state; the API never returns it and no screen can show it again. Building the guard means an unsaved-changes convention the product does not have yet, and it lands on every admin form from Story 1.10 on.
+status: open
+
+### DW-82: The request seam between the screen and the endpoint is asserted twice against hand-written literals and never crossed, so renaming a body field on either side leaves both suites green.
+origin: spec-deferred 37c462b37f47
+location: apps/web/src/__tests__/create-user.test.tsx, apps/api/tests/test_create_user.py
+source_spec: `spec-1-8-create-user-account.md`
+severity: medium
+reason: `create-user.test.tsx` checks the body against a stubbed `fetch`; `test_create_user.py` checks it against its own `_body()`. The *response* is pinned across languages (`user-contract.test.ts` against `User.model_fields`) and so are the error codes (`error-code-parity.test.ts`), but the request body is not. The repository has no e2e harness and no `e2e` make target, so this is structural rather than a choice this story made.
+status: open
+
+### DW-83: The three route-table walkers disagree about rigour, and the two weaker ones would pass a sub-application mounted under `/admin/`.
+origin: spec-deferred 2ca7d2a162c7
+location: apps/api/tests/test_no_registration.py, apps/api/tests/test_forced_change_gate.py
+source_spec: `spec-1-8-create-user-account.md`
+severity: low
+reason: `test_admin_authorization._api_routes` raises `AssertionError` on any route type it does not understand. `test_no_registration._routes()` — whose exact served-path set this story extended — and `test_forced_change_gate`'s own third copy both skip a `Mount`, a `WebSocketRoute` or a static handler silently. Consolidating them is a change to guards three stories already depend on.
+status: open
+
+### DW-84: `max_length` runs before the stripping validator, so a name of exactly the bound submitted with surrounding whitespace is refused with the generic `validation_error` although the value that would be
+origin: spec-deferred 06f61d30df15
+location: apps/api/api/users.py (CreateUserRequest)
+source_spec: `spec-1-8-create-user-account.md`
+severity: low
+reason: Pydantic applies `Field(max_length=MAX_NAME_LENGTH)` to the raw value and `_named` strips afterwards. The parametrized test covers only `"x" * (MAX_NAME_LENGTH + 1)`. Moving the bound into the validator changes which refusal shape the field produces, which is a contract decision rather than a fix.
+status: open
+
+### DW-85: The API suite's ephemeral cluster runs a `C.UTF-8` collation whose `lower()` folds ASCII only, so no test can exercise a Python/Postgres case-folding disagreement.
+origin: spec-deferred 6d81c2a44e15
+location: apps/api/tests/conftest.py
+source_spec: `spec-1-8-create-user-account.md`
+severity: low
+reason: `conftest.py` builds the cluster with `initdb`'s default. A probe of ~12k codepoints against that cluster found zero disagreements, so the behavioural non-ASCII test passes with or without `_INSERT_USER`'s `lower(%s)`; a statement-level pin holds the hardening instead. Running the suite on a full Unicode collation is an `initdb` flag and a separate decision affecting every database test.
+status: open
+
+### DW-86: An address whose Python fold and Postgres fold differ can be provisioned successfully and can then never sign in, because the login lookup compares the two folds against each other.
+origin: spec-deferred 20eff5189c8c
+location: apps/api/api/auth.py (_SELECT_CREDENTIAL, login)
+source_spec: `spec-1-8-create-user-account.md`
+severity: medium
+reason: `_INSERT_USER` stores `lower(%s)` — the Postgres fold — while `auth._SELECT_CREDENTIAL` matches `WHERE lower(email) = %s` against `payload.email.strip().lower()`, the Python fold. The two are equal only where `lower()` agrees across the two implementations, which is exactly the condition `lower(%s)` was added because it can fail. Where it fails the `201`, the response body and the row are all correct and the account is unreachable, with no error anywhere. The lookup is in `auth.py`, which this story's intent forbids changing, and DW-85 records that the suite's `C.UTF-8` cluster cannot observe either half.
+status: open

@@ -7,9 +7,10 @@ import { useSession, SessionProvider } from './auth/SessionProvider';
 import type { SessionStatus } from './auth/SessionProvider';
 import { AppShell, MAIN_REGION_ID } from './components/AppShell';
 import { AccountSettingsScreen } from './screens/AccountSettingsScreen';
+import { CreateUserScreen } from './screens/CreateUserScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
 import { LoginScreen } from './screens/LoginScreen';
-import type { User } from '@rocell/schema/user';
+import type { Role, User } from '@rocell/schema/user';
 
 /** Shown when signing out fails as something other than an `ApiRequestError`. */
 const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
@@ -17,31 +18,63 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 /**
  * Which surface inside the shell is showing.
  *
- * Two values because two surfaces exist. This is not a router and is not the
+ * Three values because three surfaces exist. This is not a router and is not the
  * beginning of one: EXPERIENCE.md's nav is role-conditional, spans six surfaces
  * and changes shape at a breakpoint, and five of those six do not exist yet.
+ * Create user is not one of the six — it is a door on the home panel standing
+ * in for User List, which is Story 1.9's.
  * When they arrive this becomes whatever the nav needs; until then it is one
  * piece of state and a swap.
  */
-type Section = 'home' | 'account';
+type Section = 'home' | 'account' | 'create-user';
 
 /**
- * Which of the five screens the session state selects.
+ * Which of the six screens the session state selects.
  *
  * Named separately from `SessionStatus` because the two are not the same shape:
- * `'signed-in'` covers the forced-change screen, the shell and Account Settings,
- * and the moves between them are screen swaps that the status cannot see. Focus
- * management keys off this, not off the status — which is why the section is
- * folded in here rather than handled beside it: swapping the home panel for
- * Account Settings unmounts whatever had focus exactly as the other swaps do.
+ * `'signed-in'` covers the forced-change screen, the shell, Account Settings and
+ * Create user, and the moves between them are screen swaps that the status
+ * cannot see. Focus management keys off this, not off the status — which is why
+ * the section is folded in here rather than handled beside it: swapping the home
+ * panel for another surface unmounts whatever had focus exactly as the other
+ * swaps do.
  */
-type Screen = 'loading' | 'login' | 'password-change' | 'shell' | 'account';
+type Screen = 'loading' | 'login' | 'password-change' | 'shell' | 'account' | 'create-user';
+
+/**
+ * Whether `role` can reach `section` at all.
+ *
+ * The one statement of which surfaces a role reaches, because two places need
+ * the answer and they must not disagree: `currentScreen` reads past a section
+ * the role cannot reach, and `Gate`'s role reconciler clears it. A second copy
+ * of the rule is how a surface added from Story 1.9 on ends up rendered by one
+ * and cleared by the other.
+ *
+ * `null` is a signed-out caller, who reaches nothing role-conditional.
+ */
+function reachableBy(section: Section, role: Role | null): boolean {
+  if (section === 'create-user') return role === 'admin';
+  return true;
+}
 
 function currentScreen(status: SessionStatus, user: User | null, section: Section): Screen {
   if (status === 'loading') return 'loading';
   if (status === 'signed-out' || user === null) return 'login';
   if (user.must_change_password) return 'password-change';
-  return section === 'account' ? 'account' : 'shell';
+  if (section === 'account') return 'account';
+  // EXPERIENCE.md line 95: a permission revoked mid-session sends the user to
+  // the highest surface the new role can reach, not to a dead screen. Expressed
+  // as a condition inside this pure function rather than as an effect that
+  // resets the section, so an Administrator demoted while standing on this
+  // screen simply renders the home panel on the very next render — there is no
+  // frame in which the admin surface is painted for a Staff user, and no effect
+  // to keep in step with `SessionProvider`'s revalidation.
+  //
+  // It is a convenience, not the control: the cached `User` is a render cache
+  // and never an authorization decision (AGENTS.md Policy), and the server
+  // refuses a Staff caller at `POST /admin/users` whatever this returns.
+  if (section === 'create-user') return reachableBy(section, user.role) ? 'create-user' : 'shell';
+  return 'shell';
 }
 
 /**
@@ -69,6 +102,7 @@ function Gate(): JSX.Element {
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [section, setSection] = useState<Section>('home');
   const [lastStatus, setLastStatus] = useState<SessionStatus>(status);
+  const [lastRole, setLastRole] = useState<Role | null>(user?.role ?? null);
 
   if (lastStatus !== status) {
     setLastStatus(status);
@@ -92,6 +126,42 @@ function Gate(): JSX.Element {
     // is what `oxlint`'s `set-state-in-effect` rule asks for in place of the
     // effect this started as.
     if (status !== 'signed-in') setSection('home');
+  }
+
+  if (lastRole !== (user?.role ?? null)) {
+    setLastRole(user?.role ?? null);
+    // The role's own reconciler, beside the status's and for the same reason:
+    // `currentScreen` *reads past* a section the new role cannot reach, and
+    // reading past it is not the same as clearing it. What goes wrong while the
+    // stale value sits in state is invisible until it isn't — if the role is
+    // restored, and an Administrator demoted and promoted back within a shift is
+    // a two-click operation once Story 1.10 lands, the create screen reopens by
+    // itself over whatever the user was actually looking at. Nobody asked for it
+    // and nothing on screen explains it.
+    //
+    // `showSection`'s `next === section` early return is the second reason to
+    // clear rather than read past: it makes a stale section self-perpetuating
+    // rather than self-correcting, so every surface added from Story 1.9 on
+    // inherits the bug instead of the fix.
+    //
+    // EXPERIENCE.md line 95 asks for the highest surface the *new* role can
+    // reach, which is a place to be sent rather than a screen to be hidden. Home
+    // is that surface for both roles today.
+    //
+    // **Only when the new role cannot reach where they are.** A role change is
+    // not by itself a reason to move somebody: a *promotion* arrives through the
+    // same revalidation as a demotion, and clearing unconditionally would take a
+    // Staff user standing on Account Settings — a surface both roles reach —
+    // back to the home panel the moment they were made an Administrator,
+    // discarding a half-typed password change for a change that granted them
+    // more, not less. `reachableBy` is the one statement of what a role reaches,
+    // shared with `currentScreen` so the two cannot disagree.
+    //
+    // Adjusted during render rather than in an effect, exactly as above: React
+    // re-runs this component before it commits anything, so the stale section
+    // never reaches the DOM — and `oxlint`'s `react/set-state-in-effect` forbids
+    // the effect this would otherwise be.
+    if (!reachableBy(section, user?.role ?? null)) setSection('home');
   }
 
   const screen = currentScreen(status, user, section);
@@ -210,6 +280,19 @@ function Gate(): JSX.Element {
       </p>
     );
 
+  if (screen === 'create-user') {
+    // Inside the shell, in place of the home panel, exactly as Account Settings
+    // is: the app bar stays, so Sign out stays, and the screen supplies its own
+    // way back. It renders no `<main>` of its own — `AppShell` provides the one
+    // the focus effect above moves focus to.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <CreateUserScreen onBack={() => showSection('home')} />
+      </AppShell>
+    );
+  }
+
   if (screen === 'account') {
     // Inside the shell, in place of the home panel — not instead of it. The app
     // bar stays, so Sign out stays, and Account Settings supplies its own way
@@ -234,6 +317,24 @@ function Gate(): JSX.Element {
         Internal staff tool. Photograph a tile and get the three closest matches from the
         catalogue, each with its reference image, Size and Category.
       </p>
+      {/* The interim door to the admin surface, role-conditional as
+          EXPERIENCE.md line 18 requires: a Staff user never sees an entry they
+          cannot use, and this is a nav entry's stand-in rather than a nav — the
+          real one spans six surfaces of which five do not exist yet.
+
+          A convenience only. The server refuses a Staff caller at
+          `POST /admin/users` regardless of what this renders (AGENTS.md Policy:
+          authorization is never gated by what the UI hides), and the cached
+          `user` read here is a render cache and never a decision. */}
+      {user.role === 'admin' && (
+        <button
+          className={styles.createUser}
+          type="button"
+          onClick={() => showSection('create-user')}
+        >
+          Create user
+        </button>
+      )}
     </AppShell>
   );
 }

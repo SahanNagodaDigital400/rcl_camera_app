@@ -351,6 +351,22 @@ def test_every_allowlisted_route_states_why() -> None:
     assert thin == []
 
 
+def test_no_admin_route_is_exempt_from_the_gate() -> None:
+    # Story 1.8's acceptance clause, as a property of the allowlist rather than
+    # of the one route that first needed it. `require_administrator` chains on
+    # `require_claimed_user`, so an Administrator holding a credential that
+    # arrived on a note cannot use it to issue a second one — and an entry here
+    # would not relax that chain, it would stop this file *checking* it, which
+    # is the same exemption one step further from anybody's notice. Stories
+    # 1.9-1.11 add routes under this prefix and inherit the rule.
+    exempt = [f"{method} {path}" for method, path in ALLOWED_WITHOUT_THE_GATE if "/admin/" in path]
+
+    assert exempt == [], (
+        "A route under /admin/ must never be exempt from the forced-change gate: "
+        + ", ".join(exempt)
+    )
+
+
 def test_the_guard_catches_a_route_that_forgets_the_gate() -> None:
     # A guard nobody has seen fail is a guard nobody knows works. This is the
     # Epic 2 mistake, in miniature: a route that serves real data, declared

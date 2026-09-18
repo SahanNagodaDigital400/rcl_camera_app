@@ -265,6 +265,15 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
   });
 
+  it('colours the create user rejection the same way', () => {
+    // The screen that refuses three different fields, and the one furthest from
+    // DESIGN.md's named blocks. Point `.error` at `--color-text` and an address
+    // already in use renders as ordinary prose beside a form that looks fine.
+    const css = read(join(SRC, 'screens', 'CreateUserScreen.module.css'));
+
+    expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
   it('writes the account settings save indicator in the brand primary', () => {
     // DESIGN.md's `save-indicator`: muted while it is working, `{colors.primary}`
     // once it has. Point `.saved` at `--color-muted-text` and the two states
@@ -301,6 +310,7 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     ['LoginScreen', 'LoginScreen.tsx'],
     ['ForcedPasswordChangeScreen', 'ForcedPasswordChangeScreen.tsx'],
     ['AccountSettingsScreen', 'AccountSettingsScreen.tsx'],
+    ['CreateUserScreen', 'CreateUserScreen.tsx'],
   ])('is the class %s\'s alert element actually carries', (_label, file) => {
     // The rules above are inert if the element points somewhere else. The
     // dangling-reference check upstream proves `styles.error` resolves to a
@@ -369,6 +379,66 @@ describe('changing a password is the one action on account settings', () => {
     const accents = [...css().matchAll(/var\(--color-accent\)/g)];
 
     expect(accents).toHaveLength(1);
+  });
+});
+
+describe('adding a user is the one action on the create user screen', () => {
+  // DESIGN.md's "exactly one per screen" for the accent-filled primary, on a
+  // screen that carries two buttons and a result card: Create user takes the
+  // accent, Back is the navy outline, and the card is surface-on-hairline. A
+  // second orange control would make neither of them the action.
+  const css = (): string => read(join(SRC, 'screens', 'CreateUserScreen.module.css'));
+
+  it('fills the submit with the accent and writes on it in navy', () => {
+    const submit = rule(css(), '.submit');
+
+    expect(declaration(submit, 'background')).toBe('var(--color-accent)');
+    expect(declaration(submit, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('leaves Back as the navy outline, not a second filled control', () => {
+    const back = rule(css(), '.back');
+
+    expect(declaration(back, 'color')).toBe('var(--color-primary)');
+    expect(declaration(back, 'background')).not.toBe('var(--color-accent)');
+  });
+
+  it('gives the result panel DESIGN.md\'s card treatment', () => {
+    // White surface, hairline border, `md` radius, navy-tinted shadow. Nothing
+    // else in the suite can see a background, so without this the card can
+    // quietly become a bare block of prose the reader scrolls past — on the one
+    // panel whose contents have to be transcribed accurately.
+    const result = rule(css(), '.result');
+
+    expect(declaration(result, 'background')).toBe('var(--color-surface)');
+    expect(declaration(result, 'border-radius')).toBe('var(--radius-md)');
+    expect(declaration(result, 'box-shadow')).toBe('var(--elevation-card)');
+  });
+
+  it('sets the temporary password in the monospace role', () => {
+    // DESIGN.md reserves `code` for a value read character by character, so 0/O
+    // and 1/I cannot be confused — which is the whole job of this one field.
+    const credential = rule(css(), '.credential');
+
+    expect(declaration(credential, 'font-family')).toBe('var(--font-mono)');
+  });
+
+  it('paints nothing else with the accent', () => {
+    const accents = [...css().matchAll(/var\(--color-accent\)/g)];
+
+    expect(accents).toHaveLength(1);
+  });
+
+  it('leaves the home panel\'s entry to it outlined, never filled', () => {
+    // The door on the home panel is a secondary control: the shell's landing
+    // surface has no primary action, and an accent button there would be the one
+    // orange thing on a screen that is not for provisioning anybody.
+    const app = read(join(SRC, 'App.module.css'));
+    const entry = rule(app, '.createUser');
+
+    expect(declaration(entry, 'background')).toBe('transparent');
+    expect(declaration(entry, 'color')).toBe('var(--color-primary)');
+    expect([...app.matchAll(/var\(--color-accent\)/g)]).toHaveLength(0);
   });
 });
 

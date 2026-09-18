@@ -1,8 +1,12 @@
-"""FR-1 as a test: there is no way to create an account from inside the product.
+"""FR-1 as a test: nobody can bring their own account into existence.
 
-Accounts are provisioned by an Administrator, and the very first one is written
-by the migration runner outside the application entirely. "We just did not
-write a sign-up endpoint" is not a guarantee — this file is.
+Accounts are provisioned by an Administrator — since Story 1.8 through
+`POST /admin/users`, which is authenticated and Administrator-only — and the
+very first one is written by the migration runner outside the application
+entirely. What FR-1 forbids is a *self*-provisioning path: an unauthenticated
+caller, or any caller acting on their own behalf, creating the credential they
+then sign in with. "We just did not write a sign-up endpoint" is not a guarantee
+— this file is.
 
 Three independent checks, because each misses what the others catch:
 
@@ -137,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_five_auth_routes_and_health() -> None:
+def test_the_route_table_is_the_five_auth_routes_health_and_the_admin_writer() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -151,6 +155,24 @@ def test_the_route_table_is_the_five_auth_routes_and_health() -> None:
     # session. `test_forced_change_gate.py` holds the same table to the
     # forced-change allowlist, and `test_no_password_reset.py` holds it to FR-5's
     # "no self-service option for a signed-out user".
+    #
+    # `/admin/users` (Story 1.8, FR-11) is the one route in the product that
+    # does bring a user into existence, and it is what FR-1 *requires* rather
+    # than what it forbids: FR-1 says a user authenticates only if an
+    # Administrator provisioned them, which presupposes that an Administrator
+    # has somewhere to do it. What FR-1 forbids is a caller provisioning
+    # *themselves*, and nothing here does:
+    #
+    # * it is authenticated — without a session it answers `401`, so there is no
+    #   unauthenticated path to it at all;
+    # * it is Administrator-only, through `require_administrator`, which
+    #   `test_admin_authorization.py` proves every `/admin/` route declares; and
+    # * every field it takes describes somebody *else* — the caller's own row is
+    #   never the one written, and the body cannot name who is acting.
+    #
+    # The seeded Administrator (`infra/rocell_infra/seed.py`) is still the only
+    # row written with no Administrator behind it, and it is written by the
+    # migration runner outside the application entirely.
     assert {path for path, _ in _routes()} == {
         "/health",
         "/auth/login",
@@ -158,6 +180,7 @@ def test_the_route_table_is_the_five_auth_routes_and_health() -> None:
         "/auth/logout",
         "/auth/password",
         "/auth/password/change",
+        "/admin/users",
     }
 
 

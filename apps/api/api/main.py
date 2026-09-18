@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from shared_schema.errors import ApiError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api import auth
+from api import auth, users
 from api.db import lifespan
 
 #: Stable, machine-readable codes for the HTTP statuses routing produces. A
@@ -168,6 +168,13 @@ def create_app() -> FastAPI:
     # walks the route table below and fails on any route outside its written
     # allowlist that does not declare it.
     app.include_router(auth.router)
+    # `/admin/` is an authorization boundary, not a naming convention: every
+    # route under it declares `api.dependencies.require_administrator`, and
+    # `tests/test_admin_authorization.py` reads that requirement off the path
+    # for both directions — nothing under the prefix may omit the dependency,
+    # and nothing outside it may declare it. That is what lets Stories 1.9–1.11
+    # inherit the rule by choosing a path rather than by remembering a habit.
+    app.include_router(users.router)
 
     return app
 

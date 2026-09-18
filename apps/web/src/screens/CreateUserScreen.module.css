@@ -1,0 +1,204 @@
+/* Create user — where an Administrator provisions somebody else's login (FR-11).
+ *
+ * Rendered *inside* the shell, like Account Settings: the app bar is above it
+ * and `AppShell`'s `<main>` is around it, so there is no full-height centring
+ * and no chrome-less panel here. The form rhythm is deliberately the same as
+ * that screen's — a single narrow column, label above input, `--space-5` between
+ * fields — because an Administrator moving between the two should not read them
+ * as two different applications.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target floor
+ * and the accent focus ring are already on `button`, `input` and `select` in
+ * global.css and are deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: var(--measure-form);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  color: var(--color-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+.input {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* The role picker. Same hairline box as an input so the two read as one form
+ * rather than as a form plus a platform control; `global.css` already gives
+ * `select` the font reset and the touch-target floor. */
+.select {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* The rejection, carrying the API's own sentence — which names the rule that
+ * failed, or the field that was wrong (EXPERIENCE.md:87). Red is
+ * destructive-or-failed in this system and nothing else, and it is never the
+ * only signal: the text says what happened and `aria-invalid` marks the field. */
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The submit, Back and the in-flight indicator on one row, so the indicator sits
+ * beside the thing that triggered it rather than in a corner (EXPERIENCE.md's
+ * Save indicator row). Wraps rather than shrinks: at the narrowest phone width
+ * three items on one line would push the buttons below the touch-target floor. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* The single primary action on this screen: accent fill, navy foreground.
+ * Never white on orange — 2.63:1, the one contrast pair DESIGN.md bans. */
+.submit {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.submit:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* Back: DESIGN.md's secondary button — navy outline, navy text, transparent
+ * fill. The default for every non-primary action, and the reason this screen
+ * still has exactly one accent control. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.back:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* Muted while the request is in flight, and empty at rest. Deliberately not
+ * orange — orange stays reserved for the action that has not fired yet, not for
+ * reporting on it (DESIGN.md's `save-indicator`). */
+.indicator {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* The result panel: DESIGN.md's Card — white surface, hairline border, `md`
+ * radius, navy-tinted shadow. A card rather than more prose in the column,
+ * because what is in it has to be transcribed accurately onto a note, and a
+ * bounded surface is what makes the reader stop and read it. */
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-card);
+}
+
+.subtitle {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: var(--color-text);
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2) var(--space-4);
+}
+
+.term {
+  color: var(--color-muted-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+/* `overflow-wrap: anywhere` because an address has no break opportunity in it:
+ * at 375px the column is already at its `--measure-form` ceiling, and one long
+ * `firstname.lastname@rocell.lk` would otherwise push the whole page into a
+ * horizontal scroll rather than wrap. */
+.value {
+  color: var(--color-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  overflow-wrap: anywhere;
+}
+
+/* The temporary password, in the monospace role DESIGN.md reserves for a value
+ * that has to be read character by character: 0/O and 1/I must not be
+ * confusable when somebody is copying this onto a note by hand. */
+.credential {
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--type-code-size);
+  font-weight: var(--type-code-weight);
+  line-height: var(--type-code-line);
+  overflow-wrap: anywhere;
+}
+
+/* The line that says the app sends nothing on the Administrator's behalf. Muted
+ * rather than red: it is not a failure, it is how this product works. */
+.note {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}

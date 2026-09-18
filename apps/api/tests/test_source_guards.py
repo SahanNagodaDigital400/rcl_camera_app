@@ -95,6 +95,11 @@ def test_the_scan_reaches_the_files_it_claims_to() -> None:
         SESSIONS_HOME,
         THROTTLE_HOME,
         REPO_ROOT / "apps" / "api" / "api" / "auth.py",
+        # Story 1.8's provisioning write. Named for the same reason the four
+        # above are: the SQL it carries is what the interpolation guard is for,
+        # and a module that quietly fell outside `SCANNED` would be reported
+        # clean without a byte of it being read.
+        REPO_ROOT / "apps" / "api" / "api" / "users.py",
     ):
         assert expected in sources
 

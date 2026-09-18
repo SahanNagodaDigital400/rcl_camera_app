@@ -23,6 +23,22 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, field_serializer
 
+#: AGENTS.md Policy: an admin-issued temporary credential expires after 72
+#: hours, without exception.
+#:
+#: It lives here, in the contract both writers already depend on, because there
+#: are now two of them: `infra`'s migration-time seeder writes the first
+#: Administrator's credential and `apps/api`'s admin surface writes every one
+#: after it. `shared/*` is the only direction both may point — `apps/api`
+#: depends on `shared-schema` and may not depend on `infra` — so a second copy
+#: of the number would be the only alternative, and a deadline that is 72 hours
+#: in one writer and something else in the other is AGENTS.md's rule holding for
+#: some accounts and not others, with nothing raising.
+#:
+#: The deadline itself is always computed by Postgres (`now() + make_interval`),
+#: never against a writing host's clock; this is only how many hours to add.
+TEMP_CREDENTIAL_LIFETIME_HOURS = 72
+
 
 class Role(StrEnum):
     """The complete set of roles. AGENTS.md Policy: never a third one."""

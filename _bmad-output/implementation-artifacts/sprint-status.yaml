@@ -43,7 +43,7 @@ development_status:
   1-5-session-persistence-expiry: done
   1-6-login-rate-limiting: done
   1-7-self-service-password-reset: done
-  1-8-create-user-account: backlog
+  1-8-create-user-account: done
   1-9-view-user-list: backlog
   1-10-edit-user: backlog
   1-11-deactivate-or-delete-user: backlog

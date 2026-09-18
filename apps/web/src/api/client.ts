@@ -103,6 +103,34 @@ export const INVALID_CURRENT_PASSWORD = 'invalid_current_password';
  */
 export const ACCOUNT_LOCKED = 'account_locked';
 
+/**
+ * The envelope code for an address `POST /admin/users` will not store.
+ *
+ * Answered when what was typed is not an address at all — no `@`, an empty side
+ * of one, a control character. The API's own sentence names the rule
+ * (EXPERIENCE.md:87), so a screen branches on this only to decide **which field
+ * to mark and focus**, which is the *email* field, and renders the server's
+ * wording rather than restating a rule it does not own.
+ *
+ * It arrives as a `422` with a code of its own rather than the generic
+ * `validation_error`, precisely so that decision is possible: the generic one
+ * carries one sentence for every malformed body in the product and names no
+ * field at all.
+ */
+export const INVALID_EMAIL = 'invalid_email';
+
+/**
+ * The envelope code for an address that is already somebody's login.
+ *
+ * Also the **email** field — nothing is wrong with the rest of the form, and the
+ * person may simply already have access. Distinct from `invalid_email` because
+ * what the Administrator does about it is different: one is a typo to correct,
+ * the other is a user who already exists.
+ *
+ * A `409`, so no observer watches it and nothing about the session changes.
+ */
+export const EMAIL_ALREADY_EXISTS = 'email_already_exists';
+
 /** The code this module invents when the request never reached the API. */
 export const NETWORK_ERROR = 'network_error';
 
