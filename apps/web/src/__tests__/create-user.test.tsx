@@ -1,5 +1,5 @@
 /**
- * Create user — the screen, and the door the home panel opens onto it.
+ * Create user — the screen, and the route the app takes to reach it.
  *
  * Two halves, deliberately driven through two different roots, the way
  * `account-settings.test.tsx` splits them. The screen's own behaviour runs
@@ -8,13 +8,20 @@
  * app *reaches* the screen at all runs through `App` against a stubbed `fetch`,
  * because the role condition and the section state live in the gate.
  *
+ * Since Story 1.9 that route is two steps: the home panel's one admin entry is
+ * **Users**, and Create user is reached from the list's "+ Add user"
+ * (EXPERIENCE.md line 34). The block at the bottom of this file keeps every
+ * role-reconciler subject it had — a Staff user is offered no door, a demotion
+ * mid-screen lands on the home panel, a promotion leaves the user where it found
+ * them — driven through the surface that door now opens.
+ *
  * Three assertions here are the ones nothing else in the suite can make: that a
  * Staff user is offered no door at all, that a Staff user whose section state
  * somehow says otherwise still lands on the home panel, and that no control
  * anywhere on this screen offers to send the credential — which is AGENTS.md
  * Policy and FR-11, and which a screenshot review would have to catch otherwise.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../App';
@@ -67,6 +74,15 @@ const CREATED: User = {
 const TEMPORARY = 'a-long-enough-password';
 
 /**
+ * What `GET /admin/users` answers for the block at the bottom of this file.
+ *
+ * The list is now on the path between the home panel and Create user, so every
+ * test that walks that path needs it to resolve. Its own behaviour — ordering,
+ * badges, the lock line, the failure and the retry — is `user-list.test.tsx`'s.
+ */
+const ROSTER: User[] = [ADMIN, STAFF];
+
+/**
  * `NOT_AN_ADDRESS`, `ADDRESS_ALREADY_IN_USE` and `PASSWORD_RULES['too_short']`
  * in the Python source, character for character.
  *
@@ -90,7 +106,13 @@ const unauthorized: Reply = {
 };
 
 /**
- * Replace `fetch` with a queue keyed by path, and record every call.
+ * Replace `fetch` with a queue keyed by **method and path**, and record every call.
+ *
+ * The method is part of the key because since Story 1.9 `GET /admin/users` and
+ * `POST /admin/users` are two different routes over one path: keyed on the path
+ * alone, the first test that submits this form through the `App` root would be
+ * handed the user list as its create response and would fail for a reason that
+ * has nothing to do with the code under test.
  *
  * `vi.stubGlobal` rather than assigning: jsdom does not implement `fetch`, so
  * the global may not be there to spy on in the first place. A local copy rather
@@ -102,7 +124,7 @@ function stubFetch(replies: Record<string, Reply[]>): { calls: [string, RequestI
 
   vi.stubGlobal('fetch', (input: string, init: RequestInit = {}) => {
     calls.push([input, init]);
-    const queued = replies[input];
+    const queued = replies[`${init.method ?? 'GET'} ${input}`];
     const reply = (queued && queued.length > 1 ? queued.shift() : queued?.[0]) ?? {
       status: 404,
       body: { error: { code: 'not_found', message: 'No such route.' } },
@@ -125,6 +147,13 @@ const refusal = (code: string, message: string, status: number): Reply => ({
   status,
   body: { error: { code, message } },
 });
+
+/** The row a person's name is in, so a cell assertion cannot read another row's. */
+function rowFor(name: string): HTMLElement {
+  const row = screen.getByText(name).closest('tr');
+  expect(row, `${name} is not in a table row`).toBeTruthy();
+  return row as HTMLElement;
+}
 
 function renderScreen(onBack: () => void = (): void => undefined): void {
   render(<CreateUserScreen onBack={onBack} />);
@@ -179,7 +208,7 @@ const NO_MAIL_SENTENCE = 'This app sends no mail.';
 
 describe('the create user form', () => {
   it('sends exactly the body the API contract names', async () => {
-    const { calls } = stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    const { calls } = stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill();
@@ -202,7 +231,7 @@ describe('the create user form', () => {
   });
 
   it('defaults the role to Staff', async () => {
-    const { calls } = stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    const { calls } = stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill();
@@ -222,7 +251,7 @@ describe('the create user form', () => {
   });
 
   it('sends the password exactly as typed, untrimmed', async () => {
-    const { calls } = stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    const { calls } = stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill({ password: ` ${TEMPORARY} ` });
@@ -235,7 +264,7 @@ describe('the create user form', () => {
   });
 
   it('shows the credential and its deadline for transcription', async () => {
-    stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill();
@@ -262,7 +291,7 @@ describe('the create user form', () => {
     // A bare wall-clock time on a note handed over hours later, possibly in
     // another room, is a deadline nobody can check. `toLocaleString` already
     // renders in the reader's own zone; the zone name is what says which.
-    stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill();
@@ -285,7 +314,7 @@ describe('the create user form', () => {
     // and the alternative to rendering nothing is rendering "Invalid Date"
     // beside a credential somebody is about to copy onto a note.
     stubFetch({
-      '/api/admin/users': [
+      'POST /api/admin/users': [
         { status: 201, body: { ...CREATED, temp_credential_expires_at: null } },
       ],
     });
@@ -301,7 +330,7 @@ describe('the create user form', () => {
   });
 
   it('says the app sends nothing on the Administrator’s behalf', async () => {
-    stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill();
@@ -321,7 +350,7 @@ describe('the create user form', () => {
     // one. This asserts *which controls exist*, by the accessible name
     // testing-library computes, across every role a control could take. Anything
     // added to this screen fails here until it is listed and argued for.
-    stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill();
@@ -352,7 +381,7 @@ describe('the create user form', () => {
     // swallowed — or replaced by a cast — the panel renders with a blank name
     // and "Invalid Date" where the deadline goes, beside a credential somebody
     // is about to write down and hand over.
-    stubFetch({ '/api/admin/users': [{ status: 201, body: { id: CREATED.id } }] });
+    stubFetch({ 'POST /api/admin/users': [{ status: 201, body: { id: CREATED.id } }] });
     renderScreen();
 
     fill();
@@ -375,7 +404,7 @@ describe('the create user form', () => {
     // the server has no reason to refuse it — a role granted by form state
     // nobody looked at. Set to Administrator before submitting, so deleting the
     // reset fails here rather than passing on a field the test never touched.
-    stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill();
@@ -391,7 +420,7 @@ describe('the create user form', () => {
 
   it('stays on the screen, with no toast and no navigation', async () => {
     const onBack = vi.fn();
-    stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen(onBack);
 
     fill();
@@ -406,7 +435,7 @@ describe('the create user form', () => {
     // A credential sitting beside a half-filled form reads as though it belonged
     // to what is being typed — the exact transcription error the panel exists to
     // prevent.
-    stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill();
@@ -424,7 +453,7 @@ describe('the create user form', () => {
     // refusal cleared the panel holding the one copy of the credential, which
     // nothing in the product can show again. Nothing was typed, so there is
     // nothing for the panel to be describing incorrectly.
-    stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill();
@@ -485,7 +514,7 @@ describe('a refusal names the field the Administrator has to fix', () => {
       /^temporary password$/i,
     ],
   ])('marks and focuses the right field for %s', async (_code, reply, message, label) => {
-    stubFetch({ '/api/admin/users': [reply] });
+    stubFetch({ 'POST /api/admin/users': [reply] });
     renderScreen();
 
     fill();
@@ -500,7 +529,7 @@ describe('a refusal names the field the Administrator has to fix', () => {
   });
 
   it('keeps every typed value across a refusal', async () => {
-    stubFetch({ '/api/admin/users': [refusal(EMAIL_ALREADY_EXISTS, ALREADY_IN_USE, 409)] });
+    stubFetch({ 'POST /api/admin/users': [refusal(EMAIL_ALREADY_EXISTS, ALREADY_IN_USE, 409)] });
     renderScreen();
 
     fill();
@@ -517,7 +546,7 @@ describe('a refusal names the field the Administrator has to fix', () => {
     // `administrator_required` is the realistic case: an Administrator demoted
     // between two requests. Nothing they typed is at fault, so nothing is marked.
     stubFetch({
-      '/api/admin/users': [
+      'POST /api/admin/users': [
         refusal('administrator_required', 'Only an Administrator can do this.', 403),
       ],
     });
@@ -540,7 +569,7 @@ describe('a refusal names the field the Administrator has to fix', () => {
     ['email', { email: ' ' }, /^email$/i],
     ['temporary password', { password: '  ' }, /^temporary password$/i],
   ])('refuses a blank %s without a request', async (_field, values, label) => {
-    const { calls } = stubFetch({ '/api/admin/users': [{ status: 201, body: CREATED }] });
+    const { calls } = stubFetch({ 'POST /api/admin/users': [{ status: 201, body: CREATED }] });
     renderScreen();
 
     fill(values);
@@ -552,7 +581,7 @@ describe('a refusal names the field the Administrator has to fix', () => {
   });
 
   it('renders exactly one alert', async () => {
-    stubFetch({ '/api/admin/users': [refusal(INVALID_EMAIL, NOT_AN_ADDRESS, 422)] });
+    stubFetch({ 'POST /api/admin/users': [refusal(INVALID_EMAIL, NOT_AN_ADDRESS, 422)] });
     renderScreen();
 
     fill();
@@ -616,59 +645,165 @@ describe('Back', () => {
 });
 
 describe('the door on the home panel', () => {
+  /** The session plus the list behind the door, which every path here now crosses. */
+  function stubShell(sessions: Reply[]): { calls: [string, RequestInit][] } {
+    return stubFetch({
+      'GET /api/auth/session': sessions,
+      'GET /api/admin/users': [{ status: 200, body: ROSTER }],
+    });
+  }
+
   it('is offered to an Administrator', async () => {
-    stubFetch({ '/api/auth/session': [{ status: 200, body: ADMIN }] });
+    stubShell([{ status: 200, body: ADMIN }]);
     render(<App />);
 
-    expect(await screen.findByRole('button', { name: /^create user$/i })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /^users$/i })).toBeTruthy();
+  });
+
+  it('is the one admin entry, not two', async () => {
+    // EXPERIENCE.md's nav has one entry for this collection — User List — and
+    // reaches Create/Edit User from a row or from "+ Add User" on it (line 34).
+    // Leaving Story 1.8's door beside it would be two admin entries the spine
+    // does not have, and would leave Story 1.10's Edit User nowhere to go.
+    stubShell([{ status: 200, body: ADMIN }]);
+    render(<App />);
+
+    await screen.findByRole('button', { name: /^users$/i });
+    expect(screen.queryByRole('button', { name: /^create user$/i })).toBeNull();
   });
 
   it('is not rendered anywhere for a Staff user', async () => {
     // EXPERIENCE.md line 18: the nav is role-conditional, not a menu with
     // disabled items — a Staff user never sees an Admin entry at all.
-    stubFetch({ '/api/auth/session': [{ status: 200, body: STAFF }] });
+    stubShell([{ status: 200, body: STAFF }]);
     render(<App />);
 
     await screen.findByTestId('app-bar');
+    expect(screen.queryByRole('button', { name: /^users$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^create user$/i })).toBeNull();
   });
 
-  it('opens the screen and comes back again', async () => {
-    stubFetch({ '/api/auth/session': [{ status: 200, body: ADMIN }] });
+  it('opens the list and comes back again', async () => {
+    stubShell([{ status: 200, body: ADMIN }]);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^create user$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
 
-    expect(await screen.findByRole('heading', { name: /^create user$/i })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^users$/i })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
     expect(await screen.findByText(/signed in as/i)).toBeTruthy();
+  });
+
+  it('shows every account with its status and last login — the story’s own clause', async () => {
+    // Story 1.9's acceptance sentence, end to end: an authenticated
+    // Administrator opens the user list and sees every account with its
+    // active/deactivated status and its last-login timestamp. Every other content
+    // assertion in the suite is a direct render of the screen with no session
+    // behind it (`user-list.test.tsx`), so without this nothing proves the clause
+    // through the real gate, the real shell and the real role condition.
+    const deactivated: User = {
+      ...STAFF,
+      id: '7b2c4d1e-8a35-4c62-9f04-1e5a3b7d2c98',
+      name: 'Amal Perera',
+      email: 'amal@rocell.lk',
+      active: false,
+    };
+    // Provisioned and not yet handed over: the account with no sign-in behind it.
+    const unclaimed: User = { ...CREATED, name: 'Nadeesha Silva' };
+
+    stubFetch({
+      'GET /api/auth/session': [{ status: 200, body: ADMIN }],
+      'GET /api/admin/users': [{ status: 200, body: [ADMIN, deactivated, unclaimed] }],
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
+    await screen.findByRole('table');
+
+    // The caller's own row — an Administrator auditing access is one of the
+    // people who has it — with its role, its status word and its last sign-in.
+    const mine = within(rowFor(ADMIN.name));
+    expect(mine.getByText('Administrator')).toBeTruthy();
+    expect(mine.getByText('Active')).toBeTruthy();
+    expect(rowFor(ADMIN.name).textContent).toContain(
+      new Date(ADMIN.last_login_at ?? '').toLocaleString(),
+    );
+
+    // The deactivated account is marked, not missing.
+    expect(within(rowFor(deactivated.name)).getByText('Deactivated')).toBeTruthy();
+
+    // And the one that has never signed in says so.
+    expect(within(rowFor(unclaimed.name)).getByText('Never')).toBeTruthy();
+  });
+
+  it('reaches Create user from the list, and Back returns to the list', async () => {
+    // The two-step route EXPERIENCE.md line 34 describes, end to end — and the
+    // reason Back points at the list rather than at the home panel: the list is
+    // where "+ Add user" was pressed, and where the new row belongs.
+    stubShell([{ status: 200, body: ADMIN }]);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /add user/i }));
+
+    expect(await screen.findByRole('heading', { name: /^create user$/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
+    expect(await screen.findByRole('heading', { name: /^users$/i })).toBeTruthy();
+
+    // And a second Back goes home, so nobody is stranded one surface in.
+    fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
+    expect(await screen.findByText(/signed in as/i)).toBeTruthy();
+  });
+
+  it('refetches the list on the way back from Create user', async () => {
+    // The screen mounts fresh each time the section swaps to it, so a user
+    // provisioned a moment ago is on the list that comes back rather than on a
+    // cached one that is already out of date.
+    const { calls } = stubShell([{ status: 200, body: ADMIN }]);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
+    await screen.findByRole('heading', { name: /^users$/i });
+    await waitFor(() => {
+      expect(calls.filter(([path]) => path === '/api/admin/users')).toHaveLength(1);
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /add user/i }));
+    await screen.findByRole('heading', { name: /^create user$/i });
+    fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
+    await screen.findByRole('heading', { name: /^users$/i });
+
+    await waitFor(() => {
+      expect(calls.filter(([path]) => path === '/api/admin/users')).toHaveLength(2);
+    });
   });
 
   it('keeps the shell around the screen', async () => {
     // Inside the shell, in place of the home panel: the app bar stays, so Sign
     // out and Account stay with it.
-    stubFetch({ '/api/auth/session': [{ status: 200, body: ADMIN }] });
+    stubShell([{ status: 200, body: ADMIN }]);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^create user$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
 
-    await screen.findByRole('heading', { name: /^create user$/i });
+    await screen.findByRole('heading', { name: /^users$/i });
     expect(screen.getByTestId('app-bar')).toBeTruthy();
     expect(screen.getByRole('button', { name: /^sign out$/i })).toBeTruthy();
   });
 
   it('keeps the app bar’s Account control working from this screen', async () => {
-    // The create-user branch renders its own `AppShell` and passes its own
+    // The users branch renders its own `AppShell` and passes its own
     // `onOpenAccount`; `AppBar` renders the control only when that prop is
     // defined. Asserting the app bar is present does not reach either, so
     // dropping the prop — or pointing it at the home panel — would leave the one
     // surface an Administrator spends time on without a way to their own account
     // and the suite green.
-    stubFetch({ '/api/auth/session': [{ status: 200, body: ADMIN }] });
+    stubShell([{ status: 200, body: ADMIN }]);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^create user$/i }));
-    await screen.findByRole('heading', { name: /^create user$/i });
+    fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
+    await screen.findByRole('heading', { name: /^users$/i });
 
     fireEvent.click(screen.getByRole('button', { name: /^account$/i }));
 
@@ -681,85 +816,79 @@ describe('the door on the home panel', () => {
     // home panel on the very next render, not a dead screen. Driven by signing an
     // Administrator in, opening the screen, and letting a revalidation return the
     // same person as Staff — which is exactly the mid-session demotion.
-    stubFetch({
-      '/api/auth/session': [
-        { status: 200, body: ADMIN },
-        { status: 200, body: { ...ADMIN, role: 'staff' } },
-      ],
-    });
+    stubShell([
+      { status: 200, body: ADMIN },
+      { status: 200, body: { ...ADMIN, role: 'staff' } },
+    ]);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^create user$/i }));
-    await screen.findByRole('heading', { name: /^create user$/i });
+    fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
+    await screen.findByRole('heading', { name: /^users$/i });
 
     // The visibility revalidation `SessionProvider` registers is what re-reads
     // the role (AD-3); this is that request arriving with the new one.
     document.dispatchEvent(new Event('visibilitychange'));
 
     expect(await screen.findByText(/signed in as/i)).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: /^create user$/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^create user$/i })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /^users$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^users$/i })).toBeNull();
+    // And nothing of the list survives the swap — not a stale table, not a row.
+    expect(screen.queryByRole('table')).toBeNull();
   });
 
   it('leaves the door working after a demotion and a promotion', async () => {
     // The round trip, end to end. It has to assert the home panel *before* the
     // click, and that ordering is the whole test: with the section left at
-    // `'create-user'`, the promotion re-renders the screen by itself, the
-    // `/^create user$/i` button on the page is the screen's own submit rather
-    // than the home panel's door, and a click-then-assert would pass while
-    // testing something else entirely.
-    stubFetch({
-      '/api/auth/session': [
-        { status: 200, body: ADMIN },
-        { status: 200, body: { ...ADMIN, role: 'staff' } },
-        { status: 200, body: ADMIN },
-      ],
-    });
+    // `'users'`, the promotion re-renders the screen by itself and a
+    // click-then-assert would pass while testing something else entirely.
+    stubShell([
+      { status: 200, body: ADMIN },
+      { status: 200, body: { ...ADMIN, role: 'staff' } },
+      { status: 200, body: ADMIN },
+    ]);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^create user$/i }));
-    await screen.findByRole('heading', { name: /^create user$/i });
+    fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
+    await screen.findByRole('heading', { name: /^users$/i });
 
     // Demoted, then promoted back — two visibility revalidations (AD-3).
     document.dispatchEvent(new Event('visibilitychange'));
     await screen.findByText(/signed in as/i);
     document.dispatchEvent(new Event('visibilitychange'));
-    await screen.findByRole('button', { name: /^create user$/i });
+    await screen.findByRole('button', { name: /^users$/i });
 
     // Still the home panel, with the door on it and the screen not showing.
     expect(screen.getByText(/signed in as/i)).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: /^create user$/i })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /^users$/i })).toBeNull();
 
     // And the door still opens — the section was cleared, not merely read past.
-    fireEvent.click(screen.getByRole('button', { name: /^create user$/i }));
-    expect(await screen.findByRole('heading', { name: /^create user$/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^users$/i }));
+    expect(await screen.findByRole('heading', { name: /^users$/i })).toBeTruthy();
   });
 
   it('does not reopen the screen by itself when the role comes back', async () => {
     // The second consequence, and the worse one: with the section left at
-    // `'create-user'`, restoring the role re-renders the admin screen unbidden
-    // over whatever the user was actually looking at. A demotion and a promotion
+    // `'users'`, restoring the role re-renders the admin screen unbidden over
+    // whatever the user was actually looking at. A demotion and a promotion
     // within one shift is two clicks on Story 1.10's screen.
-    stubFetch({
-      '/api/auth/session': [
-        { status: 200, body: ADMIN },
-        { status: 200, body: { ...ADMIN, role: 'staff' } },
-        { status: 200, body: ADMIN },
-      ],
-    });
+    stubShell([
+      { status: 200, body: ADMIN },
+      { status: 200, body: { ...ADMIN, role: 'staff' } },
+      { status: 200, body: ADMIN },
+    ]);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^create user$/i }));
-    await screen.findByRole('heading', { name: /^create user$/i });
+    fireEvent.click(await screen.findByRole('button', { name: /^users$/i }));
+    await screen.findByRole('heading', { name: /^users$/i });
 
     document.dispatchEvent(new Event('visibilitychange'));
     await screen.findByText(/signed in as/i);
     document.dispatchEvent(new Event('visibilitychange'));
-    await screen.findByRole('button', { name: /^create user$/i });
+    await screen.findByRole('button', { name: /^users$/i });
 
     // The home panel, still — the user is taken nowhere they did not ask to go.
     expect(screen.getByText(/signed in as/i)).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: /^create user$/i })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /^users$/i })).toBeNull();
   });
 
   it('leaves a promotion where it found the user', async () => {
@@ -769,12 +898,10 @@ describe('the door on the home panel', () => {
     // a surface both roles reach — back to the home panel the moment they are
     // made an Administrator, discarding whatever they had typed into it. The
     // reconciler clears only a section the *new* role cannot reach.
-    const { calls } = stubFetch({
-      '/api/auth/session': [
-        { status: 200, body: STAFF },
-        { status: 200, body: { ...STAFF, role: 'admin' } },
-      ],
-    });
+    const { calls } = stubShell([
+      { status: 200, body: STAFF },
+      { status: 200, body: { ...STAFF, role: 'admin' } },
+    ]);
     render(<App />);
 
     fireEvent.click(await screen.findByRole('button', { name: /^account$/i }));
@@ -792,14 +919,14 @@ describe('the door on the home panel', () => {
 
     // And the promotion did land — the door is on the home panel they go back to.
     fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
-    expect(await screen.findByRole('button', { name: /^create user$/i })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /^users$/i })).toBeTruthy();
   });
 
   it('is gone once the session is', async () => {
-    stubFetch({ '/api/auth/session': [unauthorized] });
+    stubFetch({ 'GET /api/auth/session': [unauthorized] });
     render(<App />);
 
     await screen.findByLabelText(/password/i);
-    expect(screen.queryByRole('button', { name: /^create user$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^users$/i })).toBeNull();
   });
 });

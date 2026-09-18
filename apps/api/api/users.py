@@ -1,7 +1,9 @@
-"""`POST /admin/users` — an Administrator provisions somebody else's login.
+"""`/admin/users` — the collection an Administrator writes to, and reads back.
 
-FR-11, and the first route in the product that is not about the caller's own
-identity. Four things about it are load-bearing:
+Two routes over one path. `POST` provisions somebody else's login (FR-11) and
+`GET` lists every account with its status and last sign-in (FR-10) — the first
+routes in the product that are not about the caller's own identity. Four things
+about the write are load-bearing:
 
 **It is the only writer of a `User` row inside the running product.** The one
 account before it — the seeded Administrator — is written by the migration
@@ -34,8 +36,16 @@ window, which is what makes the 72 hours the bound that matters.
 be a race that hands two people the same login; the unique index over
 `lower(email)` is what actually decides, and its `UniqueViolation` is the 409.
 
-**Not here.** No list, no edit, no deactivate, no delete — Stories 1.9, 1.10 and
-1.11 own those, and this module serves one route until they arrive. **No mail of
+**The read is the same collection, under the same guard.** `GET /admin/users`
+declares `require_administrator` exactly as the write does, so the authorization
+is still read off the path in both directions, and it returns every row the
+`users` table holds — the caller's own, deactivated ones, locked ones — as the
+same eleven-key `User` the write returns. One `SELECT`, no `WHERE`, no `LIMIT`,
+no parameter at all: FR-10 is *every* account.
+
+**Not here.** No edit, no deactivate, no delete, no unlock, and nothing on a row
+to press — Stories 1.10 and 1.11 own every verb on a row, and this module serves
+the collection's two routes until they arrive. **No mail of
 any kind**, not a dependency, not a stub, not a "send the credential" control on
 the screen: AGENTS.md Policy and FR-11 both put distribution in the
 Administrator's hands, and `tests/test_no_password_reset.py` asserts the absence
@@ -414,3 +424,96 @@ def create_user(
     # `INSERT ... RETURNING` yields exactly one row when it writes one, and every
     # way it writes none raises above rather than returning empty.
     return User.model_validate(row)
+
+
+#: The read, in one statement. FR-10: every account, with its status.
+#:
+#: **The column list is `_INSERT_USER`'s `RETURNING` list — the same eleven
+#: columns, in the same order.** It is the shape `User.model_validate` wants, and
+#: the five statements in the product that produce it must not drift apart.
+#: Repeated rather than shared through a constant for the reason `_INSERT_USER`
+#: gives — `tests/test_source_guards.py` forbids a statement assembled from a
+#: value — and `tests/test_user_list.py` is what holds this one to that one. That
+#: guard compares the two lists with whitespace collapsed, so each statement is
+#: free to indent its own continuation lines the way its own keyword wants.
+#:
+#: **The order is `lower(name)`, then `email`.** This list is read by a human
+#: looking for a person, so it is ordered by the thing they are looking them up
+#: by; and it is folded because Postgres's default `C` collation orders by code
+#: point, which files every lowercase name after every uppercase one — `ruwan`
+#: would sort after `Zoya`, which is not a list anybody can scan. `email` is the
+#: tie-break because it is the table's only unique non-opaque column: two people
+#: really can share a name, and without a second key their relative order is
+#: whatever the planner felt like, which is not something a test can assert.
+#:
+#: **No `WHERE`, no `LIMIT`, and no parameter at all.** The acceptance clause is
+#: every account with its status, and a filter on the one surface whose job is
+#: "who has access" hides the row somebody opened the screen to find. A silent
+#: `LIMIT` would be worse: it answers "who has access" with "some of them". The
+#: table is tens of rows in an internal tool with no self-service registration —
+#: bounded by the number of people an Administrator has personally provisioned —
+#: and if that ever stops being true, measure before reaching for pagination
+#: (CLAUDE.md).
+_SELECT_USERS = """
+SELECT id, name, email, role, active, must_change_password,
+       temp_credential_expires_at, last_login_at, locked_until,
+       created_at, updated_at
+FROM users
+ORDER BY lower(name), email
+"""
+
+
+@router.get("/admin/users", response_model=list[User])
+def list_users(
+    response: Response,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> list[User]:
+    """FR-10 — every account, with its status and its last sign-in.
+
+    **The `administrator` parameter is the authorization, not a value.** As on
+    the write above: it is the caller, resolved from the session cookie and
+    re-read from Postgres on this request (AD-3), and declaring the dependency is
+    the whole of its job. A Staff caller is refused before this function is
+    entered, and an Administrator still holding a temporary credential is refused
+    before that by `require_claimed_user`, which `require_administrator` chains
+    on.
+
+    Sync, not `async def`: psycopg is a synchronous driver (AD-3,
+    `tests/test_source_guards.py`), and FastAPI runs a sync endpoint in its
+    threadpool.
+
+    **A bare JSON array, not an envelope.** There is no cursor, no total and no
+    page to carry, and inventing `{"users": [...]}` to leave room for one is a
+    shape the product would have to keep honouring after pagination never
+    arrives. `GET /auth/session` already returns a bare `User`; this returns bare
+    `User`s. The classic argument against a top-level array — JSON hijacking
+    through `<script src>` — needs an overridable `Array` constructor, which no
+    browser has had since ES5, and this response is `no-store`, cookie-gated and
+    `SameSite=Strict` besides. When a cursor is genuinely needed, both halves of
+    the contract change together.
+
+    **Every row, including the caller's own.** An Administrator auditing who has
+    access is one of the people who has it, and a list that quietly omitted the
+    reader would be answering a different question. Deactivated rows and locked
+    rows are in it for the same reason: FR-10 asks for every account *with its
+    status*, so a filter would delete the very thing being asked about.
+
+    **`locked_until` is rendered and never decided from.** `shared_schema.user`
+    says it in the field's own docstring: the lock is status, never enforcement,
+    the column is never cleared, and a client that treats a past value as "locked"
+    is reading it wrong. This list is the surface FR-4 meant by "visible to
+    Administrators on that user's status", which closes DW-64's *rendering* half.
+    It does not close the other half: there is still no unlock, and Story 1.10
+    owes one.
+
+    `NO_STORE` for the reason every other authenticated response carries it —
+    and more so here, because this body names every member of staff the product
+    knows about. `User` has no `password_hash` field to leave out.
+    """
+    response.headers.update(NO_STORE)
+
+    # `model_validate` per row rather than a bulk construction: it is the same
+    # gate the write goes through, so a column that stopped matching the contract
+    # fails loudly here instead of reaching the wire as an extra key.
+    return [User.model_validate(row) for row in conn.execute(_SELECT_USERS)]

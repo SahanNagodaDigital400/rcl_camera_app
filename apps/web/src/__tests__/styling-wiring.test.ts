@@ -274,6 +274,16 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
   });
 
+  it('colours the user list failure the same way', () => {
+    // The one screen whose alert replaces its whole contents: when this fires
+    // there is no table beside it, so the sentence is the entire answer to "who
+    // has access". Point it at `--color-text` and a failed load reads as a
+    // paragraph somebody wrote on purpose.
+    const css = read(join(SRC, 'screens', 'UserListScreen.module.css'));
+
+    expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
   it('writes the account settings save indicator in the brand primary', () => {
     // DESIGN.md's `save-indicator`: muted while it is working, `{colors.primary}`
     // once it has. Point `.saved` at `--color-muted-text` and the two states
@@ -311,6 +321,7 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     ['ForcedPasswordChangeScreen', 'ForcedPasswordChangeScreen.tsx'],
     ['AccountSettingsScreen', 'AccountSettingsScreen.tsx'],
     ['CreateUserScreen', 'CreateUserScreen.tsx'],
+    ['UserListScreen', 'UserListScreen.tsx'],
   ])('is the class %s\'s alert element actually carries', (_label, file) => {
     // The rules above are inert if the element points somewhere else. The
     // dangling-reference check upstream proves `styles.error` resolves to a
@@ -429,16 +440,139 @@ describe('adding a user is the one action on the create user screen', () => {
     expect(accents).toHaveLength(1);
   });
 
-  it('leaves the home panel\'s entry to it outlined, never filled', () => {
+});
+
+describe('the home panel\'s one admin entry', () => {
+  it('is outlined, never filled', () => {
     // The door on the home panel is a secondary control: the shell's landing
     // surface has no primary action, and an accent button there would be the one
-    // orange thing on a screen that is not for provisioning anybody.
+    // orange thing on a screen that is not for user management. Since Story 1.9
+    // the entry is Users — EXPERIENCE.md line 33's nav entry — and Create user is
+    // reached from the list's "+ Add user" (line 34).
     const app = read(join(SRC, 'App.module.css'));
-    const entry = rule(app, '.createUser');
+    const entry = rule(app, '.userList');
 
     expect(declaration(entry, 'background')).toBe('transparent');
     expect(declaration(entry, 'color')).toBe('var(--color-primary)');
     expect([...app.matchAll(/var\(--color-accent\)/g)]).toHaveLength(0);
+  });
+});
+
+describe('adding a user is the one action on the user list', () => {
+  // DESIGN.md's "exactly one per screen" for the accent-filled primary, on a
+  // screen carrying three buttons and two families of badge: "+ Add user" takes
+  // the accent, Back and Try again are the navy outline, and every badge is a
+  // pill in the colours DESIGN.md names for it. Nothing else in the suite can
+  // see any of this — `vite.config.ts` sets `css: false`, so jsdom applies no
+  // stylesheet and there is no computed style to read.
+  const css = (): string => read(join(SRC, 'screens', 'UserListScreen.module.css'));
+
+  it('fills the add control with the accent and writes on it in navy', () => {
+    const add = rule(css(), '.add');
+
+    expect(declaration(add, 'background')).toBe('var(--color-accent)');
+    expect(declaration(add, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('leaves Back and Try again as the navy outline, not second filled controls', () => {
+    for (const name of ['.back', '.retry']) {
+      const control = rule(css(), name);
+
+      expect(declaration(control, 'background'), name).toBe('transparent');
+      expect(declaration(control, 'color'), name).toBe('var(--color-primary)');
+      expect(declaration(control, 'border'), name).toBe(
+        'var(--border-hairline) solid var(--color-primary)',
+      );
+    }
+  });
+
+  it('paints nothing else with the accent', () => {
+    // Counted over the whole stylesheet rather than rule by rule, so a new rule
+    // — a lock badge, say — cannot introduce a second orange thing unseen.
+    const accents = [...css().matchAll(/var\(--color-accent\)/g)];
+
+    expect(accents).toHaveLength(1);
+  });
+
+  it('keeps the wait muted and the refusal destructive, never the other way round', () => {
+    // The two prose lines on the screen, and the pair this file exists to hold
+    // apart: red is destructive-or-failed in this system and nothing else, so a
+    // routine wait painted with it reads as a failure, and a failure painted
+    // muted reads as a note. The render tests read the words and the roles, so
+    // both swaps are invisible to them.
+    expect(declaration(rule(css(), '.pending'), 'color')).toBe('var(--color-muted-text)');
+    expect(declaration(rule(css(), '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
+  it('gives the Administrator badge DESIGN.md\'s navy fill', () => {
+    // `badge-role-admin`: navy fill, its own foreground, pill. Deliberately the
+    // heavier of the two roles, so it reads as the weightier one at a glance.
+    const badge = rule(css(), '.roleAdmin');
+
+    expect(declaration(badge, 'background')).toBe('var(--color-primary)');
+    expect(declaration(badge, 'color')).toBe('var(--color-primary-foreground)');
+    expect(declaration(badge, 'border-radius')).toBe('var(--radius-full)');
+  });
+
+  it('leaves the Staff badge an outline, as DESIGN.md asks', () => {
+    const badge = rule(css(), '.roleStaff');
+
+    expect(declaration(badge, 'background')).toBe('transparent');
+    expect(declaration(badge, 'color')).toBe('var(--color-muted-text)');
+    expect(declaration(badge, 'border-radius')).toBe('var(--radius-full)');
+  });
+
+  it('leaves the Active badge an outline, never a fill', () => {
+    // The commonest badge on the screen, and the one with the most to lose: an
+    // accidental fill here paints every working account in a colour that means
+    // destructive-or-revoked in this system, and the render tests — which read
+    // the word — would stay green through it.
+    const badge = rule(css(), '.statusActive');
+
+    expect(declaration(badge, 'background')).toBe('transparent');
+    expect(declaration(badge, 'color')).toBe('var(--color-muted-text)');
+    expect(declaration(badge, 'border-radius')).toBe('var(--radius-full)');
+  });
+
+  it('gives the deactivated badge the destructive treatment', () => {
+    // `badge-status-deactivated`: destructive fill, its own foreground, pill.
+    // Red here is a revoked-access state, which is the one behavioural contract
+    // colour carries in this system — and it is never the only signal, because
+    // the badge also carries the word.
+    const badge = rule(css(), '.statusOff');
+
+    expect(declaration(badge, 'background')).toBe('var(--color-destructive)');
+    expect(declaration(badge, 'color')).toBe('var(--color-destructive-foreground)');
+    expect(declaration(badge, 'border-radius')).toBe('var(--radius-full)');
+  });
+
+  it('mutes a deactivated row as well as badging it', () => {
+    // EXPERIENCE.md's accessibility floor: the distinction is never carried by
+    // colour alone. The word on the badge is one signal and the muted row is the
+    // other, and neither is the whole of it.
+    expect(declaration(rule(css(), '.deactivatedRow'), 'color')).toBe('var(--color-muted-text)');
+  });
+
+  it('gives the rows DESIGN.md\'s data-table-row treatment', () => {
+    // Surface background, a hairline `{colors.border}` between rows and
+    // `{colors.background}` on hover — a table, not a stack of cards, and no
+    // shadow anywhere on it.
+    const row = rule(css(), '.row');
+
+    expect(declaration(row, 'background')).toBe('var(--color-surface)');
+    expect(declaration(row, 'border-top')).toBe(
+      'var(--border-hairline) solid var(--color-border)',
+    );
+    expect(declaration(rule(css(), '.row:hover'), 'background')).toBe('var(--color-background)');
+    expect(css()).not.toContain('box-shadow');
+  });
+
+  it('keeps the table itself scrolling instead of the page', () => {
+    // The 375px case, and the one regression a render test cannot see: jsdom
+    // performs no layout, so with the overflow rule deleted every cell is still
+    // in the document and the page scrolls sideways on the phone this product is
+    // built for.
+    expect(declaration(rule(css(), '.scroller'), 'overflow-x')).toBe('auto');
   });
 });
 

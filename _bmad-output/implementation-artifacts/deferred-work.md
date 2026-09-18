@@ -686,3 +686,27 @@ source_spec: `spec-1-8-create-user-account.md`
 severity: medium
 reason: `_INSERT_USER` stores `lower(%s)` — the Postgres fold — while `auth._SELECT_CREDENTIAL` matches `WHERE lower(email) = %s` against `payload.email.strip().lower()`, the Python fold. The two are equal only where `lower()` agrees across the two implementations, which is exactly the condition `lower(%s)` was added because it can fail. Where it fails the `201`, the response body and the row are all correct and the account is unreachable, with no error anywhere. The lookup is in `auth.py`, which this story's intent forbids changing, and DW-85 records that the suite's `C.UTF-8` cluster cannot observe either half.
 status: open
+
+### DW-87: An outstanding or lapsed temporary credential is invisible on the user list, so "Last login: Never" reads the same for a colleague who has not opened their note yet and one whose 72 hours ran out.
+origin: spec-deferred 0790cd0bacf1
+location: apps/web/src/screens/UserListScreen.tsx
+source_spec: `spec-1-9-view-user-list.md`
+severity: medium
+reason: `GET /admin/users` returns `must_change_password` and `temp_credential_expires_at` on every row and `tests/test_user_list.py::test_an_unclaimed_account_is_listed_with_its_deadline` asserts both reach the wire, but the screen renders five columns and neither is one of them. FR-10 names status and last login only, so this story's acceptance clause does not ask for it; what makes it real is that the product's own README calls the 72-hour deadline load-bearing and nothing in the product can now tell an Administrator that a deadline has passed. Stories 1.10/1.11, which could reissue or remove the row, are the natural owners.
+status: open
+
+### DW-88: An Administrator demoted while the user list is open sees the refusal and can press "Try again" forever, with the Users door still on the shell, until something else revalidates the session.
+origin: spec-deferred 50a50067a5a3
+location: apps/web/src/screens/UserListScreen.tsx
+source_spec: `spec-1-9-view-user-list.md`
+severity: medium
+reason: `SessionProvider` revalidates only on `visibilitychange`, so the cached `User` keeps saying `admin` after the server has stopped agreeing. The screen words `403 administrator_required` as an ordinary failure and offers a retry of a request that can only be refused again. This is DW-68's shape on a second surface — that entry is the same gap for `403 password_change_required` on Account Settings — and the fix belongs with whatever teaches `apiRequest`'s observer about a role refusal, not with this screen.
+status: open
+
+### DW-89: Account Settings always returns to the home panel, so an Administrator who opens it from the user list is put somewhere they did not come from.
+origin: spec-deferred 7aac51a28737
+location: apps/web/src/App.tsx
+source_spec: `spec-1-9-view-user-list.md`
+severity: low
+reason: `App.tsx` passes `onBack={() => showSection('home')}` to `AccountSettingsScreen` from every branch, and the app bar's Account control is rendered on the admin surfaces too. It predates this story — the same round trip from Create user has landed on the home panel since Story 1.8 — and it is more visible now that the list is a surface people stand on. Fixing it means remembering where the section was opened from, which is state the gate does not keep yet.
+status: open

@@ -114,13 +114,13 @@ changed a password, when, or how many other devices it signed out: the only trac
 password was changed on a given day, the honest answer today is that the system cannot say. The
 audit log that answers it is Story 1.12.
 
-An Administrator provisions everybody else, from **Create user** on the home panel — the entry is
-rendered only for an Administrator, and a Staff user never sees it. It asks for a name, an email
-address, a role (Staff or Administrator) and a temporary password that the Administrator types
-themselves: there is no generator, because the value has to be transcribed by hand and a password
-you chose is one you can read back over a counter. It is shown in plain text on screen for the same
-reason — it is not the Administrator's own secret, and masking it would hide a typing mistake until
-the new user came back unable to sign in.
+An Administrator provisions everybody else, from **Users** on the home panel and then **+ Add
+user** on the list — the entry is rendered only for an Administrator, and a Staff user never sees
+it. It asks for a name, an email address, a role (Staff or Administrator) and a temporary password
+that the Administrator types themselves: there is no generator, because the value has to be
+transcribed by hand and a password you chose is one you can read back over a counter. It is shown
+in plain text on screen for the same reason — it is not the Administrator's own secret, and masking
+it would hide a typing mistake until the new user came back unable to sign in.
 
 On success the screen shows the name, address, role, the temporary password exactly as typed, and
 the moment it expires. **Hand that over yourself.** The app sends no mail of any kind — no
@@ -146,9 +146,22 @@ Two limits worth knowing. The address must be unique, case and surrounding space
 `Nadeesha@Rocell.LK` and `nadeesha@rocell.lk` are the same login — and a second attempt at one
 already in use is refused without writing anything. And **nothing is written down about who
 provisioned whom**: as with a password change, the only trace today is the row's own timestamps,
-and the audit log that answers "who was given access, by whom, and when" is Story 1.12. Listing,
-editing and deactivating users are Stories 1.9 to 1.11; until they land, provisioning is the one
-thing the admin surface can do.
+and the audit log that answers "who was given access, by whom, and when" is Story 1.12.
+
+**Users** is the list of everyone who has access, and it is Administrators only — a Staff user has
+no entry to it anywhere, and the server refuses them even if they find the address. It shows every
+account in the product with its name, email, role, status and last login, ordered by name; the
+Administrator reading it is on it too. Nothing is filtered and nothing is paged, because the
+question the screen answers is "who has access" and a list that quietly left somebody off would
+answer it wrongly. **A deactivated account is marked, never hidden** — the row carries the word
+"Deactivated" and is muted, so the distinction survives a black-and-white screen. **Last login
+reads "Never" until the person first signs in** — the word rather than an empty cell, which would
+read as a value that failed to load — so a credential that was handed over and never used is
+visible at a glance. A lockout shows on that account's status as a "Locked until" line; as
+everywhere else the lock clears itself on its own, and there is still no control anywhere that
+ends one early — an admin unlock is Story 1.10's to add. Nothing on the list can be edited or
+deactivated yet either: every verb on a row is Stories 1.10 and 1.11, and until they land the list
+is something to read.
 
 **A forgotten password has no self-service path at all.** There is no reset link, no reset email and
 no mail transport anywhere in the product — the app sends no email, by design, and a test fails the
@@ -172,9 +185,9 @@ that has never existed accrues exactly the same delays and the same lockout. Tha
 ladder attached to real accounts would answer instantly for an address that is not one, and six
 wrong passwords would then be enough to tell an attacker which addresses are accounts. The cost is
 that a lockout is not proof an account exists — and that a lock on `ruwan@rocell.lk` is a lock on
-that *string*, so it says nothing about the person until you check the user list. An Administrator
-sees the lock on the account's status (`users.locked_until`); a value in the past there means
-"locked recently, not locked now".
+that *string*, so it says nothing about the person until you check **Users**. An Administrator
+sees the lock there, on the account's own status (`users.locked_until`), as a "Locked until" line;
+a value in the past is not rendered at all, because it means "locked recently, not locked now".
 
 The cost runs the other way too, and it is not mitigated: a locked attempt is refused before any
 work, so anyone who knows a colleague's address can spend ten wrong guesses to hold that person out

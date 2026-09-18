@@ -26,9 +26,14 @@ import type { Role, User } from '@rocell/schema/user';
  * That context is the *caller's own* session: its status, its cached user, and
  * the three mutations that change it. Provisioning somebody else changes none of
  * those, and routing it through the context would mean every admin mutation from
- * Story 1.9 on lands there too.
+ * Story 1.10 on lands there too.
  *
- * **The role-conditional entry that opens this screen is a convenience, never
+ * **It is opened from the User List's "+ Add user"** (EXPERIENCE.md line 34), and
+ * `onBack` returns there rather than to the home panel: the list is where the
+ * screen was opened from and where the new row belongs. `UserListScreen` refetches
+ * on mount, so the user provisioned a moment ago is on the list that comes back.
+ *
+ * **The role-conditional entry that opens that list is a convenience, never
  * the control.** `App` renders it only for an Administrator and falls back to the
  * home panel if the cached role stops being `admin` — but the cached `User` is a
  * render cache and never an authorization decision (AGENTS.md Policy). The
@@ -45,8 +50,10 @@ import type { Role, User } from '@rocell/schema/user';
  *   field.** The acceptance clause has the Administrator submit the temporary
  *   password; none of the rest is specified, and each would be a rule the server
  *   does not enforce.
- * - **No user list.** Stories 1.9, 1.10 and 1.11 own listing, editing and
- *   deactivating; nothing here reads the collection it writes to.
+ * - **No list, and no editing.** Story 1.9's `UserListScreen` reads the
+ *   collection this screen writes to, and it is one surface away — Back. Stories
+ *   1.10 and 1.11 own editing and deactivating; nothing here does either, and
+ *   nothing here reads a row.
  *
  * The rejection text is always the API's own sentence, which names the rule that
  * failed (EXPERIENCE.md:87). Copy follows EXPERIENCE.md's tone rules: short,

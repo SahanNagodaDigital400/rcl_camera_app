@@ -42,12 +42,14 @@
   line-height: var(--type-body-line);
 }
 
-/* The interim door to Create user, on the home panel and rendered only for an
- * Administrator. DESIGN.md's secondary button — navy outline, navy text,
- * transparent fill — because the accent-filled primary is reserved for the one
- * action a screen is *for*, and the home panel's job is not provisioning.
- * `global.css` already holds it to the touch-target floor. */
-.createUser {
+/* The door to Users, on the home panel and rendered only for an Administrator.
+ * EXPERIENCE.md line 33's nav entry, standing in for a nav that does not exist
+ * yet — Create user is reached from the list's "+ Add user" (line 34), so there
+ * is one admin entry here rather than two. DESIGN.md's secondary button — navy
+ * outline, navy text, transparent fill — because the accent-filled primary is
+ * reserved for the one action a screen is *for*, and the home panel's job is not
+ * user management. `global.css` already holds it to the touch-target floor. */
+.userList {
   align-self: flex-start;
   justify-content: center;
   margin-top: var(--space-6);

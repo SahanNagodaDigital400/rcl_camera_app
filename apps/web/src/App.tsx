@@ -10,6 +10,7 @@ import { AccountSettingsScreen } from './screens/AccountSettingsScreen';
 import { CreateUserScreen } from './screens/CreateUserScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
 import { LoginScreen } from './screens/LoginScreen';
+import { UserListScreen } from './screens/UserListScreen';
 import type { Role, User } from '@rocell/schema/user';
 
 /** Shown when signing out fails as something other than an `ApiRequestError`. */
@@ -18,28 +19,36 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 /**
  * Which surface inside the shell is showing.
  *
- * Three values because three surfaces exist. This is not a router and is not the
+ * Four values because four surfaces exist. This is not a router and is not the
  * beginning of one: EXPERIENCE.md's nav is role-conditional, spans six surfaces
- * and changes shape at a breakpoint, and five of those six do not exist yet.
- * Create user is not one of the six — it is a door on the home panel standing
- * in for User List, which is Story 1.9's.
- * When they arrive this becomes whatever the nav needs; until then it is one
+ * and changes shape at a breakpoint, and four of those six do not exist yet.
+ * `'users'` is one of the six — EXPERIENCE.md line 33's User List, standing on
+ * the home panel until there is a nav to hold it. Create user is not: line 34
+ * reaches it from the list's "+ Add user", which is where its door now is.
+ * When the nav arrives this becomes whatever it needs; until then it is one
  * piece of state and a swap.
  */
-type Section = 'home' | 'account' | 'create-user';
+type Section = 'home' | 'account' | 'create-user' | 'users';
 
 /**
- * Which of the six screens the session state selects.
+ * Which of the seven screens the session state selects.
  *
  * Named separately from `SessionStatus` because the two are not the same shape:
- * `'signed-in'` covers the forced-change screen, the shell, Account Settings and
- * Create user, and the moves between them are screen swaps that the status
- * cannot see. Focus management keys off this, not off the status — which is why
+ * `'signed-in'` covers the forced-change screen, the shell, Account Settings,
+ * Users and Create user, and the moves between them are screen swaps that the
+ * status cannot see. Focus management keys off this, not off the status — which is why
  * the section is folded in here rather than handled beside it: swapping the home
  * panel for another surface unmounts whatever had focus exactly as the other
  * swaps do.
  */
-type Screen = 'loading' | 'login' | 'password-change' | 'shell' | 'account' | 'create-user';
+type Screen =
+  | 'loading'
+  | 'login'
+  | 'password-change'
+  | 'shell'
+  | 'account'
+  | 'create-user'
+  | 'users';
 
 /**
  * Whether `role` can reach `section` at all.
@@ -53,7 +62,7 @@ type Screen = 'loading' | 'login' | 'password-change' | 'shell' | 'account' | 'c
  * `null` is a signed-out caller, who reaches nothing role-conditional.
  */
 function reachableBy(section: Section, role: Role | null): boolean {
-  if (section === 'create-user') return role === 'admin';
+  if (section === 'create-user' || section === 'users') return role === 'admin';
   return true;
 }
 
@@ -72,7 +81,8 @@ function currentScreen(status: SessionStatus, user: User | null, section: Sectio
   //
   // It is a convenience, not the control: the cached `User` is a render cache
   // and never an authorization decision (AGENTS.md Policy), and the server
-  // refuses a Staff caller at `POST /admin/users` whatever this returns.
+  // refuses a Staff caller at `GET`/`POST /admin/users` whatever this returns.
+  if (section === 'users') return reachableBy(section, user.role) ? 'users' : 'shell';
   if (section === 'create-user') return reachableBy(section, user.role) ? 'create-user' : 'shell';
   return 'shell';
 }
@@ -280,15 +290,35 @@ function Gate(): JSX.Element {
       </p>
     );
 
+  if (screen === 'users') {
+    // Inside the shell, in place of the home panel, exactly as the two screens
+    // below are: the app bar stays, so Sign out stays, and the screen supplies
+    // its own way back. It renders no `<main>` of its own — `AppShell` provides
+    // the one the focus effect above moves focus to.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <UserListScreen
+          onAddUser={() => showSection('create-user')}
+          onBack={() => showSection('home')}
+        />
+      </AppShell>
+    );
+  }
+
   if (screen === 'create-user') {
     // Inside the shell, in place of the home panel, exactly as Account Settings
     // is: the app bar stays, so Sign out stays, and the screen supplies its own
     // way back. It renders no `<main>` of its own — `AppShell` provides the one
     // the focus effect above moves focus to.
+    //
+    // Back goes to the list, not to the home panel: the list is where "+ Add
+    // user" was pressed, and it is where the new row belongs. `UserListScreen`
+    // refetches on mount, so returning to it shows the user just provisioned.
     return (
       <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
         {signOutFailure}
-        <CreateUserScreen onBack={() => showSection('home')} />
+        <CreateUserScreen onBack={() => showSection('users')} />
       </AppShell>
     );
   }
@@ -317,22 +347,21 @@ function Gate(): JSX.Element {
         Internal staff tool. Photograph a tile and get the three closest matches from the
         catalogue, each with its reference image, Size and Category.
       </p>
-      {/* The interim door to the admin surface, role-conditional as
-          EXPERIENCE.md line 18 requires: a Staff user never sees an entry they
-          cannot use, and this is a nav entry's stand-in rather than a nav — the
-          real one spans six surfaces of which five do not exist yet.
+      {/* The door to the admin surface, role-conditional as EXPERIENCE.md line
+          18 requires: a Staff user never sees an entry they cannot use. This is
+          EXPERIENCE.md line 33's own nav entry — User List — standing in for a
+          nav that does not exist yet; the real one spans six surfaces of which
+          four still do not. Create user is reached from the list's "+ Add user",
+          which is where line 34 reaches it from, so there is one admin entry
+          here rather than two.
 
           A convenience only. The server refuses a Staff caller at
-          `POST /admin/users` regardless of what this renders (AGENTS.md Policy:
+          `GET /admin/users` regardless of what this renders (AGENTS.md Policy:
           authorization is never gated by what the UI hides), and the cached
           `user` read here is a render cache and never a decision. */}
       {user.role === 'admin' && (
-        <button
-          className={styles.createUser}
-          type="button"
-          onClick={() => showSection('create-user')}
-        >
-          Create user
+        <button className={styles.userList} type="button" onClick={() => showSection('users')}>
+          Users
         </button>
       )}
     </AppShell>

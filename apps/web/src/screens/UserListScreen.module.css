@@ -1,0 +1,249 @@
+/* Users — every account, with its status and its last sign-in (FR-10).
+ *
+ * Rendered *inside* the shell, like Create user and Account Settings: the app bar
+ * is above it and `AppShell`'s `<main>` is around it, so there is no full-height
+ * centring and no chrome-less panel here.
+ *
+ * DESIGN.md's `data-table-row` is the whole of the table treatment — surface
+ * background, `{colors.background}` on hover, a hairline `{colors.border}` between
+ * rows, no card wrapper and no shadow. A table, not a stack of cards. The density
+ * is the admin tier (`{spacing.2}`–`{spacing.3}` within a row), which is the one
+ * deliberate density split in the system.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target floor
+ * and the accent focus ring are already on `button` in global.css and are
+ * deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+/* The two controls on one row, wrapping rather than shrinking: at the narrowest
+ * phone width two items on one line would push them below the touch-target
+ * floor. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* The single primary action on this screen: accent fill, navy foreground.
+ * Never white on orange — 2.63:1, the one contrast pair DESIGN.md bans. It is
+ * EXPERIENCE.md line 34's own route to Create User. */
+.add {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* Back: DESIGN.md's secondary button — navy outline, navy text, transparent
+ * fill. The default for every non-primary action, and the reason this screen
+ * still has exactly one accent control. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* The in-flight line. Muted, never orange — orange is reserved for the action
+ * that has not fired yet (DESIGN.md's `save-indicator` reasoning). */
+.pending {
+  color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The failure and its one way out, stacked so "Try again" sits directly under
+ * the sentence explaining why it is there. */
+.failure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+/* The refusal, carrying the API's own sentence. Red is destructive-or-failed in
+ * this system and nothing else, and it is never the only signal: the text says
+ * what happened and no table renders beside it. */
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The retry: the navy outline again, not a second accent control. Refetching is
+ * not the action this screen is *for*. */
+.retry {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* Unreachable in the product — the reader is themselves a row — and muted
+ * rather than alarming for exactly that reason. */
+.empty {
+  color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The table's own scroll container. One `<table>` at every width, and this is
+ * what keeps the *page* from scrolling sideways at 375px instead: the container
+ * takes the overflow, and takes focus, so the last column is reachable from a
+ * keyboard. */
+.scroller {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* Column headers: the label type role, muted, and a heavier rule under the head
+ * than between the rows so the head reads as the head. */
+.heading {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-hairline) solid var(--color-border);
+  color: var(--color-muted-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* DESIGN.md's `data-table-row`: surface background, hairline border between
+ * rows, no card wrapper and no shadow. */
+.row {
+  background: var(--color-surface);
+  border-top: var(--border-hairline) solid var(--color-border);
+  color: var(--color-text);
+}
+
+.row:hover {
+  background: var(--color-background);
+}
+
+/* A deactivated account is muted *as well as* badged, so the distinction
+ * survives a monochrome screen and is never carried by colour alone
+ * (EXPERIENCE.md's accessibility floor). The badge carries the word, which is
+ * the signal that always works.
+ *
+ * A **variant** of `.row`, applied on top of it rather than instead of it: the
+ * surface, the hairline and the hover above are DESIGN.md's `data-table-row` and
+ * belong to every row. Restating them here would mean a change to the row
+ * treatment quietly applied to active rows only. Only the muting lives here. */
+.deactivatedRow {
+  color: var(--color-muted-text);
+}
+
+/* The admin density tier (DESIGN.md Layout & Spacing): a dense row scanned
+ * quickly, not the generous mobile spacing of the scan flow. */
+.cell {
+  padding: var(--space-2) var(--space-3);
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+/* Administrator: navy fill, white text, pill. Deliberately the heavier of the
+ * two, so it reads as the weightier role at a glance down a list. Display-only —
+ * no tap target, no interaction (EXPERIENCE.md line 66). */
+.roleAdmin {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* Staff: outline only, muted text, pill. */
+.roleStaff {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* Active: outline, muted text — the unremarkable case, and the commoner one. */
+.statusActive {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* Deactivated: DESIGN.md's `badge-status-deactivated` — destructive fill, its
+ * own foreground, pill. Red here is a revoked-access state, which is the one
+ * behavioural contract that colour carries in this system. */
+.statusOff {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--color-destructive);
+  color: var(--color-destructive-foreground);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* FR-4's lock, under the status badge. A muted line of fact rather than a fourth
+ * badge: DESIGN.md names three badge treatments and no locked one, and the
+ * obvious candidate colour is the accent — a second orange thing on a screen
+ * whose "+ Add user" is meant to be the only one. */
+.lock {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}

@@ -53,7 +53,9 @@ from shared_schema.user import Role, User
 #: guards below, which is what makes the rule a property of the route table.
 ADMIN_PREFIX = "/admin/"
 
-#: The product's own route under it, and the only one until Story 1.9.
+#: The product's own collection under it. Two routes over the one path since
+#: Story 1.9: `POST` provisions a user and `GET` lists them. Both are named from
+#: this constant below, so the path is written down once.
 CREATE_USER = "/admin/users"
 
 LOGIN = "/auth/login"
@@ -376,14 +378,22 @@ def test_the_admin_route_table_is_not_empty() -> None:
     assert _admin_routes(create_app()) != []
 
 
-def test_the_admin_route_table_is_the_one_route_this_story_serves() -> None:
+def test_the_admin_route_table_is_the_two_routes_the_product_serves() -> None:
     # The stricter half, separated from the vacuity guard above because it is a
     # different claim with a different lifetime: this one is *meant* to fail the
-    # moment Story 1.9 adds `GET /admin/users`, and its failure means "update
-    # this list", not "the guards above stopped guarding".
+    # moment a story adds a route under `/admin/` — Story 1.9 added
+    # `GET /admin/users`, and 1.10 and 1.11 will add their own — and its failure
+    # means "update this list", not "the guards above stopped guarding".
+    #
+    # Compared **sorted** on both sides, so the assertion states which routes are
+    # served and not the order FastAPI happens to have registered them in: with
+    # two methods on one path, declaration order inside `api/users.py` would
+    # otherwise be a thing this file silently depends on.
     routes = _admin_routes(create_app())
 
-    assert [f"{method} {path}" for method, path, _ in routes] == [f"POST {CREATE_USER}"]
+    assert sorted(f"{method} {path}" for method, path, _ in routes) == sorted(
+        [f"GET {CREATE_USER}", f"POST {CREATE_USER}"]
+    )
 
 
 def test_every_admin_route_declares_the_role_check() -> None:
