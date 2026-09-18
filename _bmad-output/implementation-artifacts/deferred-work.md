@@ -710,3 +710,75 @@ source_spec: `spec-1-9-view-user-list.md`
 severity: low
 reason: `App.tsx` passes `onBack={() => showSection('home')}` to `AccountSettingsScreen` from every branch, and the app bar's Account control is rendered on the admin surfaces too. It predates this story — the same round trip from Create user has landed on the home panel since Story 1.8 — and it is more visible now that the list is a surface people stand on. Fixing it means remembering where the section was opened from, which is state the gate does not keep yet.
 status: open
+
+### DW-90: The Administrator floor counts Administrator rows nobody can currently sign in as, so the last *usable* Administrator can still be demoted.
+origin: spec-deferred 2b24761e9f4e
+location: apps/api/api/users.py (_UPDATE_USER, the floor predicate)
+source_spec: `spec-1-10-edit-user.md`
+severity: medium
+reason: `_UPDATE_USER`'s predicate is `other.role = 'admin' AND other.active`. It ignores `must_change_password` / `temp_credential_expires_at`, and `api/auth.py` refuses a login whose temporary credential has lapsed (a NULL expiry counts as lapsed, DW-44), so an active `admin` row holding an unclaimed, expired credential satisfies the floor while being unusable by anyone. A locked-out Administrator is the same hole with a 15-minute lifetime, and this epic ships no unlock. Widening the predicate here would make it a different rule from the one Story 1.11 states for deactivate and delete, and 1.11 is meant to reuse this predicate — so the two must be decided together, by whoever owns that clause.
+status: open
+
+### DW-91: Correcting a mistyped address onto an address that already carries a live lockout hands that lock to the account, with nothing anywhere to end it.
+origin: spec-deferred 15520af38f79
+location: apps/api/api/throttle.py (carry_failures)
+source_spec: `spec-1-10-edit-user.md`
+severity: medium
+reason: `_CARRY_FAILURES` merges with `GREATEST`, which is the conservative direction for the rename-evasion case DW-59 is about, and the new mirror keeps `users.locked_until` honest about it. The cost runs the other way: an address guessed at while it belonged to nobody carries a run, and an Administrator correcting a typo onto it locks the account for `LOCKOUT_DURATION`. There is no unlock in Epic 1 (DW-64), so the whole of the recovery is waiting 15 minutes — which sits awkwardly beside README's new claim that a mistyped address is no longer a dead end. Closing it means either an unlock surface or a rule that a carry never imports a run the account did not make, and both are product decisions.
+status: open
+
+### DW-92: A 403 on save leaves an Administrator demoted mid-edit sitting on an editor they can no longer use, until something else revalidates the session.
+origin: spec-deferred e5ce4b975642
+location: apps/web/src/screens/EditUserScreen.tsx
+source_spec: `spec-1-10-edit-user.md`
+severity: medium
+reason: `fieldFor` returns `null` for `administrator_required` and the screen renders the server's sentence, but nothing revalidates the session or leaves the screen, so every subsequent Save fails the same way until the tab is backgrounded and brought back (the only thing that triggers `SessionProvider`'s revalidation). This is the same shape as Story 1.9's deferred "Try again forever" finding on `UserListScreen`, and the fix is the same one: a shared answer to "the server says you are no longer an Administrator" that neither screen currently has.
+status: open
+
+### DW-93: The unsaved-changes warning guards only the screen's own Back control; every other way off the screen still discards a half-typed edit silently.
+origin: spec-deferred 7477bdcdac88
+location: apps/web/src/App.tsx (showSection) and screens/EditUserScreen.tsx
+source_spec: `spec-1-10-edit-user.md`
+severity: low
+reason: `handleBack` warns, but `App.showSection` clears `editing` unconditionally, so the app bar's Account control, Sign out and the role reconciler's demotion drop all leave without a word, and there is no `beforeunload` handler for a closed tab. EXPERIENCE.md line 90 asks for the general rule — never silently drop an in-progress admin form — and DW-81 records that the convention the product does not have lands on every admin form. This story built the narrow guard; the general one is still owed, and it belongs with whichever story introduces the second admin form.
+status: open
+
+### DW-94: A demotion body sent against an id that names no row still locks every active Administrator row for the life of the transaction.
+origin: spec-deferred da50389df385
+location: apps/api/api/users.py (edit_user, the lock ordering)
+source_spec: `spec-1-10-edit-user.md`
+severity: low
+reason: `_LOCK_ACTIVE_ADMINISTRATORS` is issued whenever the requested role is `staff`, ahead of `_SELECT_USER_FOR_UPDATE`, so a loop of `PATCH {"role": "staff"}` at a bogus id serialises every user edit in the product while writing nothing — and this endpoint carries no throttle (DW-40/DW-69). The caller must already be an Administrator, which bounds the damage. The obvious fix, reading the row first, is what the lock ordering was chosen to avoid: locking the target before the Administrator set is the deadlock cycle two concurrent demotions would take. Closing it safely means a non-locking pre-read whose answer the `UPDATE` predicate still overrules, which is a trade-off worth making deliberately rather than as a review patch.
+status: open
+
+### DW-95: A refusal raised by request-model validation carries no `cache-control`, on this endpoint and on every other one in the product.
+origin: spec-deferred 462b8909a7e3
+location: apps/api/api/main.py (validation_error_handler)
+source_spec: `spec-1-10-edit-user.md`
+severity: low
+reason: `api/main.py`'s `validation_error_handler` builds its own response and sets no headers, so every `422 validation_error` — the empty body, the explicit null, the unknown field, the malformed UUID — answers without `no-store` while every other answer this handler produces carries it. `test_every_answer_this_handler_produces_carries_no_store` says so in its own comment and excludes those rows. The bodies carry no account data, so nothing sensitive is cacheable today; the hole is that the rule "every authenticated response is `no-store`" has an exception nothing states outside one test comment. Fixing it is a change to the shared handler and therefore to every endpoint at once, which is not this story's to make.
+status: open
+
+### DW-96: The refusal sentences a screen renders are pinned in TypeScript literals, so the two languages can drift on wording without a test noticing.
+origin: spec-deferred 1a876124fec7
+location: apps/web/src/__tests__ (edit-user, create-user, error-code-parity)
+source_spec: `spec-1-10-edit-user.md`
+severity: low
+reason: `error-code-parity.test.ts` compares the envelope *codes* and the numeric bounds across the boundary, which is what the story's Always clause asks for. The *sentences* are different: `edit-user.test.tsx` asserts against hand-copied copies of `NOT_AN_ADDRESS`, `ALREADY_IN_USE`, `NO_SUCH_USER` and `LAST_ACTIVE_ADMINISTRATOR`, and says so in its own docstring. The same is already true of `create-user.test.tsx`, so this predates the story and is a property of how every screen in the product is tested; a rule change here belongs with whatever first needs the wording pinned.
+status: open
+
+### DW-97: The parameterized-SQL guard inspects one line at a time, so no multi-line f-string statement in the product has ever been looked at.
+origin: spec-deferred 8ab260a11ad4
+location: apps/api/tests/test_source_guards.py (INTERPOLATED_SQL)
+source_spec: `spec-1-10-edit-user.md`
+severity: medium
+reason: `INTERPOLATED_SQL`'s first pattern is `f["'].*\bVERB\b[^"']*\{` matched per line, so it only fires where the `f"` opener, a SQL verb and a substitution all sit on one line. Every SQL constant in `api/throttle.py` is a triple-quoted f-string whose opener line is bare, so `_SELECT_ATTEMPTS` and `_RECORD_FAILURE` were already invisible to it at this story's baseline and `_CARRY_FAILURES` joins them. Nothing is injectable today — every interpolated name is a module-level constant, and `_RUN_ENDED`'s own comment says so — but AGENTS.md Policy's parameterized-SQL line is held by this guard, and the guard cannot see the shape the product actually uses. Closing it means teaching the check to read a statement rather than a line, in `tests/test_source_guards.py` — one of the six files this spec's Verification pins as unmodified, and a change that re-scores every module at once.
+status: open
+
+### DW-98: A throttle test still describes the Story 1.10 unlock in the future tense, in a file this story may not modify.
+origin: spec-deferred 66095f9eca72
+location: apps/api/tests/test_login_throttling.py:689
+source_spec: `spec-1-10-edit-user.md`
+severity: low
+reason: `apps/api/tests/test_login_throttling.py:689` reasons that "the way that gets noticed for real is Story 1.10 growing an 'unlock' that clears the mirror". Story 1.10 has now shipped without one, and every other copy of that prediction — `throttle.py`, `auth.py`, `README.md`, and `infra/README.md` this pass — was corrected. This one was not, because this spec's Verification pins that file as unmodified precisely to prove the story changed no existing throttle behaviour. Correcting a docstring there is safe but breaks a stated verification, so it is a call for whoever next has reason to open the file.
+status: open

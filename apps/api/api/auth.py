@@ -57,9 +57,11 @@ asserts the absence over the route table, over a live probe *and* over the
 source tree and the dependency manifests. Neither password endpoint is
 throttled (DW-40) — epics.md scopes Story 1.6 to login, and the self-service
 change is a direct extension of that same open question rather than a new one.
-There is no unlock surface either: the lock expires on its own, FR-5 sends a
-locked-out user to an Administrator, and Story 1.10 is what gives that
-Administrator something to press. And none of this is audited yet — AGENTS.md
+There is no unlock surface either, and no story in Epic 1 owns one: the lock
+expires on its own and FR-5 sends a locked-out user to an Administrator who has
+nothing to press. Story 1.10 was where one was predicted; it shipped with the
+edit it was scoped to — name, email and role — and no unlock, so DW-64's
+recovery half stays open with no owner left. And none of this is audited yet — AGENTS.md
 Policy requires the append-only audit log to cover logins, and that log arrives
 with Story 1.12, which owes the login and *both* password writes their entries.
 Until then a sign-in leaves `last_login_at` behind, and a password change leaves

@@ -1,9 +1,10 @@
-"""`/admin/users` — the collection an Administrator writes to, and reads back.
+"""`/admin/users` — the collection an Administrator writes to, reads back and edits.
 
-Two routes over one path. `POST` provisions somebody else's login (FR-11) and
-`GET` lists every account with its status and last sign-in (FR-10) — the first
-routes in the product that are not about the caller's own identity. Four things
-about the write are load-bearing:
+Three routes over two paths. `POST /admin/users` provisions somebody else's
+login (FR-11), `GET /admin/users` lists every account with its status and last
+sign-in (FR-10), and `PATCH /admin/users/{user_id}` changes a name, an address
+or a role on one of them (FR-12) — the first routes in the product that are not
+about the caller's own identity. Four things about the write are load-bearing:
 
 **It is the only writer of a `User` row inside the running product.** The one
 account before it — the seeded Administrator — is written by the migration
@@ -43,16 +44,38 @@ is still read off the path in both directions, and it returns every row the
 same eleven-key `User` the write returns. One `SELECT`, no `WHERE`, no `LIMIT`,
 no parameter at all: FR-10 is *every* account.
 
-**Not here.** No edit, no deactivate, no delete, no unlock, and nothing on a row
-to press — Stories 1.10 and 1.11 own every verb on a row, and this module serves
-the collection's two routes until they arrive. **No mail of
+**The edit is three columns and no more.** `PATCH` writes `name`, `email` and
+`role`, in one guarded `UPDATE`, and returns the same eleven-key `User` the
+other two routes return. The other eight columns are not things a caller may
+supply: `password_hash` is never touched by anything but `api.auth`,
+`must_change_password` without a `temp_credential_expires_at` is a bricked
+account (DW-44), `id` is the identity being edited, and `last_login_at`,
+`locked_until`, `created_at` and `updated_at` are the product's own record of
+what happened rather than fields. The body is closed (`extra="forbid"`) and
+names the three. **Nothing here touches a session**: AD-3 has `lookup_session`
+re-read `role` and `active` from Postgres on every request, so a role change
+lands on the target's very next request by itself — FR-12's "live session" half
+is proved by `tests/test_edit_user.py` rather than built here, and this handler
+must never start managing sessions.
+
+**Not here.** No deactivate, no delete, no `active` toggle, no admin-set
+password, no credential reissue — and **no unlock**. Story 1.11 owns
+deactivating and deleting. The unlock is the one that changed: `throttle.py`,
+`auth.py` and `README.md` all used to predict it "in Story 1.10", and epics.md
+1.10 scopes this story to name, email and role, so it was not built and **no
+story in Epic 1 now owns it** (DW-64, still open, now with no predicted owner).
+What the edit does owe the lockout is `throttle.carry_failures`: a rename moves
+the account's run of failures to the new address rather than stranding it on the
+old string, so that editing an address is not the unlock this product has
+decided not to have (DW-59). **No mail of
 any kind**, not a dependency, not a stub, not a "send the credential" control on
 the screen: AGENTS.md Policy and FR-11 both put distribution in the
 Administrator's hands, and `tests/test_no_password_reset.py` asserts the absence
 over the source tree and the dependency manifests. **No audit entry** — Story
 1.12 owns the append-only log and owes this endpoint one, and no private log path
 is built in the meantime, so until then the only trace of a provisioning is the
-row's own `created_at`. And **no throttle**: this is the fourth Argon2id-backed
+row's own `created_at` — and of an edit, its own `updated_at`, which does not say
+by whom or what changed. And **no throttle**: this is the fourth Argon2id-backed
 endpoint in the product and a direct extension of DW-40/DW-69, which are open
 and are decisions about what a counter would be keyed on — it is also
 Administrator-only, so the caller is already authenticated and already named.
@@ -61,6 +84,7 @@ Administrator-only, so the caller is already authenticated and already named.
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 # Imported for real, not under TYPE_CHECKING: FastAPI resolves a handler's
 # annotations at runtime to build its dependency graph, so a name that exists
@@ -68,7 +92,7 @@ from typing import Annotated
 import psycopg
 from fastapi import APIRouter, Depends, Response, status
 from psycopg import errors as pg_errors
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from shared_schema.errors import ApiError
 from shared_schema.passwords import hash_password, password_rule_violation
 from shared_schema.user import TEMP_CREDENTIAL_LIFETIME_HOURS, Role, User
@@ -79,6 +103,7 @@ from shared_schema.user import TEMP_CREDENTIAL_LIFETIME_HOURS, Role, User
 # is a second opinion about what a refused password looks like. `_weak_password`
 # is private to that module in the sense that nothing outside `apps/api` may
 # have it — importing it here is what keeps the two refusals one refusal.
+from api import throttle
 from api.auth import MAX_EMAIL_LENGTH, MAX_PASSWORD_FIELD_LENGTH, _weak_password
 from api.db import get_connection
 from api.dependencies import NO_STORE, require_administrator
@@ -137,6 +162,51 @@ BLANK_NAME = "A name must not be blank."
 #: And what a name carrying a control character is told, for the same audience.
 CONTROL_IN_NAME = "A name must not contain control characters."
 
+#: The envelope code for an id that names no row. Story 1.10's edit.
+#:
+#: **A `404` rather than a silent no-op**, and the difference is the
+#: Administrator's. They are acting on a list they fetched a moment ago, and the
+#: row may have been deleted from another tab or another device in between
+#: (Story 1.11 adds the verb that does it). A `200` carrying nothing, or a `200`
+#: carrying the body they sent, tells them the change landed on an account that
+#: no longer exists — and the surface they would go back to check is the same
+#: stale list. The refusal is the only thing that sends them to refetch it.
+#:
+#: Distinguished from the floor refusal below by the locking read, never by
+#: guesswork over a zero-row `UPDATE`: two different states must not share one
+#: answer just because one statement cannot tell them apart.
+USER_NOT_FOUND = "user_not_found"
+
+#: What that is told. It names the row rather than the person: the caller holds
+#: an id, and this endpoint has just failed to find anybody behind it.
+NO_SUCH_USER = "That user no longer exists. Reload the list."
+
+#: The envelope code for a demotion that would leave nobody in charge.
+#:
+#: **A `409`, never a `403`.** Nothing is wrong with the caller's authority —
+#: they are an Administrator, acting on a route that is theirs, and a `403` would
+#: describe their *role* as the problem while their session went on working
+#: everywhere else (`api.dependencies.ADMINISTRATOR_REQUIRED` says the same thing
+#: from the other side). What refuses them is the product's own state: there is
+#: exactly one active Administrator and this would be zero. A conflict is what
+#: that is, and it is answerable — promote somebody, then try again.
+#:
+#: epics.md gives this refusal to Story 1.11 and words it for deactivate and
+#: delete. Demoting the last active Administrator reaches the same state by a
+#: different verb, from *this* story's route, and the epic states the constraint
+#: as a standing property of the product rather than of one handler. 1.11 should
+#: reuse `_LOCK_ACTIVE_ADMINISTRATORS` and `_UPDATE_USER`'s predicate rather than
+#: writing a second copy of the rule.
+LAST_ADMINISTRATOR = "last_administrator"
+
+#: What it says: the rule that failed and the way out of it, in one sentence
+#: (EXPERIENCE.md:87). It names no person — the refusal is about how many active
+#: Administrators the product has, not about who the target is.
+LAST_ACTIVE_ADMINISTRATOR = (
+    "There must always be at least one active Administrator. "
+    "Make somebody else an Administrator first."
+)
+
 
 def _has_control_character(value: str) -> bool:
     """Whether `value` holds a character Postgres text cannot carry or display.
@@ -155,6 +225,33 @@ def _has_control_character(value: str) -> bool:
     apart about what a storable string is.
     """
     return any(character < " " or character == "\x7f" for character in value)
+
+
+def _clean_name(value: str) -> str:
+    """The name as it will be stored, or a `ValueError` naming the rule it broke.
+
+    One opinion about what a storable name is, called by both request models in
+    this module, because `POST` and `PATCH` writing the same column to two
+    different standards is how a name that could not be created becomes a name
+    that can be edited into place.
+
+    `min_length=1` alone admits `"   "`, which stores a row whose name renders as
+    nothing at all on Story 1.9's list — a user nobody can identify, created by a
+    form that reported success. Stripping here rather than in a handler means the
+    stored value and the validated value are the same string.
+
+    The control-character screen is `_normalize_email`'s, applied to the sibling
+    `text` column for the reason `_has_control_character` gives: a NUL cannot
+    survive a Postgres text parameter, and without this check it reaches
+    `conn.execute` — after the Argon2id hash has been paid, on the write — and
+    answers `500` where every other refused body answers `422`.
+    """
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(BLANK_NAME)
+    if _has_control_character(stripped):
+        raise ValueError(CONTROL_IN_NAME)
+    return stripped
 
 
 class CreateUserRequest(BaseModel):
@@ -200,24 +297,12 @@ class CreateUserRequest(BaseModel):
     def _named(cls, value: str) -> str:
         """Strip the name, and refuse a blank one or one carrying a control character.
 
-        `min_length=1` alone admits `"   "`, which stores a row whose name
-        renders as nothing at all on Story 1.9's list — a user nobody can
-        identify, created by a form that reported success. Stripping here rather
-        than in the handler means the stored value and the validated value are
-        the same string.
-
-        The control-character screen is `_normalize_email`'s, applied to the
-        sibling `text` column for the reason `_has_control_character` gives: a
-        NUL cannot survive a Postgres text parameter, and without this check it
-        reaches `conn.execute` — after the Argon2id hash has been paid — and
-        answers `500` where every other refused body answers `422`.
+        The rule itself is `_clean_name`, shared with `EditUserRequest` since
+        Story 1.10 rather than restated here: `POST` and `PATCH` write the same
+        column, and two opinions about what a storable name is means a name that
+        could not be created can still be edited into place.
         """
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError(BLANK_NAME)
-        if _has_control_character(stripped):
-            raise ValueError(CONTROL_IN_NAME)
-        return stripped
+        return _clean_name(value)
 
 
 def _normalize_email(email: str) -> str | None:
@@ -504,8 +589,9 @@ def list_users(
     the column is never cleared, and a client that treats a past value as "locked"
     is reading it wrong. This list is the surface FR-4 meant by "visible to
     Administrators on that user's status", which closes DW-64's *rendering* half.
-    It does not close the other half: there is still no unlock, and Story 1.10
-    owes one.
+    It does not close the other half: there is still no unlock, and since Story
+    1.10 shipped without one — its clauses are name, email and role — no story in
+    Epic 1 owes it either.
 
     `NO_STORE` for the reason every other authenticated response carries it —
     and more so here, because this body names every member of staff the product
@@ -517,3 +603,370 @@ def list_users(
     # gate the write goes through, so a column that stopped matching the contract
     # fails loudly here instead of reaching the wire as an extra key.
     return [User.model_validate(row) for row in conn.execute(_SELECT_USERS)]
+
+
+#: What an explicit `null` is told. Raised from the validator below, so it
+#: renders as `api.main`'s generic 422 sentence rather than this one — it is here
+#: for the reader and for a `ValidationError` inspected in a test.
+NULL_FIELD = "A field that is sent must carry a value; omit it to leave it alone."
+
+#: And what a body naming none of the three fields is told, for the same
+#: audience. See `EditUserRequest._changes_something` for why it is refused.
+NOTHING_TO_CHANGE = "Send at least one of name, email or role."
+
+
+class EditUserRequest(BaseModel):
+    """The edit body: any of a name, an address and a role, and nothing else.
+
+    `extra="forbid"`, like every other body in `apps/api`, and it is carrying
+    more weight here than anywhere else in the module: `users` has eleven
+    columns and this route may write three, so every other column has to be
+    refused rather than discarded. A body sending `{"active": false}` is a
+    caller who believes this endpoint deactivates accounts — it does not, Story
+    1.11 owns that verb — and answering `200` to it would be the product
+    reporting a deactivation it never performed.
+
+    **Absent and `null` are not the same request.** Absent means "leave this
+    column alone", which is the whole point of a `PATCH`; `null` is a caller
+    with a different idea of the contract, and none of these three columns is
+    nullable. `_not_null` refuses it `mode="before"`, so it is a refusal about
+    the request rather than a `None` that quietly reaches `COALESCE` and reads
+    as "leave it alone" — two different intentions with one outcome is how a
+    client bug becomes a silent no-op nobody can see.
+
+    `role` is the shared `Role` enum, so `"owner"` is refused by pydantic before
+    the handler runs — AGENTS.md Policy's "never a third role" enforced by the
+    type rather than by a check somebody has to remember to write. The database's
+    own `CHECK (role IN ('staff', 'admin'))` is the second, independent copy.
+
+    The bounds are `CreateUserRequest`'s, exactly: the same two columns, written
+    by the same table, so a name or an address this endpoint accepts and that one
+    refuses would be a row the product can edit into a shape it cannot create.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=MAX_NAME_LENGTH)
+    email: str | None = Field(default=None, min_length=1, max_length=MAX_EMAIL_LENGTH)
+    role: Role | None = None
+
+    @field_validator("name", "email", "role", mode="before")
+    @classmethod
+    def _not_null(cls, value: object) -> object:
+        """Refuse an explicit `null`. See the class docstring.
+
+        `mode="before"` because it has to run on the value as it arrived: after
+        type validation a `None` is indistinguishable from the default, and the
+        default is the one thing this must not refuse.
+        """
+        if value is None:
+            raise ValueError(NULL_FIELD)
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _named(cls, value: str) -> str:
+        """The stored name, through the same rule `POST` applies (`_clean_name`)."""
+        return _clean_name(value)
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> EditUserRequest:
+        """Refuse a body that asks for nothing.
+
+        `{}` satisfies every field rule above — all three are optional — and
+        would reach the `UPDATE` as three `COALESCE`s that each keep the column
+        they found, writing nothing but `updated_at = now()`. That is a request
+        that moves a timestamp for no reason, on the one column DW-63 has not
+        yet decided the meaning of, and it is a client bug reported as success.
+        One field is the floor.
+        """
+        if self.name is None and self.email is None and self.role is None:
+            raise ValueError(NOTHING_TO_CHANGE)
+        return self
+
+
+#: The locking read that tells `404` from the floor refusal, and hands the
+#: handler the address the counter carry needs.
+#:
+#: `FOR UPDATE` rather than a plain `SELECT`: the row is about to be written, and
+#: taking the lock here means the `UPDATE` below cannot be raced between the two
+#: statements — in particular, it cannot find zero rows because somebody else
+#: deleted the row in between and have that reported as the Administrator floor.
+#:
+#: Four columns and not eleven. `email` is the *old* address, which
+#: `throttle.carry_failures` needs and which the `UPDATE`'s `RETURNING` (the new
+#: one) can no longer supply; `role` and `active` are for the reader. The row the
+#: caller gets back is the `UPDATE`'s, never this one.
+#:
+#: PostgreSQL 18's `RETURNING OLD.*` would replace this statement outright and is
+#: deliberately not used: `infra/migrations` states in as many words that this
+#: repo's SQL stays inside what a 16.x cluster also has, and the test suite's own
+#: ephemeral cluster is whatever `initdb` is on PATH.
+_SELECT_USER_FOR_UPDATE = """
+SELECT id, email, role, active
+  FROM users
+ WHERE id = %s
+   FOR UPDATE
+"""
+
+#: Every active Administrator, locked — issued **only** when the requested role
+#: is `staff`.
+#:
+#: What makes the floor airtight rather than nearly airtight. `_UPDATE_USER`'s
+#: own predicate closes most of it, but two Administrators demoting each other at
+#: the same instant would each evaluate `EXISTS (... other active administrator)`
+#: against a snapshot in which the other is still an Administrator, and both
+#: would succeed. Locking the active-Administrator rows first makes the second
+#: transaction wait and re-evaluate the predicate against the first's committed
+#: result, which is the only version of this check that is actually a check.
+#:
+#: **`ORDER BY id` is what keeps two demotions from deadlocking**: both lock the
+#: same rows, so they must lock them in the same order or each can hold what the
+#: other wants. The target row's own lock is taken *after* this, so a plain
+#: rename — which takes no Administrator lock at all — can never be on the other
+#: side of a cycle.
+#:
+#: Only for a demotion, because only a demotion can reduce the count. A promotion
+#: or a rename paying for this lock would serialise every edit in the product
+#: behind every other one, for a rule neither of them can break.
+_LOCK_ACTIVE_ADMINISTRATORS = """
+SELECT id
+  FROM users
+ WHERE role = 'admin'
+   AND active
+ ORDER BY id
+   FOR UPDATE
+"""
+
+#: FR-12's write, in one statement: whichever of the three columns arrived, plus
+#: the Administrator floor, plus `updated_at`.
+#:
+#: **`COALESCE` rather than SQL assembled from the fields that arrived.** The
+#: obvious implementation collects a `SET` fragment per present field and joins
+#: them, which is precisely the shape `tests/test_source_guards.py` forbids — and
+#: it is forbidden for a reason beyond injection: a fragment list built in Python
+#: is a place where a field can be dropped silently, and a `RETURNING` shape that
+#: varies with the request is a place where `User.model_validate` starts failing
+#: for one caller in twenty. One statement has a fixed parameter list, a fixed
+#: `RETURNING` shape, and no branch that can forget a column.
+#:
+#: **The address is folded by Postgres, not by Python**, for `_INSERT_USER`'s
+#: reason: `users` carries `CHECK (email = lower(email))`, and `str.lower()` and
+#: Postgres's `lower()` are not guaranteed to agree on non-ASCII input. Writing
+#: `lower(%s)` makes the constraint unfailable. `lower(NULL)` is `NULL`, so an
+#: absent address still coalesces to the column.
+#:
+#: **`updated_at` is set by hand.** `users` carries no BEFORE UPDATE trigger
+#: (DW-17) and the column's DEFAULT applies to inserts only, so every writer sets
+#: it — `auth`'s three do, `throttle._MIRROR_LOCK` does, and this one does.
+#:
+#: **The floor is a predicate here rather than a `SELECT count(*)` in Python.**
+#: A count read a moment earlier is the read-then-write AD-8 rejects for the
+#: throttle and it fails the same way: two demotions each see the other and both
+#: succeed. Inside the statement it is evaluated against the rows as they are
+#: locked. It reads: the row ends up an Administrator, **or** it was not one to
+#: begin with, **or** it is deactivated (a deactivated account is not one of the
+#: active Administrators the floor counts), **or** somebody else is an active
+#: Administrator. Zero rows written therefore means the floor refused — the id is
+#: already known to exist, because `_SELECT_USER_FOR_UPDATE` found and locked it.
+#:
+#: The `RETURNING` list is `_INSERT_USER`'s and `_SELECT_USERS`' column list,
+#: character for character: the eleven-column shape `User.model_validate` wants.
+#: Repeated rather than shared through a constant because
+#: `tests/test_source_guards.py` forbids a statement assembled from a value;
+#: `tests/test_edit_user.py` is what holds the three lists together instead.
+_UPDATE_USER = """
+UPDATE users
+   SET name = COALESCE(%s::text, name),
+       email = COALESCE(lower(%s::text), email),
+       role = COALESCE(%s::text, role),
+       updated_at = now()
+ WHERE id = %s
+   AND (COALESCE(%s::text, role) = 'admin'
+        OR role = 'staff'
+        OR NOT active
+        OR EXISTS (SELECT 1
+                     FROM users AS other
+                    WHERE other.id <> users.id
+                      AND other.role = 'admin'
+                      AND other.active))
+RETURNING id, name, email, role, active, must_change_password,
+          temp_credential_expires_at, last_login_at, locked_until,
+          created_at, updated_at
+"""
+
+
+def _user_not_found() -> ApiError:
+    """The id names no row. `404`, so the Administrator refetches the list."""
+    return ApiError(
+        USER_NOT_FOUND,
+        NO_SUCH_USER,
+        status_code=status.HTTP_404_NOT_FOUND,
+        headers=NO_STORE,
+    )
+
+
+def _last_administrator() -> ApiError:
+    """The demotion would leave the product with nobody in charge. See the code."""
+    return ApiError(
+        LAST_ADMINISTRATOR,
+        LAST_ACTIVE_ADMINISTRATOR,
+        status_code=status.HTTP_409_CONFLICT,
+        headers=NO_STORE,
+    )
+
+
+@router.patch("/admin/users/{user_id}", response_model=User)
+def edit_user(
+    user_id: UUID,
+    payload: EditUserRequest,
+    response: Response,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> User:
+    """FR-12 — change a user's name, email or role, and nothing else.
+
+    **The `administrator` parameter is the authorization, not a value.** As on
+    the other two routes: it is the caller, resolved from the session cookie and
+    re-read from Postgres on this request (AD-3), and declaring the dependency is
+    the whole of its job. It is unread below on purpose — nothing in the body
+    names who is acting, and nothing in the body can. A Staff caller is refused
+    before this function is entered, and an Administrator still holding a
+    temporary credential is refused before that by `require_claimed_user`.
+
+    **AD-3 is what makes a role change land on the live session, so this handler
+    does nothing about sessions at all and must never start.** `lookup_session`
+    re-reads `role` and `active` on every request, so the target's very next
+    request is served under the new role — no sign-out, no re-login, and no
+    change to `api/sessions.py`. FR-12's "not only at next authentication" half
+    is a property the product already had; this story proves it with a test
+    rather than building a mechanism for it.
+
+    **An address change revokes nothing.** The target's existing sessions stay
+    valid and their very next request is served as before — only the address they
+    sign in *with* has moved. That is deliberate: a corrected typo is an
+    Administrator fixing their own mistake, not evidence that the account is
+    compromised, and signing somebody out of a shift for it would make the
+    correction cost more than the mistake. Revocation belongs to the events that
+    are actually about the credential — a password change (`api.auth`), and
+    deactivation, which is Story 1.11's. The lockout counter is the one thing
+    that follows the address, and it follows it *as it is* (DW-59): a rename is
+    not an unlock.
+
+    **A caller may edit their own row**, including demoting themselves while
+    another active Administrator exists. There is nothing to protect them from:
+    the row is theirs, the floor below still refuses the demotion that would
+    leave nobody in charge, and an Administrator who wants to stop being one
+    should not need a second Administrator to do it for them. `apps/web` adopts
+    the returned row as the session's cached user when the id is the caller's.
+
+    Sync, not `async def`: psycopg is a synchronous driver
+    (`tests/test_source_guards.py`), and FastAPI runs a sync endpoint in its
+    threadpool. No hash is spent here — this route touches no credential.
+
+    The order is the cheap refusal first. The address is normalized and refused
+    before anything is locked, so a mistyped one costs no row lock at all; then
+    one transaction holds the Administrator lock (for a demotion only), the
+    locking read that tells a `404` from the floor refusal, the `UPDATE`, and the
+    counter carry, because a rename that committed without its carry is the
+    stranded lockout DW-59 describes.
+
+    `NO_STORE` for the reason every authenticated response carries it. The
+    response is a `User`, which has no `password_hash` field to leave out.
+
+    Story 1.12 owes this endpoint an audit entry — AGENTS.md Policy requires the
+    append-only log to cover user changes, and changing somebody's role is one.
+    Until that log exists the only trace of an edit is the row's `updated_at`,
+    which says neither who changed it nor what changed. No private log path is
+    built in the meantime.
+    """
+    response.headers.update(NO_STORE)
+
+    email: str | None = None
+    if payload.email is not None:
+        email = _normalize_email(payload.email)
+        if email is None:
+            # Before anything is locked, so a body with a typo in it holds no row
+            # in the table while it is being refused.
+            raise _invalid_email()
+
+    role = None if payload.role is None else payload.role.value
+
+    # One unit of work. The carry below and the rename above it must commit
+    # together or not at all: a carry without its rename moves a lock onto an
+    # address nobody uses, and a rename without its carry strands the run on the
+    # old string (DW-59). `api.db` hands out autocommit connections, so this is
+    # the explicit transaction that makes the two statements one.
+    with conn.transaction():
+        if role == Role.STAFF.value:
+            # Only for a demotion, and before the target row's own lock. See
+            # `_LOCK_ACTIVE_ADMINISTRATORS` for both halves of why.
+            conn.execute(_LOCK_ACTIVE_ADMINISTRATORS)
+
+        current = conn.execute(_SELECT_USER_FOR_UPDATE, (user_id,)).fetchone()
+        if current is None:
+            # Distinguished from the floor refusal by this read rather than by
+            # guessing at a zero-row `UPDATE`: two different states must not
+            # share one answer because one statement cannot tell them apart.
+            raise _user_not_found()
+
+        try:
+            row = conn.execute(
+                _UPDATE_USER,
+                (payload.name, email, role, user_id, role),
+            ).fetchone()
+        except pg_errors.UniqueViolation as clash:
+            # `_INSERT_USER`'s reasoning, unchanged: the unique index over
+            # `lower(email)` is the only thing that can decide between two
+            # requests arriving together, and it is narrowed to that index by
+            # name. A clash this endpoint cannot explain is re-raised and
+            # answered as a 500, which is honest, rather than pointing the
+            # Administrator at an email field that is fine.
+            if clash.diag.constraint_name != EMAIL_UNIQUE_INDEX:
+                raise
+            raise _email_already_exists() from clash
+
+        if row is None:
+            # The id exists — it was found and locked above — so the only way the
+            # statement matched nothing is its own floor predicate.
+            raise _last_administrator()
+
+        if email is not None:
+            # **The counter's key is the Python fold, not the stored column.**
+            # `api.auth.login` keys `login_attempts` on `payload.email.strip()
+            # .lower()`, while `users.email` holds *Postgres's* `lower()` of the
+            # same string — and the two are not guaranteed to agree on non-ASCII
+            # input. `İ` is the standard example, and it is the whole reason
+            # `_INSERT_USER` writes `lower(%s)` rather than folding in Python.
+            # Handing `current["email"]` to the carry would therefore look up a
+            # key that has no row wherever the folds differ: the delete would
+            # remove nothing, the run would stay on the address sign-in actually
+            # uses, and DW-59 would be reproduced by the code written to close
+            # it. Folding the stored address the way `login` folds a submitted
+            # one is what names the same key.
+            old_key = current["email"].strip().lower()
+            # Compared against `email`, which `_normalize_email` produced and
+            # which is itself a Python fold — like with like. Comparing the
+            # request against the raw column would compare the two folds and
+            # call an unchanged address a rename (or the reverse) on exactly the
+            # input where it matters.
+            if old_key != email:
+                # The account's run of failures follows the account, so a rename
+                # is not a way around a lockout (DW-59). Inside this
+                # transaction, and only when the address actually moved. The
+                # carry re-mirrors `users.locked_until` itself — see its
+                # docstring for why that is not something the rename already did.
+                carried = throttle.carry_failures(conn, old_key, email, user_id)
+                if carried is not None:
+                    # `_UPDATE_USER`'s `RETURNING` was taken before that mirror,
+                    # so the one column it can now be stale about is this one —
+                    # and it is the column FR-4 asks an Administrator to read.
+                    # Corrected from the carry's own answer rather than by
+                    # re-selecting the row: a second `SELECT` would need a fourth
+                    # copy of the eleven-column list for one value that is
+                    # already in hand. `updated_at` needs no such correction:
+                    # `now()` is the transaction timestamp, so the mirror wrote
+                    # the instant the rename already returned.
+                    row["locked_until"] = carried
+
+    return User.model_validate(row)

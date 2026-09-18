@@ -100,6 +100,10 @@ function renderScreen(
     changePassword: vi.fn(async () => undefined),
     changeOwnPassword,
     signOut: vi.fn(async () => undefined),
+    // Story 1.10's self-edit adoption. Never called from this screen — it is
+    // the edit screen's, through `App` — and present because the context is one
+    // object.
+    adoptUser: vi.fn(),
     sessionEnded: false,
   };
   render(<AccountSettingsScreen onBack={onBack} />);

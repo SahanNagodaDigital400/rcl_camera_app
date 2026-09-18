@@ -235,6 +235,27 @@
   line-height: var(--type-caption-line);
 }
 
+/* The row-end Edit control (Story 1.10). DESIGN.md's secondary button — navy
+ * outline, navy text, transparent fill — and deliberately not a second accent
+ * fill: "+ Add user" is this screen's one accent control, and an accent Edit on
+ * every row would be as many orange things as there are accounts.
+ *
+ * Denser than the screen's other buttons because it lives inside a table row at
+ * the admin density tier; the 44px touch-target floor is on `button` in
+ * global.css and is what keeps it tappable at that padding. */
+.edit {
+  justify-content: center;
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
 /* FR-4's lock, under the status badge. A muted line of fact rather than a fourth
  * badge: DESIGN.md names three badge treatments and no locked one, and the
  * obvious candidate colour is the accent — a second orange thing on a screen

@@ -69,9 +69,12 @@ table and a column it is still selecting.
 The delay starts at the 6th consecutive attempt — the first one made after
 five failures are already recorded — and the 10th failure locks the address
 out for 15 minutes; the lock clears itself, and **no unlock command exists** —
-`make migrate` has no counterpart for it and none is owed until Story 1.10
-gives an Administrator a way to edit a user. Waiting it out is the recovery,
-and it resets the run, so the ladder is available again from the start.
+`make migrate` has no counterpart for it, and **no story in Epic 1 owns one**.
+Story 1.10 was where one was predicted; it shipped the user editor without it
+(DW-64), so waiting it out remains the only recovery. It resets the run, so the
+ladder is available again from the start. One thing the editor did change: an
+address change *carries* the run to the new address rather than clearing it, so
+renaming an account is not an unlock either.
 
 The key is the address as typed, lowercased and stripped — not an account.
 An address that has never been a user accrues the same count, the same delays

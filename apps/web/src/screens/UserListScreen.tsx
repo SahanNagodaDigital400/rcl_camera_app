@@ -104,6 +104,7 @@ function lockNotice(user: User): string | null {
 interface UserListScreenProps {
   onBack: () => void;
   onAddUser: () => void;
+  onEditUser: (user: User) => void;
 }
 
 /**
@@ -119,7 +120,10 @@ interface UserListScreenProps {
  * That context is the *caller's own* session — its status, its cached user, and
  * the three mutations that change it. Reading somebody else's row changes none of
  * those, and routing an admin read through it would put every admin surface from
- * Story 1.10 on into the session provider.
+ * Story 1.10 on into the session provider. The one exception, added by that
+ * story, is `SessionProvider.adoptUser` on the edit screen's save path, and it
+ * is guarded on a matching id so it can only ever adopt the caller's own row —
+ * see `CreateUserScreen`, which states the rule and the exception together.
  *
  * **The role-conditional entry that opens this screen is a convenience, never the
  * control.** `App` renders it only for an Administrator and falls back to the
@@ -135,14 +139,23 @@ interface UserListScreenProps {
  *   account in one ordered array because FR-10 is every account; a filter on the
  *   one surface whose job is "who has access" hides the row somebody opened the
  *   screen to find. FR-18's search is catalogue search and belongs to Epic 2.
- * - **No edit, deactivate, delete, unlock or row-end menu.** Stories 1.10 and
- *   1.11 own every verb on a row, and DW-64's "something to press" for a lock is
- *   theirs. Rows here are display-only, and so are the role and status badges
- *   (EXPERIENCE.md line 66) — never a button, at any width.
+ * - **No deactivate, no delete and no unlock.** Story 1.11 owns deactivating and
+ *   deleting; the unlock has no owner left in Epic 1 at all (DW-64), so FR-4's
+ *   lock is still rendered here and ended by nothing. Since Story 1.10 there
+ *   *is* one verb on a row — Edit, at the row end — and it is a labelled
+ *   `<button>` rather than a click on the `<tr>`: a table row takes no focus and
+ *   announces nothing, and it would put a click target under text an
+ *   Administrator may be trying to select. The role and status badges stay
+ *   display-only (EXPERIENCE.md line 66) — never a button, at any width — and
+ *   the row-end slot is where 1.11's destructive menu belongs.
  *
  * Copy follows EXPERIENCE.md's tone rules: short, factual, no exclamation marks.
  */
-export function UserListScreen({ onBack, onAddUser }: UserListScreenProps): JSX.Element {
+export function UserListScreen({
+  onBack,
+  onAddUser,
+  onEditUser,
+}: UserListScreenProps): JSX.Element {
   const titleId = useId();
   const [listing, setListing] = useState<Listing>({ kind: 'loading' });
   /**
@@ -297,6 +310,13 @@ export function UserListScreen({ onBack, onAddUser }: UserListScreenProps): JSX.
                   <th className={styles.heading} scope="col">
                     Last login
                   </th>
+                  {/* A column of its own rather than a control tucked into the
+                      last data cell: a header is what associates the button with
+                      what it is for, and it is where Story 1.11's destructive
+                      menu goes beside it. */}
+                  <th className={styles.heading} scope="col">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -337,6 +357,29 @@ export function UserListScreen({ onBack, onAddUser }: UserListScreenProps): JSX.
                         {lock !== null && <span className={styles.lock}>{lock}</span>}
                       </td>
                       <td className={styles.cell}>{lastLogin(user)}</td>
+                      <td className={styles.cell}>
+                        {/* A real `<button>` at the row end, labelled, never a
+                            bare icon and never the `<tr>` itself (EXPERIENCE.md
+                            line 71's own reading, and the accessibility floor's
+                            keyboard path). The navy outline rather than a second
+                            accent fill: "+ Add user" is this screen's one accent
+                            control, and one per row would be as many orange
+                            things as there are accounts.
+
+                            Its accessible name names the person, so a screen
+                            reader hears which row it belongs to — the visible
+                            word is "Edit" and `aria-label` carries the rest,
+                            which keeps the column narrow without making the
+                            control ambiguous out of context. */}
+                        <button
+                          aria-label={`Edit ${user.name}`}
+                          className={styles.edit}
+                          type="button"
+                          onClick={() => onEditUser(user)}
+                        >
+                          Edit
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}

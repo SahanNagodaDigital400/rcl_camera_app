@@ -58,6 +58,11 @@ ADMIN_PREFIX = "/admin/"
 #: this constant below, so the path is written down once.
 CREATE_USER = "/admin/users"
 
+#: The member under it, added by Story 1.10: `PATCH` edits one account's name,
+#: email or role (FR-12). A second *path* rather than a third method on the one
+#: above, so the route table below states two paths and three routes.
+EDIT_USER = "/admin/users/{user_id}"
+
 LOGIN = "/auth/login"
 
 #: The throwaway route. Declared here and mounted on an app built here, so
@@ -367,6 +372,55 @@ def test_the_live_route_refuses_before_the_body_is_validated(
     assert response.json()["error"]["code"] == ADMINISTRATOR_REQUIRED
 
 
+def test_the_edit_route_refuses_a_staff_caller_and_writes_nothing(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    # Story 1.10's route, through the same dependency. The refusal is worth
+    # asserting on the *live* route as well as on the throwaway one above,
+    # because a route that forgot the dependency would still be caught by the
+    # route-table guard and would *not* be caught by any behavioural test unless
+    # one existed — and this is the first route in the product a Staff caller
+    # could use to promote themselves.
+    caller = make_user(role=Role.STAFF)
+    target = make_user(role=Role.STAFF, name="Kasun Perera")
+    _sign_in(client, caller)
+
+    # Read before the refusal as well as after, so "writes nothing" is a
+    # comparison rather than a restatement of what the fixture created.
+    before = conn.execute("SELECT * FROM users WHERE id = %s", (target.id,)).fetchone()
+    assert before is not None
+
+    response = client.patch(f"/admin/users/{target.id}", json={"role": Role.ADMIN.value})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == ADMINISTRATOR_REQUIRED
+
+    after = conn.execute("SELECT * FROM users WHERE id = %s", (target.id,)).fetchone()
+    assert after is not None
+    # Every column, `updated_at` included. Naming only the three the route may
+    # write would leave the timestamp unasserted — and a handler that ran far
+    # enough to touch it before being refused is a handler whose authorization is
+    # not a dependency, which is the whole claim this test makes.
+    assert dict(after) == dict(before)
+
+
+def test_the_edit_route_refuses_a_staff_caller_before_the_body_is_validated(
+    client: TestClient, make_user: MakeUser
+) -> None:
+    # As above for `POST`: the dependency resolves before the handler's arguments
+    # are built, so an empty body — which `EditUserRequest` refuses with a 422 —
+    # is still answered `403`. That ordering is the difference between an
+    # authorization boundary and a check inside a handler.
+    caller = make_user(role=Role.STAFF)
+    target = make_user(role=Role.STAFF)
+    _sign_in(client, caller)
+
+    response = client.patch(f"/admin/users/{target.id}", json={})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == ADMINISTRATOR_REQUIRED
+
+
 # --- The guard that keeps it declared -----------------------------------------
 
 
@@ -378,12 +432,18 @@ def test_the_admin_route_table_is_not_empty() -> None:
     assert _admin_routes(create_app()) != []
 
 
-def test_the_admin_route_table_is_the_two_routes_the_product_serves() -> None:
+def test_the_admin_route_table_is_the_three_routes_the_product_serves() -> None:
     # The stricter half, separated from the vacuity guard above because it is a
     # different claim with a different lifetime: this one is *meant* to fail the
     # moment a story adds a route under `/admin/` — Story 1.9 added
-    # `GET /admin/users`, and 1.10 and 1.11 will add their own — and its failure
-    # means "update this list", not "the guards above stopped guarding".
+    # `GET /admin/users`, Story 1.10 added `PATCH /admin/users/{user_id}`, and
+    # 1.11 will add its own — and its failure means "update this list", not "the
+    # guards above stopped guarding".
+    #
+    # Everything else in this section covers the new route without being touched,
+    # which is the property these guards were written for: both direction
+    # guards, the two negative controls and the gate-chaining test are statements
+    # about the route *table*, so a third route joins them by existing.
     #
     # Compared **sorted** on both sides, so the assertion states which routes are
     # served and not the order FastAPI happens to have registered them in: with
@@ -392,7 +452,7 @@ def test_the_admin_route_table_is_the_two_routes_the_product_serves() -> None:
     routes = _admin_routes(create_app())
 
     assert sorted(f"{method} {path}" for method, path, _ in routes) == sorted(
-        [f"GET {CREATE_USER}", f"POST {CREATE_USER}"]
+        [f"GET {CREATE_USER}", f"POST {CREATE_USER}", f"PATCH {EDIT_USER}"]
     )
 
 

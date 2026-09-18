@@ -10,10 +10,10 @@
  *
  * Three assertions here are the ones nothing else in the suite can make: that a
  * deactivated account renders the *word* "Deactivated" and not only a class,
- * that a lock in the future is shown and a lapsed one is not, and that no
- * control anywhere on this screen edits, deactivates, deletes or unlocks
- * anything — which is Stories 1.10 and 1.11's scope and which a screenshot
- * review would have to catch otherwise.
+ * that a lock in the future is shown and a lapsed one is not, and that the only
+ * verb on a row is Story 1.10's Edit — nothing here deactivates, deletes,
+ * unlocks or sets a password, which is Story 1.11's scope and, for the unlock,
+ * nobody's (DW-64), and which a screenshot review would have to catch otherwise.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { StrictMode } from 'react';
@@ -169,12 +169,20 @@ const refusal = (code: string, message: string, status: number): Reply => ({
 });
 
 function renderScreen(
-  props: { onBack?: () => void; onAddUser?: () => void } = {},
-): { onBack: () => void; onAddUser: () => void; unmount: () => void } {
+  props: { onBack?: () => void; onAddUser?: () => void; onEditUser?: (user: User) => void } = {},
+): {
+  onBack: () => void;
+  onAddUser: () => void;
+  onEditUser: (user: User) => void;
+  unmount: () => void;
+} {
   const onBack = props.onBack ?? ((): void => undefined);
   const onAddUser = props.onAddUser ?? ((): void => undefined);
-  const { unmount } = render(<UserListScreen onAddUser={onAddUser} onBack={onBack} />);
-  return { onBack, onAddUser, unmount };
+  const onEditUser = props.onEditUser ?? ((): void => undefined);
+  const { unmount } = render(
+    <UserListScreen onAddUser={onAddUser} onBack={onBack} onEditUser={onEditUser} />,
+  );
+  return { onBack, onAddUser, onEditUser, unmount };
 }
 
 /** The row a person's name is in, so a cell assertion cannot read another row's. */
@@ -244,14 +252,17 @@ describe('the list', () => {
     expect(names).toEqual([DEACTIVATED.name, ADMIN.name, UNCLAIMED.name]);
   });
 
-  it('names the five columns the story asks for', async () => {
+  it('names the five columns the story asks for, plus Story 1.10’s actions', async () => {
+    // Story 1.9's five, in order, and the sixth Story 1.10 added at the row end.
+    // The five keep their subjects: the new column must not disturb what the
+    // other assertions in this file read.
     stubList([ADMIN]);
     renderScreen();
 
     await screen.findByRole('table');
     const headers = screen.getAllByRole('columnheader').map((cell) => cell.textContent);
 
-    expect(headers).toEqual(['Name', 'Email', 'Role', 'Status', 'Last login']);
+    expect(headers).toEqual(['Name', 'Email', 'Role', 'Status', 'Last login', 'Actions']);
   });
 
   it('writes the roles in the glossary’s own words', async () => {
@@ -514,9 +525,14 @@ describe('a stale answer', () => {
     // whole job of the screen's generation counter. Delete the counter and this
     // test renders yesterday's roster over today's.
     const { settle, calls } = stubDeferred();
-    render(<UserListScreen onAddUser={(): void => undefined} onBack={(): void => undefined} />, {
-      wrapper: StrictMode,
-    });
+    render(
+      <UserListScreen
+        onAddUser={(): void => undefined}
+        onBack={(): void => undefined}
+        onEditUser={(): void => undefined}
+      />,
+      { wrapper: StrictMode },
+    );
 
     // Asserted before anything else, so the test fails loudly rather than
     // passing vacuously if the effect ever stops running twice.
@@ -591,20 +607,82 @@ describe('the controls', () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
-  it('offers nothing that edits, deactivates, deletes or unlocks a row', async () => {
-    // Stories 1.10 and 1.11 own every verb on a row, and DW-64's "something to
-    // press" for a lock is 1.10's. Asserted over the rendered control names
-    // rather than by eye, so a row-end menu added later fails here.
+  it('offers nothing that deactivates, deletes or unlocks a row', async () => {
+    // Retargeted by Story 1.10 rather than deleted: Edit has arrived and is
+    // asserted below, and the three verbs still absent are Story 1.11's
+    // (deactivate, delete) and nobody's (unlock — DW-64 lost its predicted owner
+    // when this story shipped without one). Asserted over the rendered control
+    // names rather than by eye, so a row-end menu added later fails here.
     stubList([ADMIN, STAFF, DEACTIVATED, LOCKED]);
     renderScreen();
 
     await screen.findByRole('table');
     const names = screen.getAllByRole('button').map((control) => control.textContent ?? '');
 
-    expect(names).toEqual(['+ Add user', 'Back']);
+    expect(names).toEqual(['+ Add user', 'Back', 'Edit', 'Edit', 'Edit', 'Edit']);
+    for (const verb of [/deactivate/i, /delete/i, /unlock/i, /remove/i, /password/i]) {
+      expect(screen.queryByRole('button', { name: verb })).toBeNull();
+    }
     expect(screen.queryByRole('link')).toBeNull();
     expect(screen.queryByRole('menuitem')).toBeNull();
     expect(screen.queryByRole('checkbox')).toBeNull();
+  });
+
+  it('gives every row one Edit control, named for the person it belongs to', async () => {
+    // EXPERIENCE.md line 71: a row-end action is labelled, never a bare icon.
+    // The *accessible* name carries the person, because "Edit" read four times
+    // out of context says nothing about which account is about to change.
+    stubList([ADMIN, STAFF, DEACTIVATED]);
+    renderScreen();
+
+    await screen.findByRole('table');
+
+    for (const user of [ADMIN, STAFF, DEACTIVATED]) {
+      const control = within(rowFor(user.name)).getByRole('button', {
+        name: `Edit ${user.name}`,
+      });
+      expect(control.tagName).toBe('BUTTON');
+      expect(control.textContent).toBe('Edit');
+    }
+  });
+
+  it('hands the pressed row straight to onEditUser', async () => {
+    // The row object, not an id: the edit screen is pre-filled from what the
+    // list already holds, which is why the product serves no
+    // `GET /admin/users/{id}`.
+    const onEditUser = vi.fn();
+    stubList([ADMIN, STAFF]);
+    renderScreen({ onEditUser });
+
+    await screen.findByRole('table');
+    fireEvent.click(screen.getByRole('button', { name: `Edit ${STAFF.name}` }));
+
+    expect(onEditUser).toHaveBeenCalledTimes(1);
+    expect(onEditUser).toHaveBeenCalledWith(STAFF);
+  });
+
+  it('keeps the Edit control out of the row element itself', async () => {
+    // A `<tr>` with an `onClick` takes no focus, announces nothing, and puts a
+    // click target under text an Administrator may be trying to select. The
+    // control is the button; the row is still a row.
+    //
+    // **Asserted by clicking the row**, not by reading an `onclick` attribute:
+    // React attaches handlers through its own synthetic event system and emits
+    // no such attribute, so `<tr onClick={...}>` would satisfy an attribute
+    // check unchanged — a guard that can never fail.
+    const onEditUser = vi.fn();
+    stubList([ADMIN]);
+    renderScreen({ onEditUser });
+
+    await screen.findByRole('table');
+    const row = rowFor(ADMIN.name);
+
+    fireEvent.click(row);
+    expect(onEditUser).not.toHaveBeenCalled();
+
+    // And nothing on the row pretends to be a control.
+    expect(row.getAttribute('tabindex')).toBeNull();
+    expect(row.getAttribute('role')).toBeNull();
   });
 
   it('leaves the role and status badges display-only', async () => {

@@ -41,6 +41,10 @@ function renderLogin(
     // Account Settings' — and present because the context is one object.
     changeOwnPassword: vi.fn(async () => undefined),
     signOut: vi.fn(async () => undefined),
+    // Story 1.10's self-edit adoption. Never called from this screen — it is
+    // the edit screen's, through `App` — and present because the context is one
+    // object.
+    adoptUser: vi.fn(),
     sessionEnded,
   };
   render(<LoginScreen />);

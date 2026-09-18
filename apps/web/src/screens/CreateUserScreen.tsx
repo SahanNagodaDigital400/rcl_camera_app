@@ -26,7 +26,11 @@ import type { Role, User } from '@rocell/schema/user';
  * That context is the *caller's own* session: its status, its cached user, and
  * the three mutations that change it. Provisioning somebody else changes none of
  * those, and routing it through the context would mean every admin mutation from
- * Story 1.10 on lands there too.
+ * Story 1.10 on lands there too. The rule has exactly one exception, added by
+ * that story and deliberately narrow: `SessionProvider.adoptUser`, which the
+ * edit screen hands its saved row to and which adopts it only when the id
+ * matches the cached user's — an Administrator editing *themselves*, which is
+ * the one admin write that is also a change to the caller's own session.
  *
  * **It is opened from the User List's "+ Add user"** (EXPERIENCE.md line 34), and
  * `onBack` returns there rather than to the home panel: the list is where the
@@ -51,9 +55,13 @@ import type { Role, User } from '@rocell/schema/user';
  *   password; none of the rest is specified, and each would be a rule the server
  *   does not enforce.
  * - **No list, and no editing.** Story 1.9's `UserListScreen` reads the
- *   collection this screen writes to, and it is one surface away — Back. Stories
- *   1.10 and 1.11 own editing and deactivating; nothing here does either, and
- *   nothing here reads a row.
+ *   collection this screen writes to, and it is one surface away — Back. Editing
+ *   exists since Story 1.10 and is one surface away too, on `EditUserScreen`,
+ *   reached from a row's own Edit control: it is a separate screen because the
+ *   two carry the same fields and nothing else in common — this one owns a
+ *   temporary password, a credential panel nothing can show again and a `POST`,
+ *   and that one owns a pre-filled form, a per-field diff and a `PATCH`.
+ *   Deactivating and deleting are still Story 1.11's. Nothing here reads a row.
  *
  * The rejection text is always the API's own sentence, which names the rule that
  * failed (EXPERIENCE.md:87). Copy follows EXPERIENCE.md's tone rules: short,

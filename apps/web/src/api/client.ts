@@ -131,6 +131,33 @@ export const INVALID_EMAIL = 'invalid_email';
  */
 export const EMAIL_ALREADY_EXISTS = 'email_already_exists';
 
+/**
+ * The envelope code for an id `PATCH /admin/users/{id}` found no row behind.
+ *
+ * It marks **no field**. Nothing on the form is wrong — the account itself is
+ * gone, deleted from another tab or another device since the list was fetched —
+ * so pointing at an input would send the Administrator to correct something that
+ * is perfectly fine. The screen renders the API's own sentence, which tells them
+ * the thing they can act on: reload the list.
+ *
+ * A `404`, so no observer watches it and nothing about the session changes.
+ */
+export const USER_NOT_FOUND = 'user_not_found';
+
+/**
+ * The envelope code for a demotion that would leave nobody in charge.
+ *
+ * The **role** control is what it marks: the role is the field that was refused,
+ * and the other two would have been written had they arrived alone. The API's
+ * own sentence names the rule and the way out of it, which is to make somebody
+ * else an Administrator first.
+ *
+ * A `409`, deliberately not a `403`: nothing is wrong with the caller's
+ * authority — they are an Administrator — so no observer watches it, the session
+ * is untouched, and the screen treats it as one control to change.
+ */
+export const LAST_ADMINISTRATOR = 'last_administrator';
+
 /** The code this module invents when the request never reached the API. */
 export const NETWORK_ERROR = 'network_error';
 

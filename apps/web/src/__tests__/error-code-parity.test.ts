@@ -33,9 +33,11 @@ import {
   EMAIL_ALREADY_EXISTS,
   INVALID_CURRENT_PASSWORD,
   INVALID_EMAIL,
+  LAST_ADMINISTRATOR,
   PASSWORD_CHANGE_NOT_REQUIRED,
   PASSWORD_CHANGE_REQUIRED,
   UNAUTHORIZED,
+  USER_NOT_FOUND,
   WEAK_PASSWORD,
 } from '../api/client';
 
@@ -77,6 +79,8 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   invalid_current_password: { file: 'auth.py', name: 'INVALID_CURRENT_PASSWORD' },
   invalid_email: { file: 'users.py', name: 'INVALID_EMAIL' },
   email_already_exists: { file: 'users.py', name: 'EMAIL_ALREADY_EXISTS' },
+  user_not_found: { file: 'users.py', name: 'USER_NOT_FOUND' },
+  last_administrator: { file: 'users.py', name: 'LAST_ADMINISTRATOR' },
 };
 
 const TYPESCRIPT: Record<string, string> = {
@@ -88,6 +92,8 @@ const TYPESCRIPT: Record<string, string> = {
   invalid_current_password: INVALID_CURRENT_PASSWORD,
   invalid_email: INVALID_EMAIL,
   email_already_exists: EMAIL_ALREADY_EXISTS,
+  user_not_found: USER_NOT_FOUND,
+  last_administrator: LAST_ADMINISTRATOR,
 };
 
 describe('the envelope codes are one contract in two languages', () => {
@@ -140,34 +146,71 @@ describe('the envelope codes are one contract in two languages', () => {
 });
 
 /**
- * The request bounds `CreateUserScreen` mirrors onto its three inputs.
+ * The request bounds the two admin forms mirror onto their inputs.
  *
- * The screen writes the server's bounds down a second time, in TypeScript, and
+ * Each screen writes the server's bounds down a second time, in TypeScript, and
  * renders them as `maxLength` so that the one refusal it cannot act on — the
  * generic `422 validation_error`, which names no field, so nothing is marked and
- * nothing is focused — never has to be shown. `create-user.test.tsx` asserts the
- * attribute matches the screen's constant; this asserts the screen's constant
- * matches the server's. Without both halves the test named "bounds the field the
- * way the server bounds it" compares one TypeScript literal against another and
- * would pass with the Python bound set to anything at all.
+ * nothing is focused — never has to be shown. `create-user.test.tsx` and
+ * `edit-user.test.tsx` assert the attribute matches their screen's constant;
+ * this asserts each screen's constant matches the server's. Without both halves
+ * the tests named "bounds the field the way the server bounds it" compare one
+ * TypeScript literal against another and would pass with the Python bound set to
+ * anything at all.
+ *
+ * **The screen is per row, not one path for the whole table.** Story 1.10 added
+ * a second screen with its own mirrored bounds; with a single `SCREEN` constant
+ * those two literals would be compared against nothing at all, which is the
+ * "passes forever" failure this file exists to prevent.
  */
-const SCREEN = join(fileURLToPath(new URL('..', import.meta.url)), 'screens', 'CreateUserScreen.tsx');
+function screenPath(file: string): string {
+  return join(fileURLToPath(new URL('..', import.meta.url)), 'screens', file);
+}
 
-const BOUNDS: { python: { file: string; name: string }; typescript: string }[] = [
-  { python: { file: 'users.py', name: 'MAX_NAME_LENGTH' }, typescript: 'MAX_NAME_LENGTH' },
-  { python: { file: 'auth.py', name: 'MAX_EMAIL_LENGTH' }, typescript: 'MAX_EMAIL_LENGTH' },
+const CREATE_USER_SCREEN = 'CreateUserScreen.tsx';
+const EDIT_USER_SCREEN = 'EditUserScreen.tsx';
+
+const BOUNDS: {
+  screen: string;
+  python: { file: string; name: string };
+  typescript: string;
+}[] = [
   {
+    screen: CREATE_USER_SCREEN,
+    python: { file: 'users.py', name: 'MAX_NAME_LENGTH' },
+    typescript: 'MAX_NAME_LENGTH',
+  },
+  {
+    screen: CREATE_USER_SCREEN,
+    python: { file: 'auth.py', name: 'MAX_EMAIL_LENGTH' },
+    typescript: 'MAX_EMAIL_LENGTH',
+  },
+  {
+    screen: CREATE_USER_SCREEN,
     python: { file: 'auth.py', name: 'MAX_PASSWORD_FIELD_LENGTH' },
     typescript: 'MAX_TEMPORARY_PASSWORD_LENGTH',
   },
+  // Story 1.10's screen. It carries no password field — the endpoint behind it
+  // writes three columns and `password_hash` is not among them — so it mirrors
+  // two bounds rather than three.
+  {
+    screen: EDIT_USER_SCREEN,
+    python: { file: 'users.py', name: 'MAX_NAME_LENGTH' },
+    typescript: 'MAX_NAME_LENGTH',
+  },
+  {
+    screen: EDIT_USER_SCREEN,
+    python: { file: 'auth.py', name: 'MAX_EMAIL_LENGTH' },
+    typescript: 'MAX_EMAIL_LENGTH',
+  },
 ];
 
-describe('the create-user request bounds are one contract in two languages', () => {
-  it.each(BOUNDS.map((bound) => [bound.typescript, bound] as const))(
+describe('the admin form bounds are one contract in two languages', () => {
+  it.each(BOUNDS.map((bound) => [`${bound.screen}: ${bound.typescript}`, bound] as const))(
     '%s is the same number on both sides',
     (_name, bound) => {
       const python = pythonInteger(read(join(API, bound.python.file)), bound.python.name);
-      const typescript = typescriptInteger(read(SCREEN), bound.typescript);
+      const typescript = typescriptInteger(read(screenPath(bound.screen)), bound.typescript);
 
       // Both halves asserted non-null first, for the reason the codes above give:
       // a comparison of `null` with `null` passes forever, so a renamed or moved

@@ -60,6 +60,28 @@ export interface SessionContextValue {
   changeOwnPassword: (currentPassword: string, newPassword: string) => Promise<void>;
   signOut: () => Promise<void>;
   /**
+   * Store a fresher copy of the caller's own row, which the API has just
+   * returned.
+   *
+   * The one admin mutation that reaches this context, and only because its
+   * result *is* the caller: an Administrator editing their own row at
+   * `PATCH /admin/users/{id}` gets back the same `User` the visibility
+   * revalidation above stores with `setUser(asUser(body))`. Without it a
+   * self-rename leaves a stale name in the app bar, and a self-demotion leaves
+   * the Users door on screen until the tab is backgrounded and brought back.
+   *
+   * **It replaces the cached user only when the ids match.** Every other admin
+   * call deliberately bypasses this provider, and that stays true — this is not
+   * a route into it for admin mutations. The id guard is what keeps it from
+   * becoming a way to write somebody else's row into the caller's session: an
+   * Administrator who edits a colleague hands that row here and nothing happens.
+   *
+   * It is a render cache and never an authorization decision (AGENTS.md
+   * Policy). The server re-reads `role` and `active` from Postgres on every
+   * request (AD-3) whatever this holds.
+   */
+  adoptUser: (user: User) => void;
+  /**
    * A session that existed has ended — expired, revoked, or its owner
    * deactivated.
    *
@@ -313,9 +335,26 @@ export function SessionProvider({ children }: { children: ReactNode }): JSX.Elem
     setSessionEnded(false);
   }, []);
 
+  const adoptUser = useCallback((updated: User): void => {
+    // Guarded on the id inside the updater rather than against the `user` in
+    // scope, so this callback does not have to be rebuilt on every session
+    // change — and so the comparison is made against the state as it is at the
+    // moment of the write rather than as it was when the caller rendered.
+    setUser((cached) => (cached !== null && cached.id === updated.id ? updated : cached));
+  }, []);
+
   const value = useMemo<SessionContextValue>(
-    () => ({ status, user, signIn, changePassword, changeOwnPassword, signOut, sessionEnded }),
-    [status, user, signIn, changePassword, changeOwnPassword, signOut, sessionEnded],
+    () => ({
+      status,
+      user,
+      signIn,
+      changePassword,
+      changeOwnPassword,
+      signOut,
+      adoptUser,
+      sessionEnded,
+    }),
+    [status, user, signIn, changePassword, changeOwnPassword, signOut, adoptUser, sessionEnded],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

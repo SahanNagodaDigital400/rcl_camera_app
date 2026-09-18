@@ -105,8 +105,8 @@ effect immediately: the old password stops working at the very next sign-in, wit
 re-login in between. It also **signs that person out on every other device** — that is the point of
 it, because the usual reason for changing a password you already chose is that you think somebody
 else has it — while the browser that made the change stays signed in on a fresh cookie. The screen
-shows the account's name and email as well, read-only; changing either is an Administrator's job
-(Story 1.10).
+shows the account's name and email as well, read-only; changing either is an Administrator's job,
+from **Users → Edit**.
 
 One thing that change does **not** do yet is leave a record. Nothing is written down about who
 changed a password, when, or how many other devices it signed out: the only trace is the account's
@@ -126,10 +126,16 @@ On success the screen shows the name, address, role, the temporary password exac
 the moment it expires. **Hand that over yourself.** The app sends no mail of any kind — no
 invitation, no notification, no control on the screen that offers to send one — and the credential
 is gone from the product the moment you navigate away: nothing stores it in readable form and no
-screen can show it again. If it is lost before it reaches the person, provision them afresh under a
-different address: nothing in Epic 1 reissues a credential for a provisioned user, and the
-address they were first given stays consumed until Story 1.10 can edit it or Story 1.11 can
-remove the row.
+screen can show it again. If it is lost before it reaches the person, provision them afresh:
+nothing in Epic 1 reissues a credential for a provisioned user. **A mistyped address is no longer
+a dead end** — open **Users**, press **Edit** on the row and correct it, which releases the wrong
+address for reuse without releasing any lockout, and the account keeps the credential it was given.
+One caveat, and it is the only one: the counter follows the address *into* the account as well as
+out of it, so correcting a typo onto an address that somebody had already been guessing passwords
+at hands that lockout to the account. There is no admin unlock anywhere in Epic 1, so the whole of
+the recovery is waiting the 15 minutes out. Provisioning a second account under a different address
+still works, and now leaves a row you can delete once Story 1.11 lands rather than one nothing can
+reach.
 
 The credential is good for **72 hours**, or until it is claimed — whichever comes first. The new
 user can sign in with it straight away — no migration, no console command, no developer — and the
@@ -158,10 +164,23 @@ answer it wrongly. **A deactivated account is marked, never hidden** — the row
 reads "Never" until the person first signs in** — the word rather than an empty cell, which would
 read as a value that failed to load — so a credential that was handed over and never used is
 visible at a glance. A lockout shows on that account's status as a "Locked until" line; as
-everywhere else the lock clears itself on its own, and there is still no control anywhere that
-ends one early — an admin unlock is Story 1.10's to add. Nothing on the list can be edited or
-deactivated yet either: every verb on a row is Stories 1.10 and 1.11, and until they land the list
-is something to read.
+everywhere else the lock clears itself on its own, and **there is still no control anywhere that
+ends one early — no story in Epic 1 owns an admin unlock at all.** Each row ends in an **Edit**
+control, and that is the only verb on a row: deactivating and deleting are Story 1.11's, and until
+they land the rest of the list is something to read.
+
+**Edit** opens that account's name, email and role, pre-filled, and saves the fields you actually
+changed — press Save with nothing edited and nothing is sent. The role takes effect on that
+person's very next request in both directions: promote somebody and they can reach the admin
+surfaces without signing out and in, demote them and they are refused on the request immediately
+after. Demoting yourself works the same way, and the Users entry simply disappears; what is refused
+is the demotion that would leave the product with **no active Administrator at all**, which is
+answered with the rule and the way out of it. Changing an address changes the login — the old one
+stops working at the very next sign-in and the new one starts — and **it takes the account's
+lockout counter with it**: a locked account is still locked at its new address, so an edit is not a
+way around a lockout. And, as with everything else in Epic 1 so far, **nothing is written down
+about who changed what**: the only trace is the row's own `updated_at`, which says neither. The
+audit log that answers it is Story 1.12.
 
 **A forgotten password has no self-service path at all.** There is no reset link, no reset email and
 no mail transport anywhere in the product — the app sends no email, by design, and a test fails the
@@ -175,10 +194,15 @@ Repeated failed sign-ins are slowed down and then blocked. From the 6th attempt 
 after five recorded failures — each attempt waits before it is processed, one second, then two,
 three, four, and four again, so the ladder runs out exactly as the lock arrives: the 10th failed
 attempt locks out further attempts for 15 minutes, answering a distinct message instead of "email or
-password is incorrect". **The lock clears itself; there is no admin unlock and none is owed until
-Story 1.10.** Waiting it out is the whole of the recovery, and it restores the full ladder: one
-mistyped password an hour later does not re-lock anything. A correct password is refused while the
-lock holds, and any successful sign-in clears the count outright.
+password is incorrect". **The lock clears itself, and there is no admin unlock: no story in Epic 1
+owns one, and nothing in the product ends a lock early.** Story 1.10 was where one was predicted;
+it shipped with the edit it was actually scoped to — name, email and role — and no unlock, so this
+is the state of it rather than a gap waiting on a story. Waiting it out is the whole of the
+recovery, and it restores the full ladder: one mistyped password an hour later does not re-lock
+anything. A correct password is refused while the lock holds, and any successful sign-in clears the
+count outright. Changing the account's address does not clear it either — the counter moves with
+the account, which is exactly so that an Administrator's edit cannot be the unlock the product does
+not have.
 
 The counter is keyed on **the address that was typed**, not on the account, which is why an address
 that has never existed accrues exactly the same delays and the same lockout. That is deliberate: a

@@ -8,6 +8,7 @@ import type { SessionStatus } from './auth/SessionProvider';
 import { AppShell, MAIN_REGION_ID } from './components/AppShell';
 import { AccountSettingsScreen } from './screens/AccountSettingsScreen';
 import { CreateUserScreen } from './screens/CreateUserScreen';
+import { EditUserScreen } from './screens/EditUserScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
 import { LoginScreen } from './screens/LoginScreen';
 import { UserListScreen } from './screens/UserListScreen';
@@ -19,16 +20,17 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 /**
  * Which surface inside the shell is showing.
  *
- * Four values because four surfaces exist. This is not a router and is not the
+ * Five values because five surfaces exist. This is not a router and is not the
  * beginning of one: EXPERIENCE.md's nav is role-conditional, spans six surfaces
  * and changes shape at a breakpoint, and four of those six do not exist yet.
  * `'users'` is one of the six — EXPERIENCE.md line 33's User List, standing on
  * the home panel until there is a nav to hold it. Create user is not: line 34
- * reaches it from the list's "+ Add user", which is where its door now is.
+ * reaches it from the list's "+ Add user", which is where its door now is, and
+ * `'edit-user'` is reached from a row's own Edit control on the same line.
  * When the nav arrives this becomes whatever it needs; until then it is one
  * piece of state and a swap.
  */
-type Section = 'home' | 'account' | 'create-user' | 'users';
+type Section = 'home' | 'account' | 'create-user' | 'users' | 'edit-user';
 
 /**
  * Which of the seven screens the session state selects.
@@ -48,7 +50,8 @@ type Screen =
   | 'shell'
   | 'account'
   | 'create-user'
-  | 'users';
+  | 'users'
+  | 'edit-user';
 
 /**
  * Whether `role` can reach `section` at all.
@@ -62,11 +65,18 @@ type Screen =
  * `null` is a signed-out caller, who reaches nothing role-conditional.
  */
 function reachableBy(section: Section, role: Role | null): boolean {
-  if (section === 'create-user' || section === 'users') return role === 'admin';
+  if (section === 'create-user' || section === 'users' || section === 'edit-user') {
+    return role === 'admin';
+  }
   return true;
 }
 
-function currentScreen(status: SessionStatus, user: User | null, section: Section): Screen {
+function currentScreen(
+  status: SessionStatus,
+  user: User | null,
+  section: Section,
+  editing: User | null,
+): Screen {
   if (status === 'loading') return 'loading';
   if (status === 'signed-out' || user === null) return 'login';
   if (user.must_change_password) return 'password-change';
@@ -84,6 +94,15 @@ function currentScreen(status: SessionStatus, user: User | null, section: Sectio
   // refuses a Staff caller at `GET`/`POST /admin/users` whatever this returns.
   if (section === 'users') return reachableBy(section, user.role) ? 'users' : 'shell';
   if (section === 'create-user') return reachableBy(section, user.role) ? 'create-user' : 'shell';
+  if (section === 'edit-user') {
+    // The row being edited is part of what makes this section renderable, so it
+    // is read here rather than defended inside the screen. A section that says
+    // `'edit-user'` with nothing being edited answers the list instead of an
+    // empty editor — which is where the Administrator pressed Edit, and where
+    // they can press it again.
+    if (!reachableBy(section, user.role)) return 'shell';
+    return editing === null ? 'users' : 'edit-user';
+  }
   return 'shell';
 }
 
@@ -108,9 +127,19 @@ function currentScreen(status: SessionStatus, user: User | null, section: Sectio
  * authorization is never gated by what the UI hides).
  */
 function Gate(): JSX.Element {
-  const { status, user, signOut } = useSession();
+  const { status, user, signOut, adoptUser } = useSession();
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [section, setSection] = useState<Section>('home');
+  /**
+   * The row the edit screen is editing, or `null`.
+   *
+   * Held beside the section rather than inside it because the screen needs the
+   * whole `User` — the list already has it, and a second `GET /admin/users/{id}`
+   * to fetch what is in hand would be a route the product does not serve. It is
+   * cleared by `showSection` on every move, so it can never be a stale row an
+   * `'edit-user'` section renders later.
+   */
+  const [editing, setEditing] = useState<User | null>(null);
   const [lastStatus, setLastStatus] = useState<SessionStatus>(status);
   const [lastRole, setLastRole] = useState<Role | null>(user?.role ?? null);
 
@@ -135,7 +164,14 @@ function Gate(): JSX.Element {
     // pattern for resetting state when the thing it belongs to changes, and it
     // is what `oxlint`'s `set-state-in-effect` rule asks for in place of the
     // effect this started as.
-    if (status !== 'signed-in') setSection('home');
+    // The row the edit screen was holding goes with the section, and for the
+    // same reason: it is somebody's name, address and role, and leaving it in
+    // state across a sign-out means the next person on a shared shop-floor
+    // handset is one stale section away from seeing it.
+    if (status !== 'signed-in') {
+      setSection('home');
+      setEditing(null);
+    }
   }
 
   if (lastRole !== (user?.role ?? null)) {
@@ -145,7 +181,7 @@ function Gate(): JSX.Element {
     // reading past it is not the same as clearing it. What goes wrong while the
     // stale value sits in state is invisible until it isn't — if the role is
     // restored, and an Administrator demoted and promoted back within a shift is
-    // a two-click operation once Story 1.10 lands, the create screen reopens by
+    // a two-click operation since Story 1.10 shipped the editor, the create screen reopens by
     // itself over whatever the user was actually looking at. Nobody asked for it
     // and nothing on screen explains it.
     //
@@ -171,10 +207,13 @@ function Gate(): JSX.Element {
     // re-runs this component before it commits anything, so the stale section
     // never reaches the DOM — and `oxlint`'s `react/set-state-in-effect` forbids
     // the effect this would otherwise be.
-    if (!reachableBy(section, user?.role ?? null)) setSection('home');
+    if (!reachableBy(section, user?.role ?? null)) {
+      setSection('home');
+      setEditing(null);
+    }
   }
 
-  const screen = currentScreen(status, user, section);
+  const screen = currentScreen(status, user, section, editing);
   const previous = useRef<Screen>('loading');
 
   useEffect(() => {
@@ -275,7 +314,25 @@ function Gate(): JSX.Element {
     // about a button pressed minutes ago on a panel the user has just arrived
     // at. Cleared in both directions, which is why both swaps go through here.
     setSignOutError(null);
+    // The row being edited belongs to the edit screen and to nothing else.
+    // Cleared on every move away from it, so a later `'edit-user'` section — set
+    // by a press of Edit that has not yet chosen a row, or left behind by a
+    // reconciler — can never render somebody the Administrator looked at minutes
+    // ago. `showEditUser` below is the one path that sets it, and it sets the
+    // row before the section.
+    setEditing(null);
     setSection(next);
+  }
+
+  function showEditUser(target: User): void {
+    // The row first, then the section: `currentScreen` reads both, and setting
+    // the section first would give it one render with `'edit-user'` and no row —
+    // which it answers with the list, so the screen would flicker back to where
+    // it came from. React batches these two, and the order says why it may not
+    // be relied on to.
+    setSignOutError(null);
+    setEditing(target);
+    setSection('edit-user');
   }
 
   // One node, rendered on whichever surface the click was made on. Written once
@@ -301,6 +358,44 @@ function Gate(): JSX.Element {
         <UserListScreen
           onAddUser={() => showSection('create-user')}
           onBack={() => showSection('home')}
+          onEditUser={showEditUser}
+        />
+      </AppShell>
+    );
+  }
+
+  if (screen === 'edit-user' && editing !== null) {
+    // `editing !== null` is unreachable at runtime — `currentScreen` already
+    // answers `'users'` for an `'edit-user'` section with no row — and it is here
+    // so TypeScript narrows the prop below. Removing it as redundant breaks the
+    // build, so it says why.
+    //
+    // Inside the shell, in place of the home panel, exactly as the two screens
+    // below are. Back goes to the list, not to the home panel: the list is where
+    // Edit was pressed, and `UserListScreen` refetches on mount, so returning to
+    // it shows the row as it was just saved.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <EditUserScreen
+          // Keyed on the row, because the screen seeds all of its state from
+          // `user` at mount and never reconciles the prop. Today nothing can
+          // swap one row for another without a trip through the list, which
+          // unmounts it — but that is a property of `showSection`, not of this
+          // screen, and a keyless element would turn a later change there into
+          // an editor showing one person's fields under another's name.
+          key={editing.id}
+          onBack={() => showSection('users')}
+          // The API has just returned a fresher copy of a row. `adoptUser`
+          // stores it **only when it is the caller's own** (the id guard is in
+          // `SessionProvider`), which is what keeps the app bar's name and the
+          // home panel's Users door in step after a self-rename or a
+          // self-demotion — a demotion then falls straight through the role
+          // reconciler above, with no reload and no toast (EXPERIENCE.md line
+          // 95). For anybody else's row it does nothing, and the refetch on the
+          // way back to the list is what shows the change.
+          onSaved={adoptUser}
+          user={editing}
         />
       </AppShell>
     );

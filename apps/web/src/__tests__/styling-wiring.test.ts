@@ -274,6 +274,17 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
   });
 
+  it('colours the edit user rejection the same way', () => {
+    // The newest screen to carry a rejection, and the one whose alert slot is
+    // also where the unsaved-changes warning lands — the one thing on that
+    // screen that can lose work. Point `.error` at `--color-text` and a refused
+    // demotion, and a Back about to discard a half-typed edit, both render as
+    // ordinary prose beside a form that looks fine.
+    const css = read(join(SRC, 'screens', 'EditUserScreen.module.css'));
+
+    expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
   it('colours the user list failure the same way', () => {
     // The one screen whose alert replaces its whole contents: when this fires
     // there is no table beside it, so the sentence is the entire answer to "who
@@ -321,6 +332,7 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     ['ForcedPasswordChangeScreen', 'ForcedPasswordChangeScreen.tsx'],
     ['AccountSettingsScreen', 'AccountSettingsScreen.tsx'],
     ['CreateUserScreen', 'CreateUserScreen.tsx'],
+    ['EditUserScreen', 'EditUserScreen.tsx'],
     ['UserListScreen', 'UserListScreen.tsx'],
   ])('is the class %s\'s alert element actually carries', (_label, file) => {
     // The rules above are inert if the element points somewhere else. The
@@ -442,6 +454,46 @@ describe('adding a user is the one action on the create user screen', () => {
 
 });
 
+describe('saving is the one action on the edit user screen', () => {
+  // DESIGN.md's "exactly one per screen" for the accent-filled primary, on a
+  // screen that carries two buttons: Save changes takes the accent, Back is the
+  // navy outline. A second orange control would make neither of them the action.
+  const css = (): string => read(join(SRC, 'screens', 'EditUserScreen.module.css'));
+
+  it('fills the submit with the accent and writes on it in navy', () => {
+    const submit = rule(css(), '.submit');
+
+    expect(declaration(submit, 'background')).toBe('var(--color-accent)');
+    expect(declaration(submit, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('leaves Back as the navy outline, not a second filled control', () => {
+    const back = rule(css(), '.back');
+
+    expect(declaration(back, 'color')).toBe('var(--color-primary)');
+    expect(declaration(back, 'background')).toBe('transparent');
+    expect(declaration(back, 'border')).toBe(
+      'var(--border-hairline) solid var(--color-primary)',
+    );
+  });
+
+  it('writes the save indicator in the brand primary once it has saved', () => {
+    // DESIGN.md's `save-indicator`: muted while it is working, `{colors.primary}`
+    // once it has — and deliberately not orange, which stays reserved for the
+    // action that has not fired yet. Point `.saved` at `--color-muted-text` and
+    // the two states become indistinguishable, with every render test still
+    // finding "Saved."
+    expect(declaration(rule(css(), '.indicator'), 'color')).toBe('var(--color-muted-text)');
+    expect(declaration(rule(css(), '.saved'), 'color')).toBe('var(--color-primary)');
+  });
+
+  it('paints nothing else with the accent', () => {
+    const accents = [...css().matchAll(/var\(--color-accent\)/g)];
+
+    expect(accents).toHaveLength(1);
+  });
+});
+
 describe('the home panel\'s one admin entry', () => {
   it('is outlined, never filled', () => {
     // The door on the home panel is a secondary control: the shell's landing
@@ -492,6 +544,21 @@ describe('adding a user is the one action on the user list', () => {
     const accents = [...css().matchAll(/var\(--color-accent\)/g)];
 
     expect(accents).toHaveLength(1);
+  });
+
+  it('leaves the row-end Edit control an outline, not a second accent fill', () => {
+    // Story 1.10's one verb on a row. An accent fill here would be one orange
+    // control per account — as many as there are rows — and "+ Add user" would
+    // stop being the screen's one action by being outnumbered by its own table.
+    // The rule above counts accents over the whole stylesheet, so this says
+    // *which* treatment the control has rather than only that it is not orange.
+    const edit = rule(css(), '.edit');
+
+    expect(declaration(edit, 'background')).toBe('transparent');
+    expect(declaration(edit, 'color')).toBe('var(--color-primary)');
+    expect(declaration(edit, 'border')).toBe(
+      'var(--border-hairline) solid var(--color-primary)',
+    );
   });
 
   it('keeps the wait muted and the refusal destructive, never the other way round', () => {

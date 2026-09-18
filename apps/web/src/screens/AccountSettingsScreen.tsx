@@ -218,8 +218,9 @@ export function AccountSettingsScreen({ onBack }: { onBack: () => void }): JSX.E
       <h1 className={styles.title}>Account</h1>
 
       {/* Read-only, and read from the session context rather than from a form:
-          FR-11 puts editing a name or an address with an Administrator (Story
-          1.10), and this screen changes exactly one thing. `user` cannot be null
+          FR-11 puts editing a name or an address with an Administrator, which
+          since Story 1.10 is Users -> Edit; this screen changes exactly one
+          thing. `user` cannot be null
           here — `App` renders this branch only when it is not — and the fallback
           keeps TypeScript's narrowing honest without inventing a placeholder. */}
       <dl className={styles.identity}>

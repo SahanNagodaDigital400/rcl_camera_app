@@ -141,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_five_auth_routes_health_and_the_admin_writer() -> None:
+def test_the_route_table_is_the_five_auth_routes_health_and_the_two_admin_routes() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -170,6 +170,16 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_admin_writer() -
     # * every field it takes describes somebody *else* — the caller's own row is
     #   never the one written, and the body cannot name who is acting.
     #
+    # `/admin/users/{user_id}` (Story 1.10, FR-12) is a **new path**, which is
+    # why this set changes where Story 1.9's added method did not. It is not a
+    # registration surface either, and for a stronger reason than the collection
+    # above: it can only ever change an account an Administrator already created.
+    # It takes an id in the path, refuses one that names no row with a `404`, and
+    # its body carries no password and no `active` — there is no shape of request
+    # to it that brings a user into existence. It is authenticated and
+    # Administrator-only through the same `require_administrator` every route
+    # under `/admin/` declares.
+    #
     # The seeded Administrator (`infra/rocell_infra/seed.py`) is still the only
     # row written with no Administrator behind it, and it is written by the
     # migration runner outside the application entirely.
@@ -181,6 +191,7 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_admin_writer() -
         "/auth/password",
         "/auth/password/change",
         "/admin/users",
+        "/admin/users/{user_id}",
     }
 
 

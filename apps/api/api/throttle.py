@@ -40,10 +40,16 @@ enforcement path reads this table and nothing else.
 the other two AD-8 counters and are Epic 2's; they are not this module's
 statements with a different table name, and no attempt is made to generalise
 one out of it before there is a second caller. `POST /auth/password` is not
-throttled either (DW-40) — epics.md scopes this story to login. There is no
-unlock surface and no admin endpoint of any kind: the lock expires on its own
-after `LOCKOUT_DURATION`, FR-5 sends a locked-out user to an Administrator, and
-Story 1.10 is what gives that Administrator a way to edit a user.
+throttled either (DW-40) — epics.md scopes that story to login.
+
+**There is still no unlock surface, and no story in Epic 1 owns one.** This
+module used to say Story 1.10 would give an Administrator something to press.
+1.10 has shipped, and its acceptance clauses are name, email and role: the lock
+still expires on its own after `LOCKOUT_DURATION`, and FR-5's "go to an
+Administrator" still ends in waiting it out. DW-64 stays open with no predicted
+owner left. What 1.10 did add here is `carry_failures` — a rename moves the run
+onto the new address rather than stranding it, precisely so that an edit is not
+the unlock this product has decided not to have.
 """
 
 from __future__ import annotations
@@ -52,6 +58,7 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 # Imported for real rather than under `TYPE_CHECKING`: the sweep below catches
 # `psycopg.Error`, which is a runtime reference, not an annotation.
@@ -147,6 +154,15 @@ _RUN_ENDED = """
      OR login_attempts.last_failure_at <= now() - %s
 """
 
+#: `_RUN_ENDED` asked of the row being merged *in* rather than the one already
+#: there. Same three clauses, same parameter, different alias — `_CARRY_FAILURES`
+#: is the only statement that has to judge two runs at once, and it has to judge
+#: them by one rule.
+_INCOMING_RUN_ENDED = """
+    (EXCLUDED.locked_until IS NOT NULL AND EXCLUDED.locked_until <= now())
+     OR EXCLUDED.last_failure_at <= now() - %s
+"""
+
 #: The pre-attempt read. Returns the state as the *run* sees it, not as the row
 #: holds it: a lapsed lock and a stale run both come back zeroed, so the
 #: handler never has to re-decide in Python what the write below decides in
@@ -223,7 +239,118 @@ UPDATE users
  WHERE lower(email) = %s
 """
 
+#: The same mirror, addressed by `users.id` rather than by the address.
+#:
+#: `carry_failures` needs this and `_MIRROR_LOCK` cannot serve it. That statement
+#: matches `lower(email)` — Postgres's fold of the column — against a key that is
+#: the *Python* fold of a submitted address, which is exactly the disagreement
+#: `_INSERT_USER` writes `lower(%s)` to avoid, and it would silently update zero
+#: rows where the two folds differ. During a rename the account is identified by
+#: the id the request named, which is not an encoding of anything.
+#:
+#: `updated_at` is set by hand for `_MIRROR_LOCK`'s reason (DW-17, no BEFORE
+#: UPDATE trigger). It lands on the same instant the rename did: `now()` is the
+#: transaction timestamp, and this statement only ever runs inside the
+#: transaction that just wrote the row.
+_MIRROR_LOCK_BY_ID = """
+UPDATE users
+   SET locked_until = %s,
+       updated_at = now()
+ WHERE id = %s
+"""
+
+#: The live lock at one address key, or no row. A **read**, and the only way to
+#: learn what a carry actually left behind.
+#:
+#: `_CARRY_FAILURES` cannot answer it with a `RETURNING`: its `INSERT ... SELECT`
+#: writes nothing at all when the old key has no run, and that is precisely the
+#: case where the destination may still be carrying a lock of its own. Asked
+#: afterwards, against the destination, this is true on every branch.
+#:
+#: `locked_until > now()` rather than a null check, and decided by the **database**
+#: clock as every other decision in this module is: a past value is a lapsed lock,
+#: which `attempt_state` already reads as a fresh run and which must not be
+#: mirrored onto an account as though it were live.
+_SELECT_LIVE_LOCK = """
+SELECT locked_until
+  FROM login_attempts
+ WHERE email_key = %s
+   AND locked_until > now()
+"""
+
 _CLEAR_ATTEMPTS = "DELETE FROM login_attempts WHERE email_key = %s"
+
+#: Move a run of failures from one address key to another. Story 1.10, DW-59.
+#:
+#: **The direction is the account's, not the string's.** The counter is keyed on
+#: the submitted address (see the module docstring), so an Administrator editing
+#: someone's address moves the login that the run belongs to and leaves the run
+#: behind. Three things were then wrong at once: the old string kept a live lock
+#: nobody could reach, the new address started from zero, and `users.locked_until`
+#: reported a lock corresponding to nothing. Carrying the row fixes all three.
+#:
+#: **Carrying rather than clearing is the security half of it.** Clearing the old
+#: key would also fix the first and the third — by making a rename an unlock, a
+#: lock-evasion path an Administrator can walk, and an unlock this epic
+#: deliberately does not have (FR-5, DW-64). A rename must not be the unlock.
+#:
+#: **`GREATEST` per column, because the new key may carry its own run.** An
+#: address that was guessed at before it became anybody's login already has a
+#: row here, and merging has to keep the stricter of the two states rather than
+#: whichever arrived second. Postgres's `GREATEST` **ignores NULLs**, which is
+#: exactly the wanted behaviour for `locked_until`: "no lock" never wins over a
+#: live one, in either direction.
+#:
+#: **Each side is normalised to the run it actually has before they are merged.**
+#: `GREATEST` over the raw columns takes the stricter *value* per column, which
+#: is not the same thing as the stricter *state*: a run the whole module already
+#: considers over — a lapsed lock, or a last failure older than `ATTEMPT_WINDOW`
+#: (`_RUN_ENDED`) — still carries the count and the expiry it ended with, and
+#: pairing that count with the other side's fresher `last_failure_at` fabricates
+#: a live run neither address had. Four stale failures merged onto one fresh one
+#: would leave the account one mistyped password from a lockout it never earned,
+#: and this epic has no unlock. So an ended run contributes `0` and no lock,
+#: exactly as `_SELECT_ATTEMPTS` reads it and `_RECORD_FAILURE` rewrites it, and
+#: what survives the merge is the stricter of the two *live* runs.
+#:
+#: **`last_failure_at` is normalised too, and it is the column that decides how
+#: long the survivor lives.** It is the clock `_RUN_ENDED` reads, so letting an
+#: ended run's fresher timestamp win is the same fabrication by another route:
+#: a lock that lapsed a minute ago carries a `last_failure_at` far newer than a
+#: live run of four failures nearly at the end of its window, and a raw
+#: `GREATEST` would hand that live run a fresh window it never earned — another
+#: `ATTEMPT_WINDOW` in which a fifth mistyped password locks the account. Each
+#: side is therefore zeroed to NULL when its run has ended, and `GREATEST`
+#: ignores NULLs. The `COALESCE` behind it is for the one case where *both* runs
+#: have ended: the column is `NOT NULL`, so the row keeps the later of the two
+#: raw timestamps — harmless, because the count beside it is `0` and the state
+#: every reader sees is "no run".
+#:
+#: `INSERT ... SELECT` rather than a plain `VALUES`, so an old key with no row at
+#: all inserts nothing and the statement is a no-op — the common case, since most
+#: accounts have never failed a sign-in. `%s::text` because an untyped parameter
+#: in a `SELECT` list has no column to take its type from. The insert branch
+#: copies the carried row as it stands: nothing is fabricated there, and a row
+#: that reads as ended at the old key goes on reading as ended at the new one.
+_CARRY_FAILURES = f"""
+INSERT INTO login_attempts (email_key, failure_count, locked_until, last_failure_at)
+SELECT %s::text, carried.failure_count, carried.locked_until, carried.last_failure_at
+  FROM login_attempts AS carried
+ WHERE carried.email_key = %s
+ON CONFLICT (email_key) DO UPDATE
+   SET failure_count = GREATEST(
+           CASE WHEN {_RUN_ENDED} THEN 0 ELSE login_attempts.failure_count END,
+           CASE WHEN {_INCOMING_RUN_ENDED} THEN 0 ELSE EXCLUDED.failure_count END),
+       locked_until = GREATEST(
+           CASE WHEN login_attempts.locked_until > now()
+                THEN login_attempts.locked_until END,
+           CASE WHEN EXCLUDED.locked_until > now() THEN EXCLUDED.locked_until END),
+       last_failure_at = COALESCE(
+           GREATEST(
+               CASE WHEN {_RUN_ENDED} THEN NULL ELSE login_attempts.last_failure_at END,
+               CASE WHEN {_INCOMING_RUN_ENDED} THEN NULL ELSE EXCLUDED.last_failure_at END),
+           GREATEST(login_attempts.last_failure_at, EXCLUDED.last_failure_at))
+"""
 
 #: Bounded and lock-skipping, in the shape `api.sessions._DELETE_EXPIRED`
 #: already uses: `FOR UPDATE SKIP LOCKED` so two attempts arriving together
@@ -404,6 +531,75 @@ def clear_failures(conn: psycopg.Connection, email_key: str) -> None:
     an hour ago.
     """
     conn.execute(_CLEAR_ATTEMPTS, (email_key,))
+
+
+def carry_failures(
+    conn: psycopg.Connection, old_key: str, new_key: str, user_id: UUID
+) -> datetime | None:
+    """Move this address's run of failures onto its new address. FR-12, DW-59.
+
+    Called by `api.users.edit_user` when an Administrator changes the address on
+    an account, and by nothing else. The counter is keyed on the submitted
+    address (module docstring), so without this a rename strands the run: the old
+    string keeps a lock nobody can reach and the new address starts from zero.
+
+    Both keys are the **Python** fold of an address — `email.strip().lower()`,
+    what `api.auth.login` keys on — never the value in `users.email`, which is
+    Postgres's fold of the same string. See `api.users.edit_user`, which is where
+    the old key is derived and where the difference bites.
+
+    **This is deliberately not `clear_failures`.** Clearing the old key would
+    tidy the same mess by making the rename an *unlock* — a lock-evasion path an
+    Administrator can walk, and an unlock this epic does not have: FR-5 sends a
+    locked-out user to an Administrator, and no story in Epic 1 gives that
+    Administrator a control (DW-64). Carrying the run keeps the lockout a
+    property of the account rather than of a string somebody can change.
+
+    **`users.locked_until` is re-mirrored, and it has to be.** The tempting claim
+    — that the account's mirror already holds whatever lock it carries, so a
+    rename moves both together — is false on the very path `_CARRY_FAILURES` was
+    written for. When the *destination* key carries the live lock (an address
+    guessed at while it belonged to nobody, so `_MIRROR_LOCK` matched zero rows
+    at the time), the carry either writes nothing or `GREATEST` keeps the
+    destination's longer expiry, and the account's mirror was never written for
+    either. FR-4's one status surface would then show no lock while
+    `POST /auth/login` answered `429 account_locked` — the enforcement and the
+    report disagreeing, which is the one thing the mirror exists to prevent.
+    So the resulting live lock is read back and written onto the account, by id.
+
+    The mirror is still one-directional and still never *cleared*: a destination
+    with no live lock leaves the column exactly as it was, because it is history
+    as much as status (`clear_failures`).
+
+    **It opens no transaction of its own.** The carry, the mirror and the
+    `UPDATE` that renames the account have to commit together or not at all — a
+    carry that survived a rolled-back rename would move a lock onto an address
+    nobody uses, and a rename that survived a failed carry is the stranded run
+    this exists to prevent. The caller's `with conn.transaction():` is that unit
+    of work, which is also why nothing here is swallowed the way `_mirror` is:
+    inside somebody else's transaction a swallowed failure is not a smaller
+    failure, it is the same one reported later and less clearly.
+
+    Returns the live lock now in force at `new_key`, or `None` when there is
+    none. A no-op returning `None` when the address did not really change, and
+    harmless when the old key has no row: `_CARRY_FAILURES`' `INSERT ... SELECT`
+    inserts nothing, and the delete removes nothing.
+    """
+    if old_key == new_key:
+        return None
+
+    conn.execute(
+        _CARRY_FAILURES,
+        (new_key, old_key, ATTEMPT_WINDOW, ATTEMPT_WINDOW, ATTEMPT_WINDOW, ATTEMPT_WINDOW),
+    )
+    conn.execute(_CLEAR_ATTEMPTS, (old_key,))
+
+    row = conn.execute(_SELECT_LIVE_LOCK, (new_key,)).fetchone()
+    locked_until: datetime | None = None if row is None else row["locked_until"]
+    if locked_until is not None:
+        conn.execute(_MIRROR_LOCK_BY_ID, (locked_until, user_id))
+
+    return locked_until
 
 
 def _mirror(conn: psycopg.Connection, email_key: str, locked_until: datetime) -> None:
