@@ -119,3 +119,27 @@
   line-height: var(--type-label-line);
   cursor: pointer;
 }
+
+/* The door to Edit tile, beside Add tile and on the same terms. Written out
+ * rather than composed from `.addTile` for the reason the rules above give: a
+ * class named for one entry carried by another is a rule nobody can read.
+ *
+ * Secondary like its three neighbours, and the case is easier than Add tile's:
+ * EXPERIENCE.md line 36 reaches Edit Tile from a Catalogue *row*, never from a
+ * primary control, so when Story 2.5 builds that surface this entry becomes a
+ * row-end control there rather than an accent button anywhere.
+ */
+.editTile {
+  align-self: flex-start;
+  justify-content: center;
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}

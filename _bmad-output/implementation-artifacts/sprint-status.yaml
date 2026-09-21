@@ -53,7 +53,7 @@ development_status:
 
   epic-2: backlog
   2-1-add-product: done
-  2-2-edit-product: backlog
+  2-2-edit-product: done
   2-3-remove-product: backlog
   2-4-bulk-upload: backlog
   2-5-catalogue-search: backlog

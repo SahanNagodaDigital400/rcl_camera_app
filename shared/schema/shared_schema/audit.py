@@ -128,6 +128,12 @@ class AuditAction(StrEnum):
     # — as a snapshot, never a foreign key: removal (Story 2.3) is a hard
     # delete and the log may neither block it nor be cascaded into (AD-10).
     CATALOGUE_TILE_ADDED = "catalogue_tile_added"
+    # Story 2.2's correction. A separate member rather than a second
+    # `catalogue_tile_added` with a flag in `details`: the log has to name what
+    # happened, and an edit is not an add — it can rename the Code the earlier
+    # entry recorded, and a reader following a Tile through the log needs the
+    # two to be distinguishable without parsing `details`.
+    CATALOGUE_TILE_EDITED = "catalogue_tile_edited"
 
 
 class AuditLogEntry(BaseModel):

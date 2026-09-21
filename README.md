@@ -59,7 +59,9 @@ It lands in `shared/vision/shared_vision/models/model.onnx` (gitignored). Set `R
 if it has to live somewhere else. The revision is pinned and the digest checked on purpose: the
 model is part of AD-1's pixel path, so a silently different set of weights is a silently
 invalidated index. Without it, `shared/vision`'s tests **skip** rather than fail and
-`POST /admin/tiles` answers `503 matching_unavailable` naming this step.
+`POST /admin/tiles` — and `PATCH /admin/tiles/{tile_id}` when the edit uploads a reference image
+— answer `503 matching_unavailable` naming this step. An edit that only changes a Code, a Size or
+a Category embeds nothing and needs no artifact at all.
 
 ### Object storage
 

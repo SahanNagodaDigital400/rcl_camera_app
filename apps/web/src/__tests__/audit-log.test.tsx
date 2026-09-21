@@ -100,6 +100,28 @@ const NO_ACTOR_ENTRY: AuditLogEntry = {
   details: { reason: 'unknown_address' },
 };
 
+/**
+ * Epic 2's pair. Both name the same object in the same column, and nothing but
+ * `ACTION_LABELS` distinguishes "who put this tile in the catalogue" from "who
+ * changed its Code" — a swap between the two values is invisible to the
+ * membership tests in `audit-contract.test.ts`.
+ */
+const TILE_ADDED: AuditLogEntry = {
+  ...SIGNED_IN,
+  id: '5e6f7081-92a3-44b5-86c7-d8e9f0123456',
+  created_at: '2026-09-21T09:15:00Z',
+  action: 'catalogue_tile_added',
+  details: { code: 'RP.CMA.0001DJ.SM.0T' },
+};
+
+const TILE_EDITED: AuditLogEntry = {
+  ...SIGNED_IN,
+  id: '6f708192-a3b4-45c6-97d8-e9f012345678',
+  created_at: '2026-09-21T09:10:00Z',
+  action: 'catalogue_tile_edited',
+  details: { changed: { code: { from: 'RP.CMA.0001DJ.SM.0T', to: 'RP.CMA.0002DJ.SM.0T' } } },
+};
+
 /** An action from an epic this build predates. Served and rendered verbatim. */
 const UNKNOWN_ACTION: AuditLogEntry = {
   ...SIGNED_IN,
@@ -384,7 +406,7 @@ describe('the entries', () => {
   });
 
   it('writes each action in words', async () => {
-    stubPage([SIGNED_IN, EDITED, NO_ACTOR_ENTRY]);
+    stubPage([SIGNED_IN, EDITED, NO_ACTOR_ENTRY, TILE_ADDED, TILE_EDITED]);
     renderScreen();
 
     await screen.findByRole('table');
@@ -392,6 +414,15 @@ describe('the entries', () => {
     expect(screen.getByText('Signed in')).toBeTruthy();
     expect(screen.getByText('User edited')).toBeTruthy();
     expect(screen.getByText('Sign-in failed')).toBeTruthy();
+    // The catalogue pair. Asserted by row rather than by page text so that
+    // mapping both actions to one label, or swapping the two, fails here:
+    // `getByText` alone is satisfied by either string appearing anywhere.
+    expect(rowForDetail('code: RP.CMA.0001DJ.SM.0T').textContent).toContain('Tile added');
+    expect(
+      rowForDetail(
+        'changed: {"code":{"from":"RP.CMA.0001DJ.SM.0T","to":"RP.CMA.0002DJ.SM.0T"}}',
+      ).textContent,
+    ).toContain('Tile edited');
   });
 
   it.each(['toString', 'constructor', 'valueOf', '__proto__'])(

@@ -266,6 +266,31 @@ export const PIPELINE_STAMP_MISMATCH = 'pipeline_stamp_mismatch';
  */
 export const IMAGE_NOT_FOUND = 'image_not_found';
 
+/**
+ * The envelope code for "no tile has that id, or that code".
+ *
+ * A `404` from `GET /admin/tiles/lookup` and from `PATCH /admin/tiles/{id}`,
+ * and it marks **no field**: on the lookup the Code the Administrator typed is
+ * a perfectly well-formed Code that nothing holds, and on the edit the id came
+ * from this app rather than from them. The API's own sentence says the tile may
+ * have been renamed or removed, which is the thing they can act on.
+ *
+ * The lookup is an **exact** match, so this is also the answer to a partial
+ * Code. Substring search is Story 2.5's catalogue list, not this route.
+ */
+export const TILE_NOT_FOUND = 'tile_not_found';
+
+/**
+ * The envelope code for an edit that would leave a tile with no reference image.
+ *
+ * Marks the **reference images** region. A `409`: nothing is wrong with the
+ * caller's authority and nothing about the session changes. A tile without a
+ * reference image is a catalogue row no member of staff can verify and no scan
+ * can return (FR-7) — so the API's sentence names the way through, which is to
+ * send the replacement in the same save.
+ */
+export const LAST_REFERENCE_IMAGE = 'last_reference_image';
+
 /** The code this module invents when the request never reached the API. */
 export const NETWORK_ERROR = 'network_error';
 

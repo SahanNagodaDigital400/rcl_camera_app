@@ -85,9 +85,16 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   user_deactivated: 'User deactivated',
   user_activated: 'User activated',
   user_deleted: 'User deleted',
-  // Epic 2's first entry. "Tile", never "Product" — AD-18 retires that word,
-  // and the label is one of the places it would come back.
-  catalogue_tile_added: 'Tile added to catalogue',
+  // Epic 2's entries. "Tile", never "Product" — AD-18 retires that word, and a
+  // label is one of the places it would come back.
+  //
+  // **Symmetric, deliberately.** Both name the same object in the same log and
+  // sit in the same column of the same table, so the pair has to read as a pair
+  // — "Tile added to catalogue" beside "Tile edited" made one look like a
+  // different kind of event from the other. The account entries above are the
+  // same shape for the same reason: subject, then verb.
+  catalogue_tile_added: 'Tile added',
+  catalogue_tile_edited: 'Tile edited',
 };
 
 /**

@@ -45,10 +45,12 @@ import {
   INVALID_IMAGE,
   INVALID_SIZE,
   LAST_ADMINISTRATOR,
+  LAST_REFERENCE_IMAGE,
   MATCHING_UNAVAILABLE,
   PASSWORD_CHANGE_NOT_REQUIRED,
   PASSWORD_CHANGE_REQUIRED,
   PIPELINE_STAMP_MISMATCH,
+  TILE_NOT_FOUND,
   TOO_MANY_IMAGES,
   UNAUTHORIZED,
   UNREADABLE_IMAGE,
@@ -127,9 +129,10 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   email_already_exists: { file: 'users.py', name: 'EMAIL_ALREADY_EXISTS' },
   user_not_found: { file: 'users.py', name: 'USER_NOT_FOUND' },
   last_administrator: { file: 'users.py', name: 'LAST_ADMINISTRATOR' },
-  // Story 2.1's catalogue routes. Eleven codes rather than one generic
-  // `validation_error`, because the screen decides which of four controls to
-  // mark from the code alone.
+  // Epic 2's catalogue routes. Thirteen codes rather than one generic
+  // `validation_error`, because the screen decides which of its controls to
+  // mark from the code alone — eleven from Story 2.1's add and image read, and
+  // two more from Story 2.2's edit and lookup.
   invalid_code: { file: 'catalogue.py', name: 'INVALID_CODE' },
   invalid_size: { file: 'catalogue.py', name: 'INVALID_SIZE' },
   invalid_category: { file: 'catalogue.py', name: 'INVALID_CATEGORY' },
@@ -141,6 +144,8 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   matching_unavailable: { file: 'catalogue.py', name: 'MATCHING_UNAVAILABLE' },
   pipeline_stamp_mismatch: { file: 'catalogue.py', name: 'PIPELINE_STAMP_MISMATCH' },
   image_not_found: { file: 'catalogue.py', name: 'IMAGE_NOT_FOUND' },
+  tile_not_found: { file: 'catalogue.py', name: 'TILE_NOT_FOUND' },
+  last_reference_image: { file: 'catalogue.py', name: 'LAST_REFERENCE_IMAGE' },
 };
 
 const TYPESCRIPT: Record<string, string> = {
@@ -166,6 +171,8 @@ const TYPESCRIPT: Record<string, string> = {
   matching_unavailable: MATCHING_UNAVAILABLE,
   pipeline_stamp_mismatch: PIPELINE_STAMP_MISMATCH,
   image_not_found: IMAGE_NOT_FOUND,
+  tile_not_found: TILE_NOT_FOUND,
+  last_reference_image: LAST_REFERENCE_IMAGE,
 };
 
 describe('the envelope codes are one contract in two languages', () => {
@@ -241,15 +248,17 @@ describe('the envelope codes are one contract in two languages', () => {
 });
 
 /**
- * The one refusal sentence a screen states in its own words.
+ * The refusal sentences a screen states in its own words.
  *
  * Everywhere else in the product a refusal is rendered from the API's own
  * message: the request is made, the envelope comes back, and the screen paints
- * whatever sentence it carries. Story 1.11's Users list has one exception, and
- * it is deliberate. EXPERIENCE.md:148 asks for the last-Administrator refusal
- * to *replace* the confirmation dialog rather than follow it, which can only be
- * decided **before** a request is made — so on that path no envelope ever
- * arrives, and the screen's own copy is the only sentence the Administrator
+ * whatever sentence it carries. Two screens have an exception, and both are
+ * deliberate and the same one. EXPERIENCE.md:148 asks for a refusal that was
+ * never going to be honoured to *replace* the confirmation dialog rather than
+ * follow it — Story 1.11's last-Administrator deactivation, and Story 2.2's
+ * save that would leave a tile with no reference image — which can only be
+ * decided **before** a request is made, so on those paths no envelope ever
+ * arrives and the screen's own copy is the only sentence the Administrator
  * sees.
  *
  * That is the failure this file exists to prevent, in its purest form. Reword
@@ -264,6 +273,10 @@ describe('the envelope codes are one contract in two languages', () => {
  * reflow on either side is not a failure.
  */
 const USER_LIST_SCREEN = 'UserListScreen.tsx';
+// Declared here rather than with the three below, because `SENTENCES` reads it
+// and `BOUNDS` further down reads it too — a `const` is not hoisted, so the
+// first reader is where it has to live.
+const EDIT_TILE_SCREEN = 'EditTileScreen.tsx';
 
 const SENTENCES: {
   screen: string;
@@ -274,6 +287,16 @@ const SENTENCES: {
     screen: USER_LIST_SCREEN,
     python: { file: 'users.py', name: 'LAST_ACTIVE_ADMINISTRATOR' },
     typescript: 'LAST_ACTIVE_ADMINISTRATOR',
+  },
+  // Story 2.2's floor (FR-7). The Edit tile screen refuses a save whose net
+  // effect is zero reference images *instead of* confirming it, so this
+  // sentence is stated before any request — and the server still answers the
+  // same one as `409 last_reference_image` if the check is ever wrong, which is
+  // exactly why the two spellings have to be held together.
+  {
+    screen: EDIT_TILE_SCREEN,
+    python: { file: 'catalogue.py', name: 'LAST_IMAGE' },
+    typescript: 'MUST_KEEP_AN_IMAGE',
   },
 ];
 
@@ -396,6 +419,36 @@ const BOUNDS: {
   // at the far end.
   {
     screen: ADD_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_IMAGE_BYTES', root: SHARED_SCHEMA },
+    typescript: 'MAX_IMAGE_BYTES',
+  },
+  // Story 2.2's screen. The same five bounds as Add tile, because it writes the
+  // same three fields and uploads through the same endpoint's limits — and
+  // mirrored separately rather than shared, for the reason the Edit user row
+  // above gives: a single `SCREEN` constant would compare one screen's literals
+  // against nothing at all.
+  {
+    screen: EDIT_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_CODE_LENGTH', root: SHARED_SCHEMA },
+    typescript: 'MAX_CODE_LENGTH',
+  },
+  {
+    screen: EDIT_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_SIZE_LENGTH', root: SHARED_SCHEMA },
+    typescript: 'MAX_SIZE_LENGTH',
+  },
+  {
+    screen: EDIT_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_CATEGORY_LENGTH', root: SHARED_SCHEMA },
+    typescript: 'MAX_CATEGORY_LENGTH',
+  },
+  {
+    screen: EDIT_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_IMAGES_PER_REQUEST', root: SHARED_SCHEMA },
+    typescript: 'MAX_IMAGES_PER_REQUEST',
+  },
+  {
+    screen: EDIT_TILE_SCREEN,
     python: { file: 'tile.py', name: 'MAX_IMAGE_BYTES', root: SHARED_SCHEMA },
     typescript: 'MAX_IMAGE_BYTES',
   },

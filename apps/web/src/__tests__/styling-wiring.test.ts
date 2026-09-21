@@ -760,6 +760,129 @@ describe('saving is the one action on the add tile screen', () => {
   });
 });
 
+describe('saving is the one action on the edit tile screen', () => {
+  // DESIGN.md's "exactly one per screen" for the accent-filled primary, on a
+  // screen with two stages: Find takes the accent while no tile is loaded and
+  // Save takes it once one is, they are never rendered together, and the
+  // stylesheet therefore holds exactly one accent rule for both of them.
+  // Nothing else in the suite can see any of this — `vite.config.ts` sets
+  // `css: false`, so jsdom applies no stylesheet.
+  const css = (): string => read(join(SRC, 'screens', 'EditTileScreen.module.css'));
+
+  it('fills the submit with the accent and writes on it in navy', () => {
+    const submit = rule(css(), '.submit');
+
+    expect(declaration(submit, 'background')).toBe('var(--color-accent)');
+    expect(declaration(submit, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('leaves Back as the navy outline, not a second filled control', () => {
+    const back = rule(css(), '.back');
+
+    expect(declaration(back, 'color')).toBe('var(--color-primary)');
+    expect(declaration(back, 'background')).toBe('transparent');
+    expect(declaration(back, 'border')).toBe('var(--border-hairline) solid var(--color-primary)');
+  });
+
+  it('writes the save indicator in the brand primary once it has saved', () => {
+    // DESIGN.md's `save-indicator`: muted while it is working,
+    // `{colors.primary}` once it has — and deliberately not orange, which
+    // stays reserved for the action that has not fired yet.
+    expect(declaration(rule(css(), '.indicator'), 'color')).toBe('var(--color-muted-text)');
+    expect(declaration(rule(css(), '.saved'), 'color')).toBe('var(--color-primary)');
+  });
+
+  it('keeps the refusal destructive and the quality flag muted', () => {
+    // The pair this file exists to hold apart: red is destructive-or-failed in
+    // this system and nothing else, so FR-19's flag painted with it would read
+    // as a failed save, and a refusal painted muted would read as a note. The
+    // render tests read the words and the roles, so both swaps are invisible
+    // to them.
+    expect(declaration(rule(css(), '.error'), 'color')).toBe('var(--color-destructive)');
+    expect(declaration(rule(css(), '.flag'), 'color')).toBe('var(--color-muted-text)');
+    expect(declaration(rule(css(), '.flag'), 'color')).not.toBe('var(--color-destructive)');
+  });
+
+  it('gives the removal toggle the destructive treatment', () => {
+    // EXPERIENCE.md's accessibility floor: a destructive action is never
+    // colour-only — the control carries the word "Remove" and a checkbox — but
+    // it *is* destructive-coloured, and painting it like any other label would
+    // make marking an image for deletion look like ticking a preference.
+    expect(declaration(rule(css(), '.remove'), 'color')).toBe('var(--color-destructive)');
+    // And the marked card is outlined in the same red, as the second signal
+    // beside the checked box rather than instead of it.
+    expect(declaration(rule(css(), '.pending'), 'border-color')).toBe(
+      'var(--color-destructive)',
+    );
+  });
+
+  it('meets the touch-target floor on the removal toggle', () => {
+    // The one control on this screen that is a label rather than a button, so
+    // `global.css`'s floor on `button` does not reach it.
+    expect(declaration(rule(css(), '.remove'), 'min-height')).toBe('var(--touch-target-min)');
+  });
+
+  it('sizes the reference thumbnails from the token, never a literal', () => {
+    // `no-raw-values.test.ts` forbids a dimension literal outside `tokens.css`,
+    // and this is the rule that would otherwise carry one.
+    expect(rulesFor(css(), 'gallery').join('\n')).toContain('var(--thumbnail-size)');
+    expect(magnitude('--thumbnail-size')).toBeGreaterThanOrEqual(
+      magnitude('--touch-target-min'),
+    );
+  });
+
+  it('shows the whole tile face rather than cropping it to fill', () => {
+    // The reference image is what lets a member of staff verify a code they do
+    // not recognise (FR-7). A `cover` crop of a square-ish tile face is a face
+    // an Administrator can no longer tell from its neighbour's.
+    expect(declaration(rule(css(), '.image'), 'object-fit')).toBe('contain');
+  });
+
+  it('sets the Code in the monospace role, in both stages', () => {
+    // DESIGN.md reserves `code` for a value read character by character, so
+    // 0/O and 1/I cannot be confused. The Code is the tile's identity (AD-18)
+    // and it is transcribed off a physical tile, in the lookup field and in
+    // the edit field alike.
+    expect(declaration(rule(css(), '.code'), 'font-family')).toBe('var(--font-mono)');
+  });
+
+  it('paints nothing else with the accent', () => {
+    const accents = [...css().matchAll(/var\(--color-accent\)/g)];
+
+    expect(accents).toHaveLength(1);
+  });
+
+  /**
+   * Both files with their comment bodies blanked out.
+   *
+   * The two checks below are about what the screen *says and does*, not about
+   * what it writes down: both files argue at length for the rules, naming the
+   * very words the rules forbid, and prose about a rule must never trip the
+   * rule. `no-raw-values.test.ts` strips comments for the same reason.
+   */
+  const spoken = (): string =>
+    [css(), read(join(SRC, 'screens', 'EditTileScreen.tsx'))]
+      .join('\n')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+
+  it('never names a similarity value, in the screen or in its stylesheet', () => {
+    // AD-20, as an absence. There is nothing to show one for on this surface
+    // and there never will be; a class named for a score is how one arrives.
+    for (const banned of ['similarity', 'confidence', 'score']) {
+      expect(spoken().toLowerCase().includes(banned), banned).toBe(false);
+    }
+  });
+
+  it('uses the retired words nowhere', () => {
+    // AD-18 retires `Product` and `Face`: they encoded the identity model it
+    // corrects, and they come back through vocabulary before they come back
+    // through code.
+    expect(/\bproducts?\b/i.test(spoken())).toBe(false);
+    expect(/\bfaces?\b/i.test(spoken())).toBe(false);
+  });
+});
+
 describe('the home panel\'s admin entries', () => {
   it('are outlined, never filled', () => {
     // A door on the home panel is a secondary control: the shell's landing
@@ -767,14 +890,14 @@ describe('the home panel\'s admin entries', () => {
     // orange thing on a screen that is for neither user management nor audit.
     // Since Story 1.9 the first entry is Users — EXPERIENCE.md line 33's nav
     // entry, with Create user reached from its "+ Add user" (line 34) — since
-    // Story 1.13 the second is the Audit log, line 38's, and since Story 2.1
-    // the third is Add tile, line 36's. Add tile is the closest call of the
-    // three: "+ Add Tile" *is* the primary action on the Catalogue surface and
-    // will take the accent there, but here it is a door on a panel that is for
-    // none of the three.
+    // Story 1.13 the second is the Audit log, line 38's, and since Stories 2.1
+    // and 2.2 the third and fourth are Add tile and Edit tile, both line 36's.
+    // Add tile is the closest call of the four: "+ Add Tile" *is* the primary
+    // action on the Catalogue surface and will take the accent there, but here
+    // it is a door on a panel that is for none of them.
     const app = read(join(SRC, 'App.module.css'));
 
-    for (const name of ['.userList', '.auditLog', '.addTile']) {
+    for (const name of ['.userList', '.auditLog', '.addTile', '.editTile']) {
       const entry = rule(app, name);
 
       expect(declaration(entry, 'background'), name).toBe('transparent');

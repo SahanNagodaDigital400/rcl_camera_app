@@ -1,0 +1,840 @@
+import { useId, useRef, useState } from 'react';
+import type { ChangeEvent, FormEvent, JSX } from 'react';
+
+import {
+  API_PREFIX,
+  ApiRequestError,
+  CODE_ALREADY_EXISTS,
+  IMAGE_NOT_FOUND,
+  IMAGE_TOO_LARGE,
+  INVALID_CATEGORY,
+  INVALID_CODE,
+  INVALID_IMAGE,
+  INVALID_SIZE,
+  LAST_REFERENCE_IMAGE,
+  MALFORMED_RESPONSE,
+  TILE_NOT_FOUND,
+  TOO_MANY_IMAGES,
+  UNREADABLE_IMAGE,
+  UPLOAD_TIMEOUT_MS,
+  apiRequest,
+} from '../api/client';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import styles from './EditTileScreen.module.css';
+import { isTile, UNKNOWN_CATEGORY } from '@rocell/schema/tile';
+import type { Tile } from '@rocell/schema/tile';
+
+/**
+ * Edit tile — where an Administrator corrects one (FR-15).
+ *
+ * Rendered *inside* the shell, in place of the home panel, so it carries no
+ * `<main>` of its own: `AppShell` already provides the one main landmark and
+ * the focus target the gate moves focus to on a screen swap. It is modelled on
+ * `AddTileScreen` — same form rhythm, same one-alert-in-one-slot treatment,
+ * same accent primary beside a navy-outlined Back, same `Saving…` → `Saved.`
+ * indicator — because an Administrator moving between the two catalogue forms
+ * should not read them as two different applications.
+ *
+ * **Two stages, one screen.** EXPERIENCE.md line 36 opens Edit Tile from a
+ * Catalogue row, and the Catalogue list is Story 2.5's — so until it exists
+ * this screen has to find its own tile. The first stage is a Code lookup
+ * against `GET /admin/tiles/lookup`, which is an **exact** match by design: a
+ * partial Code finds nothing here, and searching is the thing 2.5 builds. The
+ * second stage is the edit form, which only exists once a tile has been found.
+ * Exactly one of the two primary actions is on screen at a time, so the screen
+ * still has exactly one accent control (DESIGN.md).
+ *
+ * **The Code is the tile's identity** (AD-18), and the vocabulary follows:
+ * Tile, Code, Size, Category, Reference image. `Product` and `Face` are retired
+ * words and appear nowhere on this screen or in its stylesheet.
+ *
+ * **An absent part means "unchanged", so this form sends all three.** The
+ * fields are prefilled from the tile that was found, so a save that touched
+ * nothing sends what is already stored and the API records a change set of
+ * `{}` — which is the honest record of an accepted edit that moved nothing.
+ *
+ * **Two live regions, one per stage, and never both speaking.** Each action row
+ * carries its own `role="status"` beside the control that triggers it — the
+ * lookup's `Finding…` and the save's `Saving…` → `Saved.` — because an
+ * indicator that sat in one row would describe a press made in the other. They
+ * cannot overlap: both buttons are disabled while either request is open, so
+ * only one of the two is ever non-empty.
+ *
+ * **Removal is confirmed, never quiet.** Marking a reference image is a toggle
+ * and nothing happens when it is pressed; the removal travels with the save,
+ * and a save that removes anything goes through a `ConfirmDialog` that names
+ * the tile and the consequence first (EXPERIENCE.md's Confirmation dialog row).
+ * A tile must keep at least one reference image — the server refuses an edit
+ * that would empty it (FR-7), and this screen renders that refusal in the
+ * server's own words rather than restating a rule it does not own.
+ *
+ * **Reference images are proxied, never linked** (AD-9). Each thumbnail's `src`
+ * is `GET /admin/tiles/{id}/images/{imageId}` on this same origin, so the
+ * session cookie travels with it and the server re-checks the Administrator
+ * role on every one. `apps/web` holds no storage URL, presigned or otherwise,
+ * and the `ReferenceImage` contract has nowhere to put one.
+ *
+ * **The role-conditional door that opens this screen is a convenience, never
+ * the control.** `App` renders it only for an Administrator, but the cached
+ * `User` is a render cache and never an authorization decision (AGENTS.md
+ * Policy): the server refuses a Staff caller at both routes through
+ * `require_administrator`, which re-reads the role from Postgres on every
+ * request (AD-3).
+ *
+ * Deliberately absent:
+ *
+ * - **No similarity value, in any form** (AD-20).
+ * - **No catalogue list and no substring search.** Story 2.5's, and the lookup
+ *   above is deliberately not the beginning of one.
+ * - **No tile removal.** Story 2.3's. This screen removes reference images and
+ *   never the tile they belong to.
+ * - **No client-side check of what a file is.** Content decides, and only the
+ *   server can sniff content (AGENTS.md Policy).
+ */
+
+/** Shown for a failure that arrives as something other than an `ApiRequestError`. */
+const UNEXPECTED = 'The tile could not be saved. Try again.';
+const LOOKUP_FAILED = 'The tile could not be looked up. Try again.';
+
+/**
+ * Refuse an empty field here rather than letting the API answer for it.
+ *
+ * The forms are `noValidate` — the browser's own bubble is unstyled, untestable
+ * and disappears on the next keystroke — so these are what `required` would
+ * otherwise have done.
+ */
+const BLANK_LOOKUP = 'Enter the tile’s code.';
+const BLANK_CODE = 'Enter the tile’s code.';
+const BLANK_SIZE = 'Enter the tile’s size.';
+
+/**
+ * The one refusal this screen states in its own words, before asking the server.
+ *
+ * EXPERIENCE.md:148 asks for a refusal to *replace* the confirmation rather
+ * than follow it — the pattern `UserListScreen` uses for the last-Administrator
+ * case — and that can only be decided **before** a request is made. So on this
+ * one path no envelope ever arrives and this copy is the only sentence the
+ * Administrator sees.
+ *
+ * Character for character `api.catalogue.LAST_IMAGE`, and pinned to it by
+ * `error-code-parity.test.ts`'s `SENTENCES`: a screen that went on stating a
+ * rule in words the server no longer uses is exactly the drift that file
+ * exists to catch. The server still refuses the same edit with the same
+ * sentence if this check is ever wrong.
+ */
+const MUST_KEEP_AN_IMAGE =
+  'A tile must keep at least one reference image. ' +
+  'Add the replacement in the same save, or remove the tile instead.';
+
+/** The save indicator's two spoken states (DESIGN.md's `save-indicator`). */
+const SAVING = 'Saving…';
+const SAVED = 'Saved.';
+
+/**
+ * The server's own bounds, mirrored onto the inputs.
+ *
+ * **The server's copy is the authority** — `shared_schema.tile` bounds all of
+ * these and the endpoint answers with a named `422` past them, whatever this
+ * file says. These exist only to keep the one refusal the Administrator cannot
+ * act on off the screen, and, for the file count and the byte ceiling, to say
+ * the limit before the bytes have travelled.
+ *
+ * Written down here rather than imported because nothing crosses that boundary
+ * at build time; `error-code-parity.test.ts` pins each against its Python twin,
+ * so a drift is a failing test rather than a silent divergence.
+ */
+const MAX_CODE_LENGTH = 200;
+const MAX_SIZE_LENGTH = 100;
+const MAX_CATEGORY_LENGTH = 200;
+const MAX_IMAGES_PER_REQUEST = 8;
+const MAX_IMAGE_BYTES = 134217728;
+
+/** The two bounds worth refusing *before* the upload rather than after it. */
+const TOO_MANY_FILES =
+  `Add at most ${MAX_IMAGES_PER_REQUEST} reference images at a time. ` +
+  'Save, then add the rest.';
+const FILE_TOO_LARGE = `Each reference image must be under ${
+  MAX_IMAGE_BYTES / (1024 * 1024)
+} MB.`;
+
+/** Which field a failure is about — and therefore which one is marked and focused. */
+type Field = 'lookup' | 'code' | 'size' | 'category' | 'images';
+
+/**
+ * What went wrong, and which field is at fault.
+ *
+ * `fieldAtFault` is not decoration: it drives `aria-invalid` and focus. Marking
+ * an input invalid because the model artifact is missing on the server tells a
+ * screen-reader user their typing was malformed when it was not.
+ */
+interface FormError {
+  message: string;
+  fieldAtFault: Field | null;
+}
+
+/** The API's code, mapped to the control the Administrator has to fix. */
+function fieldFor(failure: unknown, stage: 'lookup' | 'edit'): Field | null {
+  if (!(failure instanceof ApiRequestError)) return null;
+  if (stage === 'lookup') {
+    // On the lookup there is one input, and both of its refusals are about it:
+    // a Code the endpoint will not accept, and a Code nothing holds.
+    if (failure.code === INVALID_CODE || failure.code === TILE_NOT_FOUND) return 'lookup';
+    return null;
+  }
+  if (failure.code === INVALID_CODE || failure.code === CODE_ALREADY_EXISTS) return 'code';
+  if (failure.code === INVALID_SIZE) return 'size';
+  if (failure.code === INVALID_CATEGORY) return 'category';
+  if (
+    failure.code === INVALID_IMAGE ||
+    failure.code === UNREADABLE_IMAGE ||
+    failure.code === IMAGE_TOO_LARGE ||
+    failure.code === TOO_MANY_IMAGES ||
+    failure.code === LAST_REFERENCE_IMAGE ||
+    failure.code === IMAGE_NOT_FOUND
+  ) {
+    return 'images';
+  }
+  // `matching_unavailable`, `pipeline_stamp_mismatch`, `tile_not_found` and
+  // `administrator_required` land here, deliberately: nothing the Administrator
+  // chose is at fault, and pointing at a field would be a lie. The screen
+  // renders the server's sentence, which in the first case names the setup step
+  // an operator has to run and in the third says the tile may have moved.
+  return null;
+}
+
+/**
+ * Narrow a response body to the shared `Tile`, or fail loudly.
+ *
+ * `isTile` rejects a missing key, a malformed UUID, a non-UTC timestamp — and
+ * any extra key, which is how a storage reference (AD-9) or a similarity value
+ * (AD-20) would announce itself rather than being quietly ignored.
+ */
+function asTile(body: unknown, status: number): Tile {
+  if (!isTile(body)) {
+    throw new ApiRequestError(
+      MALFORMED_RESPONSE,
+      'The server returned an unexpected response.',
+      status,
+    );
+  }
+  return body;
+}
+
+export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element {
+  const lookupId = useId();
+  const codeId = useId();
+  const sizeId = useId();
+  const categoryId = useId();
+  const imagesId = useId();
+  const errorId = useId();
+  const lookupHintId = useId();
+  const sizeHintId = useId();
+  const categoryHintId = useId();
+  const imagesHintId = useId();
+  const imagesLabelId = useId();
+
+  const [lookupCode, setLookupCode] = useState('');
+  const [tile, setTile] = useState<Tile | null>(null);
+  const [code, setCode] = useState('');
+  const [size, setSize] = useState('');
+  const [category, setCategory] = useState('');
+  /** The ids marked for removal. Nothing is removed until the save lands. */
+  const [marked, setMarked] = useState<readonly string[]>([]);
+  const [files, setFiles] = useState<File[]>([]);
+  const [error, setError] = useState<FormError | null>(null);
+  const [looking, setLooking] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [saved, setSaved] = useState(false);
+  /**
+   * Which sheet is open, if any.
+   *
+   * Three states rather than a boolean, because EXPERIENCE.md:148 has a third:
+   * an operation that was never going to be honoured opens the dialog *as* the
+   * refusal instead of walking the Administrator through a confirm that would
+   * have failed. `ConfirmDialog` already has both shapes.
+   */
+  const [sheet, setSheet] = useState<'none' | 'confirm' | 'refusal'>('none');
+
+  const lookupRef = useRef<HTMLInputElement>(null);
+  const codeRef = useRef<HTMLInputElement>(null);
+  const sizeRef = useRef<HTMLInputElement>(null);
+  const categoryRef = useRef<HTMLInputElement>(null);
+  const imagesRef = useRef<HTMLInputElement>(null);
+
+  function focus(field: Field): void {
+    const target =
+      field === 'lookup'
+        ? lookupRef
+        : field === 'code'
+          ? codeRef
+          : field === 'size'
+            ? sizeRef
+            : field === 'category'
+              ? categoryRef
+              : imagesRef;
+    target.current?.focus();
+  }
+
+  function refuse(message: string, field: Field | null): void {
+    setSaved(false);
+    setError({ message, fieldAtFault: field });
+    if (field !== null) focus(field);
+  }
+
+  /** Seed the form from a tile the API just handed back. */
+  function adopt(found: Tile): void {
+    setTile(found);
+    setCode(found.code);
+    setSize(found.size);
+    setCategory(found.category ?? '');
+    setMarked([]);
+    setFiles([]);
+    if (imagesRef.current) imagesRef.current.value = '';
+  }
+
+  /** Take what was typed, and retire the saved indicator beside it. */
+  function typed<T>(set: (value: T) => void): (value: T) => void {
+    return (value) => {
+      setSaved(false);
+      set(value);
+    };
+  }
+
+  function chooseFiles(event: ChangeEvent<HTMLInputElement>): void {
+    setSaved(false);
+    setError(null);
+    setFiles([...(event.target.files ?? [])]);
+  }
+
+  function toggleMarked(imageId: string): void {
+    setSaved(false);
+    setError(null);
+    setMarked((current) =>
+      current.includes(imageId)
+        ? current.filter((held) => held !== imageId)
+        : [...current, imageId],
+    );
+  }
+
+  async function handleLookup(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    // Both, and for the mirror of `handleSave`'s reason: the Find *button* is
+    // `disabled={looking || submitting}`, but the lookup field is not, and
+    // pressing Enter in a text field submits the form directly without ever
+    // consulting the button. Guarding only `looking` therefore lets a lookup
+    // start underneath an in-flight save, and its `adopt()` would then reset
+    // code, size, category, marks and files out from under the request the
+    // Administrator is waiting on.
+    if (looking || submitting) return;
+
+    if (lookupCode.trim() === '') {
+      refuse(BLANK_LOOKUP, 'lookup');
+      return;
+    }
+
+    setLooking(true);
+    setError(null);
+    setSaved(false);
+
+    try {
+      // `URLSearchParams` rather than a template literal: a Code holds `.`, and
+      // the real catalogue holds free text after the code — a raw interpolation
+      // would send `6LD.MA Quarry Stone Natural` with a bare space in it.
+      const query = new URLSearchParams({ code: lookupCode });
+      adopt(asTile(await apiRequest(`/admin/tiles/lookup?${query.toString()}`), 200));
+    } catch (failure) {
+      // The API's own sentence, so the screen cannot state a rule the server
+      // does not enforce. The form below is cleared with it: a tile that is no
+      // longer on screen must not leave its fields behind to be saved.
+      setTile(null);
+      refuse(
+        failure instanceof ApiRequestError ? failure.message : LOOKUP_FAILED,
+        fieldFor(failure, 'lookup'),
+      );
+    } finally {
+      setLooking(false);
+    }
+  }
+
+  /** Every check the screen makes before it is worth sending anything. */
+  function refusedLocally(): boolean {
+    if (code.trim() === '') {
+      refuse(BLANK_CODE, 'code');
+      return true;
+    }
+    if (size.trim() === '') {
+      refuse(BLANK_SIZE, 'size');
+      return true;
+    }
+    if (files.length > MAX_IMAGES_PER_REQUEST) {
+      refuse(TOO_MANY_FILES, 'images');
+      return true;
+    }
+    if (files.some((file) => file.size > MAX_IMAGE_BYTES)) {
+      refuse(FILE_TOO_LARGE, 'images');
+      return true;
+    }
+    return false;
+  }
+
+  async function save(): Promise<void> {
+    // `looking` as well, because the confirmation sheet calls this directly
+    // rather than through `handleSave` and so does not inherit its guard.
+    if (tile === null || submitting || looking) return;
+
+    setSubmitting(true);
+    setError(null);
+    setSaved(false);
+
+    // Multipart, because the request carries files. The part names are the
+    // endpoint's parameter names; `images` and `remove_image_ids` each repeat
+    // once per item, which is how a multipart body expresses a list.
+    const body = new FormData();
+    body.append('code', code);
+    body.append('size', size);
+    // Sent unless it would *introduce* a Category the tile never had. The
+    // endpoint reads an absent part as "unchanged" and a blank one as "file it
+    // under the sentinel" (AD-18) — which is right for a Category the
+    // Administrator cleared, and wrong for one that was never there. Without
+    // this guard the screen refiles every null-Category tile under UNKNOWN on
+    // any save, including one that only fixed a Code, and writes a
+    // `category: null -> UNKNOWN` line into the audit log for it. The API
+    // keeps that distinction deliberately; this is the half that honours it.
+    if (category !== '' || tile.category !== null) body.append('category', category);
+    for (const imageId of marked) body.append('remove_image_ids', imageId);
+    for (const file of files) body.append('images', file);
+
+    try {
+      // `UPLOAD_TIMEOUT_MS`, not the default. An edit that uploads makes the
+      // server embed every new image — 16 forward passes each (AD-13) — and the
+      // default 15s would abort a request the server then commits anyway.
+      adopt(
+        asTile(
+          await apiRequest(`/admin/tiles/${tile.id}`, {
+            method: 'PATCH',
+            body,
+            timeoutMs: UPLOAD_TIMEOUT_MS,
+          }),
+          200,
+        ),
+      );
+      setSheet('none');
+      setSaved(true);
+    } catch (failure) {
+      // Nothing typed is cleared and nothing stays marked-but-unexplained: the
+      // dialog closes so the refusal is readable on the form it belongs to.
+      setSheet('none');
+      const dropped = failure instanceof ApiRequestError && failure.code === TILE_NOT_FOUND;
+      if (dropped) {
+        // The tile moved or went while this form was open. Everything below
+        // this line would fail identically on every further Save, with no way
+        // forward but Back — so the form goes with it and the lookup above is
+        // the way back in, exactly as it is when a lookup misses.
+        setTile(null);
+        setMarked([]);
+      }
+      if (failure instanceof ApiRequestError && failure.code === IMAGE_NOT_FOUND) {
+        // The same dead end, one level down: the marked id names an image the
+        // endpoint no longer holds, so every further Save carries it again and
+        // is refused again, with nothing on screen saying which mark is the
+        // bad one. The marks go and the tile stays, because the tile is still
+        // there and the rest of the form is still the Administrator's work.
+        setMarked([]);
+      }
+      const field = fieldFor(failure, 'edit');
+      refuse(failure instanceof ApiRequestError ? failure.message : UNEXPECTED, field);
+      // `refuse` moves focus only when a control is at fault, and
+      // `tile_not_found` faults none. But the form holding the focused control
+      // has just been unmounted, so focus would fall to `<body>`, outside the
+      // alert that explains why — and only in this branch, since every other
+      // null-field refusal (`matching_unavailable`, `pipeline_stamp_mismatch`)
+      // leaves the form and its focus where they were.
+      if (dropped && field === null) lookupRef.current?.focus();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const removing = marked.length;
+  /**
+   * What the tile is left with if this save lands. Named in the confirmation.
+   *
+   * Declared above its first reader rather than beside the rest of the render's
+   * derived values: `handleSave` below consults it, and a `const` is not
+   * hoisted, so leaving it further down works only for as long as nothing calls
+   * that handler during the render pass that defines it.
+   */
+  const remaining = (tile?.reference_images.length ?? 0) - removing + files.length;
+
+  function handleSave(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    // Both, matching the submit button's own `disabled={submitting || looking}`:
+    // pressing Enter in a text field submits the form directly and never
+    // consults the button, so guarding only `submitting` lets a save start
+    // underneath an in-flight lookup whose answer would then overwrite it.
+    if (submitting || looking) return;
+    if (refusedLocally()) return;
+    if (marked.length > 0 && remaining < 1) {
+      // EXPERIENCE.md:148: an operation that was never going to be honoured is
+      // refused *instead of* being confirmed. Walking the Administrator through
+      // "Remove and save" and then answering `409 last_reference_image` asks
+      // them to authorise something the product had already decided against —
+      // and the sheet would have promised "keeps 0 reference images" on the way
+      // through. The server enforces the floor regardless (FR-7); this is the
+      // courtesy on top of the control.
+      setSaved(false);
+      setError(null);
+      setSheet('refusal');
+      return;
+    }
+    if (marked.length > 0) {
+      // Destructive, so it is confirmed in a sheet that names the tile and the
+      // consequence first (EXPERIENCE.md's Confirmation dialog row) — never a
+      // bare "Are you sure?".
+      setSaved(false);
+      setError(null);
+      setSheet('confirm');
+      return;
+    }
+    void save();
+  }
+
+  // One expression rather than a nested ternary in the markup: three states,
+  // and the empty one is the default.
+  let indicator = '';
+  if (submitting) indicator = SAVING;
+  else if (saved) indicator = SAVED;
+
+  // One node, rendered directly below whichever field is at fault — and after
+  // all of them when the failure belongs to none. A form with five controls and
+  // one error parked under all of them leaves a screen-reader user on the wrong
+  // one hearing a sentence about another. Only one slot is ever filled, so this
+  // screen never renders a second alert.
+  const alert =
+    error === null ? null : (
+      <p className={styles.error} id={errorId} role="alert">
+        {error.message}
+      </p>
+    );
+
+  return (
+    <section className={styles.screen}>
+      <h1 className={styles.title}>Edit tile</h1>
+
+      <form className={styles.form} onSubmit={(event) => void handleLookup(event)} noValidate>
+        <div className={styles.field}>
+          <label className={styles.label} htmlFor={lookupId}>
+            Find a tile by code
+          </label>
+          {/* Set in the monospace role DESIGN.md reserves for a value read
+              character by character: the Code is transcribed from a physical
+              tile, and 0/O and 1/I must not be confusable while it is typed.
+              Case is preserved — `1Jk` is not `1JK`. */}
+          <input
+            className={styles.code}
+            id={lookupId}
+            name="lookup_code"
+            maxLength={MAX_CODE_LENGTH}
+            type="text"
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            ref={lookupRef}
+            value={lookupCode}
+            aria-invalid={error?.fieldAtFault === 'lookup'}
+            aria-describedby={
+              error?.fieldAtFault === 'lookup' ? `${lookupHintId} ${errorId}` : lookupHintId
+            }
+            onChange={(event) => typed(setLookupCode)(event.target.value)}
+          />
+          {/* The match is exact, and saying so is what stops an Administrator
+              reading a `404` as "the tile is gone" when it is "that is not the
+              whole code". Browsing by partial code is the Catalogue's, which is
+              a later story. */}
+          <p className={styles.hint} id={lookupHintId}>
+            The whole code, exactly as it is filed.
+          </p>
+          {error?.fieldAtFault === 'lookup' && alert}
+        </div>
+
+        {/* A lookup failure that belongs to no field — the request never
+            reached the API, it timed out, the session ended, or the body was
+            not a Tile. Without this slot the only null-field slot on the screen
+            is inside the edit form below, which is not rendered while no tile
+            is loaded: Find would look like it had done nothing at all.
+
+            Bounded on `tile === null` so it cannot fire at the same time as the
+            edit form's own null slot — exactly one of the two is ever in the
+            document, which is what keeps this screen to one alert. */}
+        {error !== null && error.fieldAtFault === null && tile === null && alert}
+
+        <div className={styles.actions}>
+          {/* The screen's one accent control **while no tile is loaded**, and
+              the navy outline once one is: Save below takes the accent then,
+              and DESIGN.md allows exactly one filled primary per screen. One
+              element with a conditional treatment rather than two elements,
+              because two would be two tab stops of the same name whenever
+              React reused neither. */}
+          <button
+            className={tile === null ? styles.submit : styles.back}
+            type="submit"
+            disabled={looking || submitting}
+          >
+            Find
+          </button>
+          <button
+            className={styles.back}
+            type="button"
+            onClick={onBack}
+            disabled={looking || submitting}
+          >
+            Back
+          </button>
+          {/* The lookup's own wait, so a slow round trip is not a screen that
+              appears to have ignored the press. Empty at rest. */}
+          <span className={styles.indicator} role="status">
+            {looking ? 'Finding…' : ''}
+          </span>
+        </div>
+      </form>
+
+      {/* Rendered only when a tile has been found: an edit form with nothing to
+          edit is a set of empty boxes that look like they would create one. */}
+      {tile !== null && (
+        <form className={styles.form} onSubmit={handleSave} noValidate>
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor={codeId}>
+              Code
+            </label>
+            <input
+              className={styles.code}
+              id={codeId}
+              name="code"
+              maxLength={MAX_CODE_LENGTH}
+              type="text"
+              autoComplete="off"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              ref={codeRef}
+              value={code}
+              aria-invalid={error?.fieldAtFault === 'code'}
+              aria-describedby={error?.fieldAtFault === 'code' ? errorId : undefined}
+              onChange={(event) => typed(setCode)(event.target.value)}
+            />
+            {error?.fieldAtFault === 'code' && alert}
+          </div>
+
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor={sizeId}>
+              Size
+            </label>
+            <input
+              className={styles.input}
+              id={sizeId}
+              name="size"
+              maxLength={MAX_SIZE_LENGTH}
+              type="text"
+              autoComplete="off"
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
+              ref={sizeRef}
+              value={size}
+              aria-invalid={error?.fieldAtFault === 'size'}
+              aria-describedby={
+                error?.fieldAtFault === 'size' ? `${sizeHintId} ${errorId}` : sizeHintId
+              }
+              onChange={(event) => typed(setSize)(event.target.value)}
+            />
+            <p className={styles.hint} id={sizeHintId}>
+              The top-level folder, such as 45X90.
+            </p>
+            {error?.fieldAtFault === 'size' && alert}
+          </div>
+
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor={categoryId}>
+              Category
+            </label>
+            <input
+              className={styles.input}
+              id={categoryId}
+              name="category"
+              maxLength={MAX_CATEGORY_LENGTH}
+              type="text"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              ref={categoryRef}
+              value={category}
+              aria-invalid={error?.fieldAtFault === 'category'}
+              aria-describedby={
+                error?.fieldAtFault === 'category' ? `${categoryHintId} ${errorId}` : categoryHintId
+              }
+              onChange={(event) => typed(setCategory)(event.target.value)}
+            />
+            {/* AD-18: a Category that cannot be recovered is recorded as
+                UNKNOWN and flagged for follow-up, never dropped — so clearing
+                this is a supported answer rather than an omission. */}
+            <p className={styles.hint} id={categoryHintId}>
+              The range or pattern, such as CREMA MARMOL. Cleared, the tile is filed under{' '}
+              {UNKNOWN_CATEGORY}.
+            </p>
+            {error?.fieldAtFault === 'category' && alert}
+          </div>
+
+          {/* A region rather than a fieldset with a legend: the group holds
+              images and a file input rather than a set of related choices, and
+              a heading is what a screen-reader user navigates to. */}
+          <section className={styles.field} aria-labelledby={imagesLabelId}>
+            <h2 className={styles.subtitle} id={imagesLabelId}>
+              Reference images
+            </h2>
+            <ul className={styles.gallery}>
+              {tile.reference_images.map((image, index) => {
+                const pending = marked.includes(image.id);
+                return (
+                  <li
+                    className={pending ? `${styles.thumb} ${styles.pending}` : styles.thumb}
+                    key={image.id}
+                  >
+                    {/* Proxied through the authenticated endpoint, never a
+                        storage URL (AD-9). Same origin, so the session cookie
+                        travels with it and the role is re-checked per request. */}
+                    <img
+                      alt={`Reference image ${index + 1} of ${tile.code}`}
+                      className={styles.image}
+                      src={`${API_PREFIX}/admin/tiles/${tile.id}/images/${image.id}`}
+                    />
+                    {/* FR-19: an image below the texture threshold matches any
+                        washed-out photo and can never be reliably retrieved
+                        itself. The epic asks for the flag on the tile's own
+                        screen rather than buried in a report. Stated in plain
+                        words, never as a number. */}
+                    {image.featureless && (
+                      <p className={styles.flag}>
+                        Very little visible texture — scans may not find this tile through it.
+                      </p>
+                    )}
+                    {/* A toggle, and nothing happens when it is pressed: the
+                        removal travels with the save, which is confirmed. The
+                        word is the signal, not the colour (EXPERIENCE.md's
+                        accessibility floor). */}
+                    <label className={styles.remove}>
+                      <input
+                        checked={pending}
+                        onChange={() => toggleMarked(image.id)}
+                        type="checkbox"
+                        aria-label={`Remove reference image ${String(index + 1)} of ${tile.code}`}
+                      />
+                      {/* The visible word stays bare — it sits beside its own
+                          thumbnail, so the position is obvious on screen. The
+                          accessible name carries the distinguisher instead:
+                          out of the gallery's context these are otherwise
+                          three identically named checkboxes on the one
+                          destructive control of the screen, and they name the
+                          same image the thumbnail above already names. */}
+                      Remove
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <label className={styles.label} htmlFor={imagesId}>
+              Add reference images
+            </label>
+            {/* `accept` is a *hint to the file picker*, never a check: the
+                server decides by content and nothing else (AGENTS.md Policy),
+                and the real catalogue holds `.tif` alongside `.jpg`. */}
+            <input
+              className={styles.file}
+              id={imagesId}
+              name="images"
+              type="file"
+              accept="image/*"
+              multiple
+              ref={imagesRef}
+              aria-invalid={error?.fieldAtFault === 'images'}
+              aria-describedby={
+                error?.fieldAtFault === 'images' ? `${imagesHintId} ${errorId}` : imagesHintId
+              }
+              onChange={chooseFiles}
+            />
+            <p className={styles.hint} id={imagesHintId}>
+              Up to {MAX_IMAGES_PER_REQUEST} at a time, each under{' '}
+              {MAX_IMAGE_BYTES / (1024 * 1024)} MB. A tile always keeps at least one reference
+              image. Saving can take a minute or two — each new image is indexed before it is
+              stored.
+            </p>
+            {error?.fieldAtFault === 'images' && alert}
+          </section>
+
+          {/* A failure that belongs to no field — the request never reached the
+              API, the tile has moved, or the server has no image pipeline
+              installed. Inserted rather than emptied and refilled: a
+              `role="alert"` node appearing in the document is what announces
+              it. */}
+          {error !== null && error.fieldAtFault === null && alert}
+
+          <div className={styles.actions}>
+            {/* The screen's one accent control once a tile is loaded.
+                Disabled during a *lookup* as well as during a save: a Find that
+                is still in flight will `adopt()` whatever it finds, and a save
+                pressed under it would be overwritten by that adoption — with
+                both live regions speaking at once on the way. */}
+            <button className={styles.submit} type="submit" disabled={submitting || looking}>
+              Save
+            </button>
+            {/* Inline, beside the control that triggered it — never a corner
+                toast (EXPERIENCE.md's Save indicator row). The live region is
+                in the document at rest so the change of text is what gets
+                announced, rather than the arrival of a whole new node. */}
+            <span
+              className={saved ? `${styles.indicator} ${styles.saved}` : styles.indicator}
+              role="status"
+            >
+              {indicator}
+            </span>
+          </div>
+        </form>
+      )}
+
+      {sheet === 'refusal' && tile !== null && (
+        // The refusal state: **no destructive control is rendered at all**,
+        // because there is nothing to press (EXPERIENCE.md:148). Its body is
+        // `role="alert"`, so the sentence is announced rather than sitting
+        // silently on screen.
+        <ConfirmDialog
+          body={MUST_KEEP_AN_IMAGE}
+          heading={`${tile.code} would be left with no reference image`}
+          kind="refusal"
+          onClose={() => setSheet('none')}
+        />
+      )}
+
+      {sheet === 'confirm' && tile !== null && (
+        // Names the tile and the consequence, never a bare "Are you sure?"
+        // (EXPERIENCE.md:56, :72, :144). Its confirm control carries a word as
+        // well as the destructive fill, because red alone is never the signal.
+        <ConfirmDialog
+          body={
+            `${tile.code} keeps ${String(remaining)} reference image${remaining === 1 ? '' : 's'}. ` +
+            'A removed image and everything the catalogue indexed from it are deleted ' +
+            'permanently, and scans can no longer match this tile through it.'
+          }
+          busy={submitting}
+          confirmLabel="Remove and save"
+          heading={`Remove ${String(removing)} reference image${
+            removing === 1 ? '' : 's'
+          } from ${tile.code}?`}
+          kind="confirm"
+          onClose={() => setSheet('none')}
+          onConfirm={() => void save()}
+        />
+      )}
+    </section>
+  );
+}

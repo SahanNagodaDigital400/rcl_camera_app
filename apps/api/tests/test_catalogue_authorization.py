@@ -1,11 +1,11 @@
-"""Both catalogue routes are Administrator-only, server-side, whatever the UI hides.
+"""Every catalogue route is Administrator-only, server-side, whatever the UI hides.
 
 `tests/test_admin_authorization.py` proves the *rule* over the route table —
 every route under `/admin/` declares `require_administrator`, and every route
-declaring it is under `/admin/`, with Story 2.1's two now in its expected set.
-This file proves the *behaviour* on these two routes specifically, and the one
-thing the table guard cannot see: that a refused caller leaves the database and
-the object store untouched.
+declaring it is under `/admin/`, with Story 2.1's two and Story 2.2's two now in
+its expected set. This file proves the *behaviour* on those four routes
+specifically, and the one thing the table guard cannot see: that a refused
+caller leaves the database and the object store untouched.
 
 That second half matters more here than it did for Story 1.8's user write. The
 add path decodes images, runs 16 forward passes and writes two objects per
@@ -57,6 +57,24 @@ def post_tile(client: TestClient) -> Any:
 
 def get_image(client: TestClient) -> Any:
     return client.get(f"/admin/tiles/{uuid4()}/images/{uuid4()}")
+
+
+def patch_tile(client: TestClient) -> Any:
+    """Story 2.2's edit, with a real image part.
+
+    The id names no Tile, deliberately: a handler that ran would answer `404`,
+    and the dependency answers `403` or `401` first. That difference is the
+    whole of "the authorization is a dependency, never a line in the handler".
+    """
+    return client.patch(
+        f"{ADD_TILE}/{uuid4()}",
+        data=REFUSED_FIELDS,
+        files=[("images", ("reference.jpg", an_image(), "image/jpeg"))],
+    )
+
+
+def lookup_tile(client: TestClient) -> Any:
+    return client.get(f"{ADD_TILE}/lookup", params={"code": REFUSED_FIELDS["code"]})
 
 
 def sign_in(client: TestClient, account: Any) -> None:
@@ -113,6 +131,36 @@ def test_a_staff_caller_is_refused_the_image_read(client: TestClient, make_user:
     assert response.json()["error"]["code"] == "administrator_required"
 
 
+def test_a_staff_caller_is_refused_the_edit_and_writes_nothing(
+    client: TestClient,
+    conn: psycopg.Connection,
+    storage_root: Path,
+    make_user: MakeUser,
+    audit_rows: Callable[[psycopg.Connection], list[dict[str, object]]],
+) -> None:
+    sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
+
+    response = patch_tile(client)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "administrator_required"
+    nothing_was_written(conn, storage_root)
+    assert [r for r in audit_rows(conn) if r["action"] == "catalogue_tile_edited"] == []
+
+
+def test_a_staff_caller_is_refused_the_lookup(client: TestClient, make_user: MakeUser) -> None:
+    # A read, and still Administrator-only: catalogue exfiltration through a
+    # compromised account is this product's primary commercial threat, and a
+    # route that answered a Code with a Tile would be a way to walk the
+    # Catalogue one guess at a time.
+    sign_in(client, make_user(role=Role.STAFF))
+
+    response = lookup_tile(client)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "administrator_required"
+
+
 def test_a_staff_callers_image_is_never_decoded(
     client: TestClient,
     conn: psycopg.Connection,
@@ -135,11 +183,12 @@ def test_a_staff_callers_image_is_never_decoded(
     monkeypatch.setattr(shared_vision, "intake_image", refuse)
     sign_in(client, make_user(role=Role.STAFF))
 
-    response = post_tile(client)
+    for send in (post_tile, patch_tile):
+        response = send(client)
 
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "administrator_required"
-    nothing_was_written(conn, storage_root)
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "administrator_required"
+        nothing_was_written(conn, storage_root)
 
 
 def test_the_refusal_precedes_the_request_body_being_validated(
@@ -170,6 +219,23 @@ def test_a_signed_out_caller_is_refused_the_add_and_writes_nothing(
 
 def test_a_signed_out_caller_is_refused_the_image_read(client: TestClient) -> None:
     response = get_image(client)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_a_signed_out_caller_is_refused_the_edit_and_writes_nothing(
+    client: TestClient, conn: psycopg.Connection, storage_root: Path
+) -> None:
+    response = patch_tile(client)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+    nothing_was_written(conn, storage_root)
+
+
+def test_a_signed_out_caller_is_refused_the_lookup(client: TestClient) -> None:
+    response = lookup_tile(client)
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
@@ -227,7 +293,7 @@ def test_an_administrator_demoted_mid_session_is_refused_on_the_next_request(
     nothing_was_written(conn, storage_root)
 
 
-@pytest.mark.parametrize("send", [post_tile, get_image])
+@pytest.mark.parametrize("send", [post_tile, get_image, patch_tile, lookup_tile])
 def test_every_refusal_is_uncacheable(
     client: TestClient, make_user: MakeUser, send: Callable[[TestClient], Any]
 ) -> None:

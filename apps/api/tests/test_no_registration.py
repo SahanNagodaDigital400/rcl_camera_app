@@ -141,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_five_auth_routes_health_and_the_seven_admin_paths() -> None:
+def test_the_route_table_is_the_five_auth_routes_health_and_the_nine_admin_paths() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -219,6 +219,19 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_seven_admin_path
     # are proxied through an endpoint that re-checks the role, rather than
     # handed to the browser as a link it could follow without one.
     #
+    # `/admin/tiles/{tile_id}` and `/admin/tiles/lookup` (Story 2.2, FR-15) are
+    # the eighth and ninth admin paths. The first corrects a Tile an
+    # Administrator already added — an id that names no Tile is a `404`, and no
+    # field on it names a person, an address or a password. The second finds one
+    # Tile by an **exact** Code and writes nothing at all. Both are
+    # authenticated and Administrator-only through the same
+    # `require_administrator` every route under `/admin/` declares.
+    #
+    # `lookup` is a literal segment under `/admin/tiles`, and there is no
+    # `GET /admin/tiles/{tile_id}` for it to be shadowed by — which is what
+    # keeps it a path in its own right rather than a Code that happens to look
+    # like a UUID.
+    #
     # The seeded Administrator (`infra/rocell_infra/seed.py`) is still the only
     # row written with no Administrator behind it, and it is written by the
     # migration runner outside the application entirely.
@@ -235,6 +248,8 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_seven_admin_path
         "/admin/users/{user_id}/activate",
         "/admin/audit",
         "/admin/tiles",
+        "/admin/tiles/lookup",
+        "/admin/tiles/{tile_id}",
         "/admin/tiles/{tile_id}/images/{image_id}",
     }
 

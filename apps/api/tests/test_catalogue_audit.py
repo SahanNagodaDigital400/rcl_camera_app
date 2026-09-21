@@ -1,20 +1,23 @@
 """Every catalogue change is attributable, permanent, and written with the change.
 
-Story 1.12 built the append-only log and Story 1.13 the read; this is the first
-entry Epic 2 writes, and the first in the product that names something other
-than an account. Three properties, and the third is the one a later story is
-most likely to break:
+Story 1.12 built the append-only log and Story 1.13 the read; these are the
+first entries Epic 2 writes, and the first in the product that name something
+other than an account. Three properties, and the third is the one a later story
+is most likely to break:
 
-* a successful add writes **exactly one** `catalogue_tile_added` entry, with
-  the actor, the source address and the Code;
-* a refused add writes **none** — a `409`, a `422` or a `413` changed nothing,
-  so there is nothing to record;
-* the entry and the Tile are in **one transaction**, so neither can exist
+* a successful write records **exactly one** entry — `catalogue_tile_added`
+  from Story 2.1, `catalogue_tile_edited` from Story 2.2 — with the actor, the
+  source address and the Code;
+* a refused write records **none** — a `409`, a `422` or a `413` changed
+  nothing, so there is nothing to record;
+* the entry and the change are in **one transaction**, so neither can exist
   without the other.
 
 The Tile is named in `details` as a denormalized snapshot, never as a foreign
 key (AD-10): removal (Story 2.3) is a hard delete and the log may neither
-block it nor be cascaded into.
+block it nor be cascaded into. An edit never rewrites the add's entry either —
+AD-4 makes the log append-only at every level, so a rename adds an entry beside
+the one that recorded the old Code.
 """
 
 from __future__ import annotations
@@ -222,3 +225,165 @@ def test_an_audit_failure_takes_the_tile_down_with_it(
     assert catalogue_entries(conn, audit_rows) == []
     # And the objects that had already been written are gone with it.
     assert [path for path in storage_root.rglob("*") if path.is_file()] == []
+
+
+# --- Story 2.2's entry --------------------------------------------------------
+# A member of its own, not a second `catalogue_tile_added` with a flag in
+# `details`: an edit can rename the Code the earlier entry recorded, and a
+# reader following a Tile through the log needs the two distinguishable without
+# parsing a payload.
+
+EDIT_ACTION = "catalogue_tile_edited"
+
+
+def edit_entries(conn: psycopg.Connection, rows: AuditRows) -> list[dict[str, object]]:
+    return [row for row in rows(conn) if row["action"] == EDIT_ACTION]
+
+
+def edit(client: TestClient, tile_id: str, **fields: Any) -> Any:
+    files = fields.pop("files", None)
+    data = {
+        key: ([str(item) for item in value] if isinstance(value, list) else str(value))
+        for key, value in fields.items()
+    }
+    if files:
+        return client.patch(f"{ADD_TILE}/{tile_id}", data=data, files=files)
+    return client.patch(f"{ADD_TILE}/{tile_id}", data=data)
+
+
+@needs_model
+def test_a_successful_edit_writes_one_entry_naming_who_what_and_from_where(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    created = add(client).json()
+    doomed = created["reference_images"][0]["id"]
+
+    response = edit(
+        client,
+        created["id"],
+        code="RP.CMA.0002DJ.SM.0T",
+        size="60X60",
+        remove_image_ids=[doomed],
+        files=[("images", ("replacement.jpg", an_image(7), "image/jpeg"))],
+    )
+    assert response.status_code == 200, response.text
+
+    entries = edit_entries(conn, audit_rows)
+    assert len(entries) == 1
+    entry = entries[0]
+
+    assert entry["actor_user_id"] == administrator.id
+    assert entry["actor_email"] == administrator.email
+    assert entry["source_ip"] == "127.0.0.1"
+    assert entry["created_at"] is not None
+    # The target columns are an account's. A Tile is not one.
+    assert entry["target_user_id"] is None
+    assert entry["target_email"] is None
+
+    details = entry["details"]
+    assert isinstance(details, dict)
+    # The Code as it *now* stands, snapshot in `details` and never a foreign key
+    # (AD-10) — `changed` carries the one it had.
+    assert details["code"] == "RP.CMA.0002DJ.SM.0T"
+    assert details["tile_id"] == created["id"]
+    assert details["changed"] == {
+        "code": {"from": CODE, "to": "RP.CMA.0002DJ.SM.0T"},
+        "size": {"from": "45X90", "to": "60X60"},
+    }
+    assert details["images_added"] == 1
+    assert details["images_removed"] == 1
+
+
+@needs_model
+def test_the_edit_entry_carries_no_storage_key_and_no_secret(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # `api.audit.record`'s standing rule about `details`, checked at this call
+    # site too: a storage key in the log outlives the object it names, and is a
+    # reference nothing may hold outside `apps/api` (AD-9).
+    created = add(client).json()
+    edit(client, created["id"], files=[("images", ("second.jpg", an_image(8), "image/jpeg"))])
+
+    details = str(edit_entries(conn, audit_rows)[0]["details"])
+    for forbidden in ("source_key", "derivative_key", "tiles/", ".jpg", "password", "token"):
+        assert forbidden not in details, details
+
+
+@needs_model
+def test_an_edit_that_moved_nothing_records_an_empty_change_set(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # The honest record of an accepted edit that changed no value. An entry
+    # claiming a change that did not happen is worse than a terse one, because
+    # nothing downstream can tell it from a real one.
+    created = add(client).json()
+
+    assert edit(client, created["id"], code=CODE).status_code == 200
+
+    details = edit_entries(conn, audit_rows)[0]["details"]
+    assert isinstance(details, dict)
+    assert details["changed"] == {}
+
+
+@needs_model
+def test_an_edit_leaves_the_add_entry_alone(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # AD-4: the log is append-only at every level. A rename does not rewrite the
+    # entry that recorded the old Code — it adds one beside it.
+    created = add(client).json()
+    added = catalogue_entries(conn, audit_rows)[0]
+
+    edit(client, created["id"], code="RP.CMA.0002DJ.SM.0T")
+
+    assert catalogue_entries(conn, audit_rows) == [added]
+    assert len(edit_entries(conn, audit_rows)) == 1
+
+
+@needs_model
+@pytest.mark.parametrize(
+    ("label", "fields", "expected"),
+    [
+        ("a blank code", {"code": ""}, 422),
+        ("a blank size", {"size": ""}, 422),
+        ("bytes that are not an image", {"files": [("images", ("x.jpg", b"", "image/jpeg"))]}, 422),
+    ],
+)
+def test_a_refused_edit_writes_no_entry(
+    client: TestClient,
+    conn: psycopg.Connection,
+    administrator: Any,
+    audit_rows: AuditRows,
+    label: str,
+    fields: Any,
+    expected: int,
+) -> None:
+    created = add(client).json()
+
+    response = edit(client, created["id"], **fields)
+
+    assert response.status_code == expected, label
+    assert edit_entries(conn, audit_rows) == [], label
+
+
+@needs_model
+def test_an_edit_that_would_empty_a_tile_writes_no_entry(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # FR-7's floor. The refusal changed nothing, so there is nothing to record.
+    created = add(client).json()
+
+    response = edit(client, created["id"], remove_image_ids=[created["reference_images"][0]["id"]])
+
+    assert response.status_code == 409
+    assert edit_entries(conn, audit_rows) == []
+
+
+def test_a_refused_caller_writes_no_edit_entry(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser, audit_rows: AuditRows
+) -> None:
+    account = make_user(role=Role.STAFF)
+    client.post(LOGIN, json={"email": account.email, "password": account.password})
+
+    assert edit(client, "00000000-0000-4000-8000-000000000000", code=CODE).status_code == 403
+    assert edit_entries(conn, audit_rows) == []

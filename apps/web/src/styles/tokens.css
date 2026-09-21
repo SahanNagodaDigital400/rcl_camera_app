@@ -118,6 +118,14 @@
   --focus-ring-width: 3px;
   /* Phosphor icons ship at 20–24px, regular weight only (UX-DR3). */
   --icon-size: 24px;
+  /* One reference image on the Edit tile screen, as a square thumbnail. Large
+   * enough that an Administrator can tell two tiles of one range apart by eye —
+   * which is the whole job of the reference image (FR-7) — and small enough
+   * that three sit side by side inside `--measure-form`, which is what the
+   * gallery is bounded by. Its row is a grid of `auto-fill` tracks of this
+   * width, so the number per row follows the available width rather than a
+   * second breakpoint. */
+  --thumbnail-size: 96px;
   /* Comfortable reading measure for a block of prose. */
   --measure-prose: 64ch;
   /* Parks a skip link out of sight until it takes focus. */

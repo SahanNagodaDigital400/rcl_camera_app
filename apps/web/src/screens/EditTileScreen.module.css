@@ -1,0 +1,258 @@
+/* Edit tile — where an Administrator corrects one (FR-15).
+ *
+ * Rendered *inside* the shell, like Add tile: the app bar is above it and
+ * `AppShell`'s `<main>` is around it, so there is no full-height centring and
+ * no chrome-less panel here. The form rhythm is deliberately
+ * `AddTileScreen.module.css`'s — a single narrow column, label above input,
+ * `--space-5` between fields — because an Administrator moving between the two
+ * catalogue forms should not read them as two different applications.
+ *
+ * The one thing this screen has that Add tile does not is the reference-image
+ * gallery, and the two rules worth arguing for are down there: the thumbnail
+ * size is a token because `no-raw-values.test.ts` forbids a dimension literal
+ * anywhere but `tokens.css`, and a marked thumbnail is signalled by its own
+ * checkbox and a border, never by colour alone.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target
+ * floor and the accent focus ring are already on `button` and `input` in
+ * global.css and are deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: var(--measure-form);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+.subtitle {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: var(--color-text);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  color: var(--color-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+.input {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* The Code field, in the monospace role DESIGN.md reserves for a value read
+ * character by character. It is transcribed off a physical tile and it is the
+ * tile's identity (AD-18), so 0/O and 1/I must not be confusable while it is
+ * being typed — not only once it is rendered. Both the lookup field and the
+ * edit field take it: the lookup's is the same value, typed the same way. */
+.code {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--type-code-size);
+  font-weight: var(--type-code-weight);
+  line-height: var(--type-code-line);
+}
+
+/* The file input. Left as the platform control rather than hidden behind a
+ * styled button: the native one is keyboard-reachable, announces the chosen
+ * file count by itself, and is the one control on this screen whose behaviour
+ * a custom replacement would have to reimplement from nothing. */
+.file {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The line under a field that says what belongs in it. Muted, because it is
+ * guidance rather than a state. */
+.hint {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* The rejection, carrying the API's own sentence — which names the rule that
+ * failed, or the field that was wrong (EXPERIENCE.md:87). Red is
+ * destructive-or-failed in this system and nothing else, and it is never the
+ * only signal: the text says what happened and `aria-invalid` marks the
+ * field. */
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The action row of each stage, so the indicator sits beside the thing that
+ * triggered it rather than in a corner (EXPERIENCE.md's Save indicator row).
+ * Wraps rather than shrinks: at the narrowest phone width three items on one
+ * line would push the buttons below the touch-target floor. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* The single primary action on this screen: accent fill, navy foreground.
+ * Never white on orange — 2.63:1, the one contrast pair DESIGN.md bans.
+ *
+ * Worn by Find while no tile is loaded and by Save once one is, and the two are
+ * never on screen together — which is what keeps "exactly one accent control
+ * per screen" true across both stages. */
+.submit {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.submit:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* DESIGN.md's secondary button — navy outline, navy text, transparent fill.
+ * The default for every non-primary action here: Back always, and Find once
+ * Save has taken the accent. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.back:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* Muted while a request is in flight, and empty at rest (DESIGN.md's
+ * `save-indicator`). */
+.indicator {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* And navy once it has saved — deliberately not orange, which stays reserved
+ * for the action that has not fired yet rather than for reporting on it. */
+.saved {
+  color: var(--color-primary);
+}
+
+/* The reference images. A grid of `auto-fill` tracks rather than a media query:
+ * the number per row follows the viewport, so this needs no second breakpoint
+ * and no second rule. `list-style: none` because the bullets would sit beside
+ * pictures and say nothing — the list is still a list to a screen reader, which
+ * is what makes "three reference images" audible. */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--thumbnail-size), 1fr));
+  gap: var(--space-4);
+  list-style: none;
+  padding: 0;
+}
+
+/* One image and its controls: DESIGN.md's Card, at thumbnail scale. */
+.thumb {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+/* Marked for removal. The border is the *second* signal, never the only one:
+ * the checkbox beside it is checked and the word "Remove" is beside that
+ * (EXPERIENCE.md's accessibility floor — destructive actions are never
+ * colour-only). */
+.pending {
+  border-color: var(--color-destructive);
+}
+
+/* The proxied derivative (AD-9, AD-17). `contain` rather than `cover`: a tile
+ * face cropped to fill a square is a tile face an Administrator can no longer
+ * tell from its neighbour, which is the one job this picture has. */
+.image {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  background: var(--color-background);
+}
+
+/* The removal toggle. Destructive-coloured *and* labelled with the word, for
+ * the reason above. A label wrapping its own checkbox, so the whole row is the
+ * hit area and the 44px floor is met without a second rule. */
+.remove {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-target-min);
+  color: var(--color-destructive);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* FR-19's quality flag. Muted rather than red: a low-texture reference is a
+ * real property of a plain tile, not a failure — the tile is in the catalogue
+ * and this is something to follow up. Red here would mean something had gone
+ * wrong, which is the one thing it did not. */
+.flag {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}

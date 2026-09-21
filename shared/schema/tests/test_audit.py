@@ -130,10 +130,11 @@ def test_a_password_digest_has_nowhere_to_go() -> None:
         AuditLogEntry.model_validate(an_entry_body(password_hash="$argon2id$..."))
 
 
-def test_the_vocabulary_is_the_fourteen_actions_the_product_writes() -> None:
-    # Thirteen from Epic 1 and one from Epic 2's catalogue write. The name of
-    # this test carries the count on purpose: an addition has to be a
-    # deliberate edit here, not a set that quietly grew.
+def test_the_vocabulary_is_the_fifteen_actions_the_product_writes() -> None:
+    # Thirteen from Epic 1 and two from Epic 2's catalogue writes — the add
+    # (Story 2.1) and the edit (Story 2.2). The name of this test carries the
+    # count on purpose: an addition has to be a deliberate edit here, not a set
+    # that quietly grew.
     assert {member.value for member in AuditAction} == {
         "login_succeeded",
         "login_failed",
@@ -149,6 +150,7 @@ def test_the_vocabulary_is_the_fourteen_actions_the_product_writes() -> None:
         "user_activated",
         "user_deleted",
         "catalogue_tile_added",
+        "catalogue_tile_edited",
     }
 
 

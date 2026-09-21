@@ -36,6 +36,7 @@ from typing import Annotated, Any
 
 import psycopg
 import pytest
+from api import catalogue
 from api.db import DATABASE_URL
 from api.dependencies import (
     ADMINISTRATOR_REQUIRED,
@@ -92,6 +93,15 @@ AUDIT_LOG = "/admin/audit"
 #: Tile names nothing.
 ADD_TILE = "/admin/tiles"
 TILE_IMAGE = "/admin/tiles/{tile_id}/images/{image_id}"
+
+#: Story 2.2's two (FR-15). `PATCH` on the member resource, beside the `POST` on
+#: the collection — the same shape `/admin/users` took in Story 1.10. The lookup
+#: is a literal segment under the collection rather than a typed-UUID sibling:
+#: there is no `GET /admin/tiles/{tile_id}`, so nothing can shadow it, and an
+#: **exact** Code match returning one Tile is deliberately not Story 2.5's
+#: catalogue list.
+EDIT_TILE = "/admin/tiles/{tile_id}"
+TILE_LOOKUP = "/admin/tiles/lookup"
 
 LOGIN = "/auth/login"
 
@@ -526,15 +536,16 @@ def test_the_admin_route_table_is_not_empty() -> None:
     assert _admin_routes(create_app()) != []
 
 
-def test_the_admin_route_table_is_the_nine_routes_the_product_serves() -> None:
+def test_the_admin_route_table_is_the_eleven_routes_the_product_serves() -> None:
     # The stricter half, separated from the vacuity guard above because it is a
     # different claim with a different lifetime: this one is *meant* to fail the
     # moment a story adds a route under `/admin/` — Story 1.9 added
     # `GET /admin/users`, Story 1.10 added `PATCH /admin/users/{user_id}`, and
     # Story 1.11 added the three FR-13 verbs, and Story 1.13 added
     # `GET /admin/audit`, and Story 2.1 added `POST /admin/tiles` and
-    # `GET /admin/tiles/{tile_id}/images/{image_id}` — and its failure means
-    # "update this list", not "the guards above stopped guarding".
+    # `GET /admin/tiles/{tile_id}/images/{image_id}`, and Story 2.2 added
+    # `PATCH /admin/tiles/{tile_id}` and `GET /admin/tiles/lookup` — and its
+    # failure means "update this list", not "the guards above stopped guarding".
     #
     # The count is in the name on purpose, the same way `test_audit.py` names
     # its vocabulary size: a story that adds a route has to change the name as
@@ -562,8 +573,53 @@ def test_the_admin_route_table_is_the_nine_routes_the_product_serves() -> None:
             f"GET {AUDIT_LOG}",
             f"POST {ADD_TILE}",
             f"GET {TILE_IMAGE}",
+            f"PATCH {EDIT_TILE}",
+            f"GET {TILE_LOOKUP}",
         ]
     )
+
+
+def test_the_lookup_segment_resolves_to_the_lookup_handler() -> None:
+    # `GET /admin/tiles/lookup` is a literal segment under a collection that
+    # also serves typed-UUID children, and both `api/catalogue.py` and
+    # `test_no_registration.py` justify it with "there is no
+    # `GET /admin/tiles/{tile_id}`". The day Story 2.5 adds that route *above*
+    # this one, Starlette matches in registration order and `lookup` becomes a
+    # tile id that fails to parse as a UUID — and every route-table test in this
+    # file compares path *sets*, so none of them would notice.
+    #
+    # Asserted on registration *order*, not on the declared path. A dict keyed
+    # by `route.path` still holds ("GET", "/admin/tiles/lookup") after a
+    # shadowing sibling is registered above it, so an endpoint lookup through
+    # one would stay green through exactly the regression described above.
+    # Starlette matches the first route whose pattern accepts the request, so
+    # the statement that survives is: no earlier GET under /admin/tiles/ takes
+    # a path parameter that would swallow the literal `lookup` segment.
+    ordered = [(method, path, route) for method, path, route in _api_routes(create_app())]
+
+    lookup_at = next(
+        index
+        for index, (method, path, _) in enumerate(ordered)
+        if (method, path) == ("GET", TILE_LOOKUP)
+    )
+    assert ordered[lookup_at][2].endpoint is catalogue.lookup_tile
+
+    shadowing = [
+        f"{method} {path}"
+        for index, (method, path, _) in enumerate(ordered)
+        if index < lookup_at
+        and method == "GET"
+        and path.startswith("/admin/tiles/")
+        and "{" in path.removeprefix("/admin/tiles/")
+    ]
+    assert shadowing == [], (
+        "A GET under /admin/tiles/ taking a path parameter is registered before "
+        f"{TILE_LOOKUP}, so Starlette matches it first and `lookup` is read as a "
+        f"tile id: {', '.join(shadowing)}. Register the literal segment above it."
+    )
+
+    edit = next(route for method, path, route in ordered if (method, path) == ("PATCH", EDIT_TILE))
+    assert edit.endpoint is catalogue.edit_tile
 
 
 def test_every_admin_route_declares_the_role_check() -> None:

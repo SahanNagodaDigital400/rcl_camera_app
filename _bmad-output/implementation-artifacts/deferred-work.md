@@ -1456,3 +1456,115 @@ source_spec: `spec-2-1-add-product.md`
 severity: low
 reason: The Reference images hint is now bound through `aria-describedby` because it carries the count and byte limits, which are stated nowhere else. The other three `.hint` paragraphs — including the one explaining that a blank Category files the tile under `UNKNOWN` — are still visual-only. Separately, `disabled={submitting}` removes the just pressed Save from the tab order for the length of the request; `aria-busy` on the form would say why. Both are DESIGN.md/EXPERIENCE.md questions about the screen's pattern rather than defects in this endpoint, and the same pattern is about to be copied by Stories 2.2 and 2.4.
 status: open
+
+### DW-183: A second successful Find silently discards the Administrator's unsaved edits, removal marks and chosen files.
+origin: spec-deferred 3300d2795052
+location: apps/web/src/screens/EditTileScreen.tsx handleLookup
+source_spec: `spec-2-2-edit-product.md`
+severity: medium
+reason: `handleLookup` routes a hit straight through `adopt()`, which resets `code`, `size`, `category`, `marked`, `files` and the file input with no confirmation. The suite pins only the miss case (`clears a loaded tile when a later lookup misses`). The epic's UX obligation is "never drop an in-progress catalogue edit silently", and this screen confirms every other destructive step. Not patched here because the fix is a third dialog state and a dirty-tracking rule, which is a screen-pattern decision rather than an edit.
+status: open
+
+### DW-184: Nothing bounds a Tile's total Reference Images across edits, and the same asset can be stored twice with sixteen more vectors behind it.
+origin: spec-deferred 10c887f7a762
+location: apps/api/api/catalogue.py edit_tile
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: `MAX_IMAGES_PER_REQUEST` bounds one request, and the screen's own hint invites repetition ("Save, then add the rest"), so a Tile grows without limit over successive edits. `reference_image` carries `sha256` but has no unique index over `(tile_id, sha256)`, so re-saving an asset already on the Tile stores a second copy, a second derivative and sixteen more `reference_embedding` rows that all score the same Tile. Story 2.1 was careful to bound the add at 1-8; the cumulative bound was never decided.
+status: open
+
+### DW-185: `_SELECT_TILE_IMAGES` is documented as chronological but sorts effectively by uuid, and can disagree with the order the add response showed.
+origin: spec-deferred b4808b44a65a
+location: infra/migrations/20260921T1500_create_catalogue.up.sql reference_image.created_at
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: `reference_image.created_at` defaults to `now()`, which in PostgreSQL is the *transaction* timestamp, and `add_tile` inserts every image of one request in one transaction. Every image of a multi-image add therefore ties on `created_at` and the tiebreak is `gen_random_uuid()`. The order is stable, which is what the screen needs, but it is arbitrary rather than chronological and differs from `add_tile`'s own response, which is built in upload order. `clock_timestamp()` as the default, or an explicit ordinal column, would make the documented intent true.
+status: open
+
+### DW-186: `GET /admin/tiles/lookup` writes no audit entry and has no throttle, on a route that confirms a Code one guess at a time.
+origin: spec-deferred 1f325da1deb9
+location: apps/api/api/catalogue.py lookup_tile
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: The handler's docstring declines to record a read because "an entry per lookup would bury the entries that matter", which is the argument `read_reference_image` makes and is reasonable on its own. It does not engage the other half: catalogue exfiltration through a compromised account is this product's stated primary commercial threat, and this is the first route that answers "does this exact Code exist" in one cheap request. `api/throttle.py` already exists. Either the trade-off belongs in the docstring or a coarse record or limit does.
+status: open
+
+### DW-187: A save that times out after the server has already committed leaves the screen holding removal marks and files it has in fact already sent.
+origin: spec-deferred 87e76ac62de4
+location: apps/web/src/screens/EditTileScreen.tsx save
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: `save()`'s catch clears neither `marked` nor `files`, so a retry after an `UPLOAD_TIMEOUT_MS` abort re-sends ids the server has already deleted (`404 image_not_found`) and re-uploads files it has already stored. Same shape as the add path's timeout-after-commit entry recorded against Story 2.1: there is no idempotency key and no server-side deadline matching the client's, so the screen cannot tell "timed out, the edit landed" from "timed out, nothing changed". Re-running the lookup on a timeout would recover the screen; an idempotency key would fix the class.
+status: open
+
+### DW-188: `session-expiry.test.tsx` failed once again under a full `make test` run and passed on every run since - a second sighting of the flake recorded against Story 2.1.
+origin: spec-deferred fe32da5a7c16
+location: apps/web/src/__tests__/session-expiry.test.tsx:476
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: One `make test` invocation during this story failed at `src/__tests__/session-expiry.test.tsx:476` waiting for the second call of a failing revalidation; the same suite passed on the next three full runs. Story 2.1 recorded the same file failing at `:321` and passing on every rerun. The file is untouched by this story, and the only change to anything it imports is two added exported constants in `client.ts`. Two sightings at two different lines is a pattern rather than noise, and a test that fails under load and passes alone is a real defect in the test.
+status: open
+
+### DW-189: Two Administrators editing one Tile silently overwrite each other - the row lock serializes the writes but detects no staleness.
+origin: spec-deferred c7ae0fe81cda
+location: apps/api/api/catalogue.py edit_tile
+source_spec: `spec-2-2-edit-product.md`
+severity: medium
+reason: `edit_tile` locks the Tile `FOR UPDATE`, which orders the two transactions but does not notice that the second one read its values before the first committed: the later save writes its own Code, Size and Category over the earlier one with no refusal and nothing on either screen. `updated_at` is already on the row and already returned by both the lookup and the save, so the material for an `If-Match` round-trip exists; what is missing is the contract for it - a new envelope code, the header or part that carries the stamp, and the screen's answer when it is stale. That is a concurrency contract for the catalogue rather than an edit, and it is not decidable from this story's intent, which is silent on simultaneous editors. Distinct from the already-recorded ledger item about a second Find discarding one Administrator's own unsaved work.
+status: open
+
+### DW-190: The audit entry for an edit records image counts only, so a hard-deleted Reference Image leaves no identifying trace anywhere.
+origin: spec-deferred d10c19df8d72
+location: apps/api/api/catalogue.py edit_tile audit details
+source_spec: `spec-2-2-edit-product.md`
+severity: medium
+reason: `details` carries `images_added` and `images_removed` as integers, and `_EDITABLE_FIELDS`' docstring argues image ids are "not something a reader of the log can do anything with". But removal here is a real `DELETE` plus a post-commit object delete - the row, its sixteen embeddings and both stored objects are gone - so the audit entry is the only remaining trace of what was destroyed, and it records none of it. FR-20/AD-4 attributability is weakest exactly where the action is irreversible. Deferred rather than patched because what the entry should carry (the id, the dimensions, the storage keys) changes what an Administrator reads in the log and is a log-contract decision, not an edit.
+status: open
+
+### DW-191: `remove_image_ids` has no ceiling, unlike `images`, so one request can name an unbounded number of ids.
+origin: spec-deferred 896e06e2c063
+location: apps/api/api/catalogue.py edit_tile requested_removals
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: `MAX_IMAGES_PER_REQUEST` bounds the uploads; nothing bounds the removal list. The per-id work is linear now that `_removals` is set-based, so this is no longer a quadratic burn, but an authenticated caller can still make the handler parse a hundred thousand UUIDs before answering `404`. A bound needs its own envelope code, a refusal sentence, rows in `error-code-parity.test.ts` in both directions and a mirror on the screen - the same shape as `too_many_images` - which is a contract addition rather than a patch.
+status: open
+
+### DW-192: A refusal stays painted on a field while the Administrator is correcting the very field it blames.
+origin: spec-deferred 091b916c0d70
+location: apps/web/src/screens/EditTileScreen.tsx typed
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: `typed()` clears only `saved`, while `chooseFiles` and `toggleMarked` clear `error` as well. After a `409 code_already_exists`, typing a new Code leaves `aria-invalid="true"` and the stale sentence under the field until the next Save answers. `AddTileScreen` has the same asymmetry, so this is a copied screen pattern rather than something this story introduced - but the edit screen has five slots instead of four and the stale alert is now bound to a control the Administrator is actively fixing. Worth deciding once for both screens rather than diverging them.
+status: open
+
+### DW-193: Every edit re-resolves the Size through `ON CONFLICT DO UPDATE`, taking a write lock on the shared `tile_size` row even when the request sent no Size at all.
+origin: spec-deferred 0069631766de
+location: apps/api/api/catalogue.py edit_tile
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: `_SELECT_TILE_FOR_UPDATE` returns the Size *name* rather than its id, so the handler runs `_RESOLVE_SIZE` unconditionally inside the transaction and writes the row back to itself. That takes a row lock held until commit, so two edits of two unrelated Tiles that happen to share a Size serialize behind each other for the length of an upload — and a pure rename, which touches no Size, pays it too. The intent requires both to be "resolved through the same normalized create-if-missing lookup the add uses", and the add genuinely does need the row; the edit needs it only when a Size was actually sent. Not patched because the fix is a column added to the locked read and a branch on `new_size`, which changes what the transaction holds and wants its own concurrency test rather than an edit.
+status: open
+
+### DW-194: The edit form's fields, Remove checkboxes and file input stay live during an in-flight save, and `adopt()` discards whatever was changed there when it lands.
+origin: spec-deferred 2ef661ce2405
+location: apps/web/src/screens/EditTileScreen.tsx
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: Only the Save, Find and Back buttons carry `disabled={submitting || looking}`. Every input stays editable while `Saving…` is showing, and the successful response routes through `adopt()`, which resets `code`, `size`, `category`, `marked`, `files` and the file input — so a mark ticked or a character typed during the wait vanishes under "Saved." with nothing said. Same root as the already-recorded entry about a second Find discarding unsaved work: `adopt()` is unconditional. The fix is the dirty-tracking rule that entry is waiting on, applied to a second trigger, so it belongs with it rather than ahead of it.
+status: open
+
+### DW-195: A Reference Image whose stored derivative is missing renders as the browser's broken image glyph, beside a live Remove control and no explanation.
+origin: spec-deferred ac06c5f18261
+location: apps/web/src/screens/EditTileScreen.tsx gallery
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: The gallery's `<img>` has no `onError`, so a `404` from `GET /admin/tiles/{id}/images/{imageId}` — an object an operator deleted, or one a failed `_discard` left half-removed — shows as a broken icon with the alt text behind it. The Administrator is then asked to decide whether to remove an image they cannot see, on the one screen whose whole justification is that "staff can verify a picture instantly". `AddTileScreen` renders no images at all, so there is no established treatment to copy: a placeholder, its sentence and whether Remove stays enabled are a screen-pattern decision.
+status: open
+
+### DW-196: `edit-user.test.tsx` failed once under a full `make test` run and passed alone and on the next full run - a third sighting of the web suite's under-load flake, in a new file.
+origin: spec-deferred 4c74bc91f2f8
+location: apps/web/src/__tests__/edit-user.test.tsx:506
+source_spec: `spec-2-2-edit-product.md`
+severity: low
+reason: One `make test` invocation during this pass failed at `apps/web/src/__tests__/edit-user.test.tsx:506` asserting focus had returned to the email box; the same file passed alone (44/44) immediately afterwards and the next full `make test` was green at 1277/1277. Two prior sightings are already recorded against `session-expiry.test.tsx` at `:321` (Story 2.1) and `:476` (this story). Neither file is touched by this story. Three sightings across two files, all of them focus- or timing-dependent assertions that pass in isolation, is a suite-level defect rather than three separate flaky tests.
+status: open

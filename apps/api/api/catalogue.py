@@ -1,10 +1,17 @@
 """`/admin/tiles` — the Catalogue's write path, and the query that proves it worked.
 
-Two routes and one function that is not a route:
+Four routes and one function that is not a route:
 
 * `POST /admin/tiles` (FR-14) takes a Code, a Size, an optional Category and
   one to eight reference images, and creates a Tile that a Scan can return in
   the same session.
+* `PATCH /admin/tiles/{tile_id}` (FR-15) corrects one: its Code, its Size, its
+  Category, and the Reference Images it carries — adding new ones through the
+  *same* intake, embedding and derivative path the add uses, and removing old
+  ones for real.
+* `GET /admin/tiles/lookup?code=` finds one Tile by an **exact** Code, which is
+  the whole door the edit screen has until Story 2.5 ships the Catalogue list.
+  Not a search: no substring, no listing, no pagination.
 * `GET /admin/tiles/{tile_id}/images/{image_id}` serves AD-17's capped
   derivative, and only that — the retained source asset has no route at all.
 * `find_candidates` is the max-over-views search. It lives here, with the
@@ -50,7 +57,21 @@ request that then failed is removed before the refusal is returned.
 as `api.users` does: a Tile that exists always has a record of who added it,
 and an entry that cannot be written takes the Tile down with it. A refusal
 writes no entry at all — a `409`, a `422` or a `413` changed nothing, so there
-is nothing to record.
+is nothing to record. The edit is the same shape, one story later.
+
+**Removal is real removal** (AD-5, epic context). `edit_tile` issues
+`DELETE FROM reference_image` so that `reference_embedding` cascades out of the
+index: there is no soft-delete flag and no query-time predicate, because a
+predicate is a thing exactly one call site has to remember and Epic 3's scan is
+the call site that must not forget. The one asymmetry with the add's ordering
+is deliberate and is argued for at `edit_tile`: objects belonging to *removed*
+images are deleted **after** the commit, because a live row pointing at absent
+bytes is the unrecoverable state and an orphaned object is not.
+
+**A Tile always keeps at least one Reference Image.** An edit whose net effect
+is zero images is refused (FR-7): the reference image is what lets a member of
+staff verify a Code they do not recognise, so a Tile without one is a catalogue
+row nobody can check and a Candidate nobody can confirm.
 
 **No presigned or direct-to-storage URL, in either direction** (AD-9). The
 `Tile` contract has nowhere to put one and this module returns none; bytes are
@@ -60,8 +81,8 @@ proxied by the `GET` below, which re-checks authorization on every request.
 the score because ranking and every server log line need it; nothing on the
 `Tile` contract carries one, and no route here emits one.
 
-Not here, deliberately: the edit (2.2), the removal (2.3), the bulk path (2.4),
-the catalogue list and substring search (2.5), Epic 3's scan endpoint, and any
+Not here, deliberately: the Tile removal (2.3), the bulk path (2.4), the
+catalogue **list and substring search** (2.5), Epic 3's scan endpoint, and any
 crop step — AD-11 resolved that one explicitly as *no* for admin uploads.
 """
 
@@ -122,6 +143,8 @@ IMAGE_TOO_LARGE = "image_too_large"
 TOO_MANY_IMAGES = "too_many_images"
 CODE_ALREADY_EXISTS = "code_already_exists"
 IMAGE_NOT_FOUND = "image_not_found"
+TILE_NOT_FOUND = "tile_not_found"
+LAST_REFERENCE_IMAGE = "last_reference_image"
 MATCHING_UNAVAILABLE = "matching_unavailable"
 PIPELINE_STAMP_MISMATCH = "pipeline_stamp_mismatch"
 
@@ -155,6 +178,28 @@ TOO_LARGE = (
 #: the Administrator can do about it.
 CODE_IN_USE = "A tile with that code already exists. Edit that tile, or use a different code."
 
+#: The pair names no Reference Image. One sentence for "no such tile", "no such
+#: image" and "that image belongs to another tile", because they are the same
+#: fact to a caller holding a pair that names nothing — and telling them apart
+#: would confirm which ids exist. Shared by the image read and by the edit's
+#: removal check, which must refuse another Tile's image the same way.
+NO_SUCH_IMAGE = "No reference image has that id."
+
+#: The id, or the Code, names no Tile. A `404` for both, so the screen refetches
+#: rather than retrying — and worded without repeating back what was asked for,
+#: because the same sentence answers a lookup by Code and an edit by id.
+NO_SUCH_TILE = "No tile matches that. It may have been renamed or removed."
+
+#: FR-7's floor, as a refusal. A Tile with no Reference Image is a catalogue row
+#: no member of staff can verify and no Scan can return, so an edit that would
+#: leave one that way is refused rather than accepted and flagged. The sentence
+#: names the way through, because the Administrator replacing a bad asset with a
+#: good one is doing exactly the thing this rule looks like it forbids.
+LAST_IMAGE = (
+    "A tile must keep at least one reference image. "
+    "Add the replacement in the same save, or remove the tile instead."
+)
+
 #: The unique index the 409 is built from, by name. Postgres reports it as
 #: `constraint_name` on the `UniqueViolation`, and this handler answers
 #: `code_already_exists` for that name and for no other — a clash on any other
@@ -183,6 +228,13 @@ STAMP_MISMATCH = (
 #: confidently wrong. Deliberately separate from whatever a screen chooses to
 #: display (AD-20).
 TOP_K = 3
+
+#: Why `_discard` was called, for its log line and for nothing else. The two
+#: cases leave an identical orphaned object behind, and an operator reading the
+#: warning cannot otherwise tell a write that was undone from a removal whose
+#: bytes could not follow it.
+DISCARD_ROLLED_BACK = "the write was rolled back"
+DISCARD_REMOVED = "the reference image was removed"
 
 #: Sent with the reference-image bytes and with nothing else in the product.
 #: See `read_reference_image` for why this one response needs it.
@@ -248,6 +300,101 @@ VALUES (%s, %s, %s::vector, %s, %s)
 #: whether there is one.
 _SELECT_CODE = """
 SELECT 1 FROM tile WHERE code = %s
+"""
+
+#: The same pre-flight for an *edit*, which must not collide with the Tile's own
+#: Code. Without the second arm, saving a form whose Code was never touched
+#: would answer `409 code_already_exists` against the very row being edited.
+_SELECT_CODE_ELSEWHERE = """
+SELECT 1 FROM tile WHERE code = %s AND id <> %s
+"""
+
+#: Does this id name a Tile at all. `add_tile`'s `_SELECT_CODE` reasoning, for
+#: the edit's `404`: a read, taken before tens of seconds of embedding, and
+#: never the decision — the locking read inside the transaction is.
+_SELECT_TILE = """
+SELECT 1 FROM tile WHERE id = %s
+"""
+
+#: The Tile as a caller sees it, locked for the duration of the edit.
+#:
+#: **`FOR UPDATE OF t`, not a bare `FOR UPDATE`.** The Category join is an outer
+#: one — the column is nullable in the ERD — and PostgreSQL refuses a row lock
+#: taken across the nullable side of an outer join. Naming the table is also the
+#: honest statement of intent: this edit writes `tile` and nothing else here, so
+#: locking the two reference rows would make two concurrent edits of unrelated
+#: Tiles that happen to share a Size wait on each other.
+#:
+#: Distinguishes a `404` from every other outcome by *reading*, rather than by
+#: guessing at a zero-row `UPDATE` — `api.users._SELECT_USER_FOR_UPDATE`'s
+#: argument, unchanged.
+_SELECT_TILE_FOR_UPDATE = """
+SELECT t.id, t.code, t.face_number, t.created_at, t.updated_at,
+       s.name AS size, c.name AS category
+  FROM tile t
+  JOIN tile_size s ON s.id = t.size_id
+  LEFT JOIN tile_category c ON c.id = t.category_id
+ WHERE t.id = %s
+   FOR UPDATE OF t
+"""
+
+#: The same shape without the lock, keyed on the Code.
+#:
+#: **Equality, never a pattern.** `LIKE`, `ILIKE` and `%` are Story 2.5's
+#: substring search, and the difference is not a nicety: a prefix match that
+#: returned "the" Tile would answer one of several and the Administrator would
+#: edit whichever row sorted first.
+_SELECT_TILE_BY_CODE = """
+SELECT t.id, t.code, t.face_number, t.created_at, t.updated_at,
+       s.name AS size, c.name AS category
+  FROM tile t
+  JOIN tile_size s ON s.id = t.size_id
+  LEFT JOIN tile_category c ON c.id = t.category_id
+ WHERE t.code = %s
+"""
+
+#: One Tile's Reference Images, in the `ReferenceImage` contract's own shape —
+#: no storage key, no byte count of the original (AD-9). Ordered so that the
+#: screen renders them the same way twice.
+_SELECT_TILE_IMAGES = """
+SELECT id, width, height, featureless, created_at
+  FROM reference_image
+ WHERE tile_id = %s
+ ORDER BY created_at, id
+"""
+
+#: **`updated_at` is set by hand.** This schema carries no BEFORE UPDATE trigger
+#: — the migration's own header says so, and `api.users` sets it the same way —
+#: and the column's DEFAULT applies to inserts only.
+#:
+#: Every column is written unconditionally rather than through `COALESCE`,
+#: because `edit_tile` has already resolved "absent means unchanged" against the
+#: locked row: a multipart body has no `null` on the wire, so the distinction
+#: cannot be pushed down into SQL the way `_UPDATE_USER` pushes it.
+_UPDATE_TILE = """
+UPDATE tile
+   SET code = %s,
+       size_id = %s,
+       category_id = %s,
+       updated_at = now()
+ WHERE id = %s
+RETURNING id, code, face_number, created_at, updated_at
+"""
+
+#: Real removal (AD-5). `reference_embedding` cascades from this by the
+#: migration's own `ON DELETE CASCADE`, so the views leave the searchable graph
+#: with the row rather than being filtered out at query time.
+#:
+#: **Both ids in the predicate**, for `_SELECT_DERIVATIVE_KEY`'s reason: an
+#: image id borrowed from another Tile must delete nothing, and a zero-row
+#: result is what `edit_tile` turns into `404 image_not_found`.
+#:
+#: The two keys come back because the objects behind them are removed *after*
+#: the commit and nothing else in the request knows them.
+_DELETE_REFERENCE_IMAGE = """
+DELETE FROM reference_image
+ WHERE id = %s AND tile_id = %s
+RETURNING source_key, derivative_key
 """
 
 _SELECT_ACTIVE_GENERATION = """
@@ -586,12 +733,24 @@ def _prepare(tile_id: UUID, accepted: shared_vision.IntakeResult) -> _Prepared:
     )
 
 
-def _discard(store: ObjectStore, keys: list[str]) -> None:
-    """Remove everything this request wrote before it failed.
+def _discard(store: ObjectStore, keys: list[str], why: str = DISCARD_ROLLED_BACK) -> None:
+    """Remove objects no row points at any more. Best effort, always.
 
-    Best effort by construction: the transaction has already rolled back, and
-    an object that resists deletion must not turn a `409` the Administrator can
-    act on into a `500` they cannot. What is left behind is a file with no row
+    Two call sites, and they are mirror images of each other — which is what
+    `why` is for. It reaches the log line and nothing else: the two cases leave
+    an identical orphan behind and an operator reading a warning has no other
+    way to tell "a write failed and was undone" from "a removal committed and
+    its bytes could not follow".
+
+    * `add_tile` and `edit_tile` call it from their `except` clause, with every
+      key the failed request wrote. The transaction has rolled back, so the
+      rows those objects belonged to do not exist.
+    * `edit_tile` calls it once more *after* its commit, with the keys of the
+      images the edit removed. The rows are gone, so the objects are next.
+
+    Best effort by construction: an object that resists deletion must not turn
+    a `409` the Administrator can act on into a `500` they cannot, nor turn a
+    committed edit into a failure. What is left behind is a file with no row
     pointing at it, which an operator can remove; the inverse — a row pointing
     at bytes that are not there — is what this exists to prevent.
 
@@ -609,9 +768,7 @@ def _discard(store: ObjectStore, keys: list[str]) -> None:
         try:
             store.delete(key)
         except Exception:
-            logger.warning(
-                "could not remove orphaned object %s after a failed add", key, exc_info=True
-            )
+            logger.warning("could not remove object %s from storage (%s)", key, why, exc_info=True)
 
 
 @router.post("/admin/tiles", response_model=Tile, status_code=status.HTTP_201_CREATED)
@@ -814,6 +971,487 @@ def add_tile(
     )
 
 
+# --- The lookup and the edit (FR-15) ------------------------------------------
+
+
+#: The three fields `PATCH /admin/tiles/{tile_id}` may move, and the only ones
+#: an edit's `details.changed` describes.
+#:
+#: Named here rather than derived from the handler's parameters, for
+#: `api.users._EDITABLE_COLUMNS`'s reason: the parameters are what a caller may
+#: *send*, and the day those two stop being the same set — a part that maps to
+#: two columns, a column written by something other than the body — a diff built
+#: off the request would silently describe the wrong thing. `face_number` is
+#: absent because nothing writes it; `updated_at` is absent because it moves on
+#: every edit and would be noise in every entry; the Reference Images are absent
+#: because they are counted separately, and a list of image ids is not something
+#: a reader of the log can do anything with.
+_EDITABLE_FIELDS = ("code", "size", "category")
+
+
+def _changed_fields(before: dict[str, Any], after: dict[str, Any]) -> dict[str, dict[str, object]]:
+    """`{field: {from, to}}` over the three fields an edit may move.
+
+    Compared value by value rather than trusting the request, exactly as
+    `api.users._changed_fields` does: an absent part means "leave it alone" and
+    a present one may carry what is already stored, so an entry claiming a
+    change that did not happen is worse than a terse one — nothing downstream
+    can tell it from a real one.
+
+    An edit that moved nothing therefore produces `{}`, which is the honest
+    record of a `PATCH` that was accepted and changed no value. Both sides are
+    the resolved, normalized names rather than the ids behind them: `45X90` is
+    what an Administrator reading the log recognises, and a `tile_size` id is
+    not.
+    """
+    return {
+        field: {"from": before[field], "to": after[field]}
+        for field in _EDITABLE_FIELDS
+        if before[field] != after[field]
+    }
+
+
+def _tile_not_found() -> ApiError:
+    """The id, or the Code, names no Tile. `404`, so the screen refetches."""
+    return _refusal(TILE_NOT_FOUND, NO_SUCH_TILE, status.HTTP_404_NOT_FOUND)
+
+
+def _supplied(part: list[str] | None) -> str | None:
+    """One text part's value, or `None` when the request did not carry it.
+
+    **The three editable parts are declared `list[str] | None` rather than
+    `str | None`, and that is not a style choice — FastAPI cannot otherwise tell
+    an absent form field from a blank one.** For a non-required `Form` field it
+    substitutes the default whenever the submitted value is the empty string, so
+    `code=` and a missing `code` arrive at the handler as the same `None`. On
+    this endpoint those two mean opposite things: absent is "leave it alone" and
+    blank is a refusal (`code`, `size`) or the `UNKNOWN` sentinel (`category`).
+    Collapsing them would mean an Administrator who cleared the Size field and
+    saved got the old Size silently back.
+
+    A *sequence* field is read straight off `form.getlist(...)`, which preserves
+    an empty value — so an absent part is `None`, a blank one is `[""]`, and the
+    distinction survives. The last value wins where a part is repeated, which is
+    what a browser does with two inputs of one name; the screen sends each part
+    once, so it never arises there.
+    """
+    if part is None:
+        return None
+    return part[-1] if part else None
+
+
+def _reference_images(conn: psycopg.Connection, tile_id: UUID) -> list[ReferenceImage]:
+    """One Tile's Reference Images in the contract's shape.
+
+    Read back rather than assembled from what this request happened to write:
+    an edit's answer is the Tile as it now stands, which is the images that
+    survived plus the images that arrived, and composing that in Python from
+    two lists is a second statement of a fact the table already holds.
+    """
+    return [
+        ReferenceImage.model_validate(row)
+        for row in conn.execute(_SELECT_TILE_IMAGES, (tile_id,)).fetchall()
+    ]
+
+
+def _removals(
+    conn: psycopg.Connection, tile_id: UUID, requested: list[str], incoming: int
+) -> list[UUID]:
+    """The image ids this edit removes, refusing the two ways it can be wrong.
+
+    **An id that is not this Tile's is a `404`, and so is one that is not a
+    UUID.** They are the same fact to the caller — the id names no Reference
+    Image of this Tile — and separating them would tell an Administrator
+    holding a borrowed id that it exists somewhere, which is exactly what
+    `read_reference_image` refuses to confirm. The refusal names neither Tile.
+
+    **A net of zero images is a `409`** (FR-7). Counted as
+    `held - removed + incoming`, so removing the only image *and* uploading its
+    replacement in one request is accepted — which is the whole reason the two
+    halves are one endpoint rather than two.
+
+    Called twice: once as a pre-flight, before any byte is embedded or stored,
+    and once inside the transaction under the Tile's own row lock. The first is
+    what makes the refusal cheap; the second is what makes it true when two
+    edits of one Tile arrive together.
+    """
+    wanted: list[UUID] = []
+    # The `set` is the membership test and the list is the answer: `requested`
+    # is whatever the caller put in the form and has no ceiling, so a linear
+    # scan per id would make the refusal quadratic in something an authenticated
+    # caller chooses. Both structures are maintained together for that reason.
+    seen: set[UUID] = set()
+    for value in requested:
+        try:
+            image_id = UUID(value)
+        except ValueError as malformed:
+            raise _refusal(IMAGE_NOT_FOUND, NO_SUCH_IMAGE, status.HTTP_404_NOT_FOUND) from malformed
+        # Deduplicated rather than refused: naming one image twice is a request
+        # for it to be gone, which is what the caller gets. Order is preserved
+        # so the `DELETE`s run in the order they were asked for.
+        if image_id not in seen:
+            seen.add(image_id)
+            wanted.append(image_id)
+
+    held = [row["id"] for row in conn.execute(_SELECT_TILE_IMAGES, (tile_id,)).fetchall()]
+    if not seen.issubset(held):
+        raise _refusal(IMAGE_NOT_FOUND, NO_SUCH_IMAGE, status.HTTP_404_NOT_FOUND)
+    if len(held) - len(wanted) + incoming < 1:
+        raise _refusal(LAST_REFERENCE_IMAGE, LAST_IMAGE, status.HTTP_409_CONFLICT)
+
+    return wanted
+
+
+@router.get("/admin/tiles/lookup", response_model=Tile)
+def lookup_tile(
+    response: Response,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    code: str = "",
+) -> Tile:
+    """One Tile by an **exact** Code. The edit screen's only door until 2.5.
+
+    **This is not Story 2.5's catalogue search and must not become it.**
+    EXPERIENCE.md reaches Edit Tile from a Catalogue row, and that list — with
+    its substring matching, its filtering and its pagination — is 2.5's whole
+    surface. Without *some* door this story would ship a screen nothing can
+    open, so this is the smallest thing that makes it usable: an equality match
+    returning one Tile or nothing. `?code=RP.CMA` answers `404` while
+    `RP.CMA.0001DJ.SM.0T` exists, and that is the behaviour, not a gap in it.
+    When the list arrives it opens the same screen by id, and this route can
+    stay or go.
+
+    **The Code is cleaned the same way the writes clean it**, so a Code pasted
+    with a trailing space finds its Tile rather than missing by a character
+    nobody can see. Case is *not* folded: `1Jk` is not `1JK` (AD-18), and
+    `clean_code` is the one statement of that rule.
+
+    The `administrator` parameter is unread: on this route the dependency is the
+    whole of its job. Nothing is recorded — nothing changed, and FR-20 covers
+    changes; an entry per lookup would bury the entries that matter.
+    """
+    response.headers.update(NO_STORE)
+
+    try:
+        wanted = clean_code(code)
+    except ValueError as invalid:
+        raise _refusal(
+            INVALID_CODE, str(invalid), status.HTTP_422_UNPROCESSABLE_CONTENT
+        ) from invalid
+
+    row = conn.execute(_SELECT_TILE_BY_CODE, (wanted,)).fetchone()
+    if row is None:
+        raise _tile_not_found()
+
+    return Tile(
+        id=row["id"],
+        code=row["code"],
+        size=row["size"],
+        category=row["category"],
+        face_number=row["face_number"],
+        reference_images=_reference_images(conn, row["id"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+@router.patch("/admin/tiles/{tile_id}", response_model=Tile)
+def edit_tile(
+    tile_id: UUID,
+    response: Response,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    store: Annotated[ObjectStore, Depends(get_object_store)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
+    code: Annotated[list[str] | None, Form()] = None,
+    size: Annotated[list[str] | None, Form()] = None,
+    category: Annotated[list[str] | None, Form()] = None,
+    remove_image_ids: Annotated[list[str] | None, Form()] = None,
+    images: Annotated[list[UploadFile] | None, File()] = None,
+) -> Tile:
+    """FR-15 — correct a Tile, and keep the index true in the same breath.
+
+    **Multipart, and an absent part means "unchanged".** The request carries
+    files, so the body is multipart and there is no `null` on the wire. A
+    present-but-blank `code` or `size` is therefore a refusal, exactly as on the
+    add, and a present-but-blank `category` resolves to the `UNKNOWN` sentinel,
+    also exactly as on the add (AD-18). The screen sends all three because its
+    form is prefilled, so the two readings never both apply to one request.
+
+    **Every new image byte goes through the same path the add uses** — the same
+    `_accept` (AD-7's intake: content sniff, ICC to sRGB at relative colorimetric
+    intent, EXIF strip, re-encode) and the same `_prepare` (AD-13's 16 views,
+    AD-17's capped derivative). Not a copy of them: a second intake here is the
+    AD-1 asymmetry one level up from the pixels, and it would not raise.
+
+    **Nothing that was not uploaded in this request is re-embedded.** Changing a
+    Code changes no pixels, and rebuilding untouched embeddings is a re-index by
+    another name — which AD-14 says is a whole new generation cut over by a
+    pointer, not something a `PATCH` does on the side.
+
+    **The order, and why removal's objects go last.**
+
+    ::
+
+        cheap refusals -> active_generation (stamp) -> tile exists (404)
+          -> remove ids are this tile's (404) -> net images >= 1 (409)
+          -> duplicate-Code pre-flight (409, fast path only)
+          -> _accept every upload -> _prepare every accepted one
+          -> store.put new objects, recording each key
+          -> BEGIN: lock the tile FOR UPDATE (404) ; re-check the removals ;
+                    UPDATE tile (UniqueViolation -> 409) ; DELETE removed images
+                    (embeddings cascade) ; INSERT new images + 16 embeddings
+                    each ; audit.record  COMMIT
+          -> delete the removed images' objects, best effort, logged
+        except BaseException: _discard(new keys); raise
+
+    Deleting a removed image's bytes *before* the commit would leave a live row
+    pointing at nothing if anything after it failed — the one state this
+    module's docstring says must never happen. After the commit the row is gone,
+    so the worst case is a file an operator can delete.
+
+    **The pre-flights are pre-flights, never the decision.** The Code check can
+    be passed by two requests at once and only `tile_code_key` can separate
+    them; the removal check is re-run inside the transaction under the Tile's
+    own row lock, because two edits each removing one of a Tile's two images
+    would otherwise both see a survivor.
+
+    Sync, not `async def`, for `add_tile`'s reason: psycopg is synchronous and
+    the embedding is CPU-bound for tens of seconds per image.
+    """
+    response.headers.update(NO_STORE)
+
+    # The cheap refusals first, as on the add: nothing a rule can reject costs a
+    # decode. Each field is validated *as supplied* here and resolved against
+    # the stored row below, so "absent" never has to mean "blank".
+    sent_code = _supplied(code)
+    sent_size = _supplied(size)
+    sent_category = _supplied(category)
+
+    new_code: str | None = None
+    if sent_code is not None:
+        try:
+            new_code = clean_code(sent_code)
+        except ValueError as invalid:
+            raise _refusal(
+                INVALID_CODE, str(invalid), status.HTTP_422_UNPROCESSABLE_CONTENT
+            ) from invalid
+
+    new_size: str | None = None
+    if sent_size is not None:
+        try:
+            new_size = clean_size(sent_size)
+        except ValueError as invalid:
+            raise _refusal(
+                INVALID_SIZE, str(invalid), status.HTTP_422_UNPROCESSABLE_CONTENT
+            ) from invalid
+
+    new_category: str | None = None
+    if sent_category is not None:
+        try:
+            # Never a refusal for being blank: a Category that cannot be
+            # recovered resolves to the UNKNOWN sentinel (AD-18).
+            new_category = clean_category(sent_category)
+        except ValueError as invalid:
+            raise _refusal(
+                INVALID_CATEGORY, str(invalid), status.HTTP_422_UNPROCESSABLE_CONTENT
+            ) from invalid
+
+    # `add_tile`'s filter, unchanged: a browser sends an empty part for a file
+    # input nobody touched. Unlike the add there is no floor of one — a
+    # metadata-only edit uploads nothing — only the ceiling.
+    uploads = [upload for upload in (images or []) if upload.filename or upload.size]
+    if len(uploads) > MAX_IMAGES_PER_REQUEST:
+        raise _refusal(TOO_MANY_IMAGES, TOO_MANY, status.HTTP_422_UNPROCESSABLE_CONTENT)
+
+    # Stripped, not merely filtered on: a Code pasted with padding is trimmed by
+    # `clean_code` a few lines above, and an id pasted the same way must not
+    # refuse the whole edit over whitespace nobody can see. A text part that is
+    # nothing but padding carries no id at all and is dropped rather than
+    # answered with a `404` about the empty string.
+    requested_removals = [
+        stripped for stripped in (value.strip() for value in remove_image_ids or []) if stripped
+    ]
+
+    # AD-14's stamp, read-only and before anything is decoded: a deployment
+    # running ahead of its re-index refuses every write, in milliseconds.
+    active_generation(conn)
+
+    if conn.execute(_SELECT_TILE, (tile_id,)).fetchone() is None:
+        # Before any decode, as the matrix requires. The locking read inside the
+        # transaction is what actually decides; this is what stops an unknown id
+        # costing a minute of CPU.
+        raise _tile_not_found()
+
+    _removals(conn, tile_id, requested_removals, len(uploads))
+
+    if new_code is not None and (
+        conn.execute(_SELECT_CODE_ELSEWHERE, (new_code, tile_id)).fetchone() is not None
+    ):
+        raise _refusal(CODE_ALREADY_EXISTS, CODE_IN_USE, status.HTTP_409_CONFLICT)
+
+    # Both loops, in this order, for `add_tile`'s reason: a request whose
+    # *second* image is corrupt is refused before the first has been embedded.
+    accepted = [_accept(upload) for upload in uploads]
+    prepared = [_prepare(tile_id, image) for image in accepted]
+
+    written: list[str] = []
+    orphaned: list[str] = []
+    try:
+        for item in prepared:
+            store.put(item.source_key, item.source)
+            written.append(item.source_key)
+            store.put(item.derivative_key, item.derivative)
+            written.append(item.derivative_key)
+
+        with conn.transaction():
+            current = conn.execute(_SELECT_TILE_FOR_UPDATE, (tile_id,)).fetchone()
+            if current is None:
+                # Removed between the pre-flight and this lock. Distinguished by
+                # a read rather than by a zero-row `UPDATE`, because a zero-row
+                # `UPDATE` cannot tell "no such id" from anything else.
+                raise _tile_not_found()
+
+            # Re-checked under the lock. See `_removals`.
+            removals = _removals(conn, tile_id, requested_removals, len(prepared))
+
+            tile_code = current["code"] if new_code is None else new_code
+            size_name = current["size"] if new_size is None else new_size
+
+            size_row = conn.execute(_RESOLVE_SIZE, (size_name,)).fetchone()
+            assert size_row is not None
+
+            # **An absent part means unchanged, and that has to hold for a
+            # column that is NULL.** `category_id` is nullable in the ERD, so a
+            # Tile can be stored with no Category at all — and
+            # `clean_category(None)` is the `UNKNOWN` sentinel, so resolving the
+            # stored value unconditionally would refile such a Tile under the
+            # sentinel on any edit that merely renamed it, and `changed` would
+            # report a move nobody asked for. Resolved only when the caller
+            # actually sent a Category; otherwise the stored value is written
+            # back as it stands, sentinel or NULL alike.
+            category_name: str | None
+            category_id: UUID | None
+            if new_category is None and current["category"] is None:
+                category_name = None
+                category_id = None
+            else:
+                category_name = current["category"] if new_category is None else new_category
+                category_row = conn.execute(_RESOLVE_CATEGORY, (category_name,)).fetchone()
+                assert category_row is not None
+                category_id = category_row["id"]
+
+            try:
+                tile_row = conn.execute(
+                    _UPDATE_TILE,
+                    (tile_code, size_row["id"], category_id, tile_id),
+                ).fetchone()
+            except pg_errors.UniqueViolation as clash:
+                # The pre-flight above is the fast path; this is the decision.
+                # Narrowed to the one index by name — a clash this endpoint
+                # cannot explain is re-raised and answered as a 500, which is
+                # honest, rather than pointing at a Code that is fine.
+                if clash.diag.constraint_name != CODE_UNIQUE_INDEX:
+                    raise
+                raise _refusal(
+                    CODE_ALREADY_EXISTS, CODE_IN_USE, status.HTTP_409_CONFLICT
+                ) from clash
+            # The id was found and locked above, so the statement cannot have
+            # matched nothing.
+            assert tile_row is not None
+
+            for image_id in removals:
+                gone = conn.execute(_DELETE_REFERENCE_IMAGE, (image_id, tile_id)).fetchone()
+                assert gone is not None, "the locked removal check found this image"
+                # Recorded, not deleted: the bytes go after the commit.
+                orphaned.append(gone["source_key"])
+                orphaned.append(gone["derivative_key"])
+
+            if prepared:
+                # Only when there is something to embed. A rename opens no
+                # generation and needs no model artifact — which is the whole
+                # difference between correcting a typo and re-indexing.
+                generation_id = ensure_active_generation(conn)
+                for item in prepared:
+                    conn.execute(
+                        _INSERT_REFERENCE_IMAGE,
+                        (
+                            item.image_id,
+                            tile_id,
+                            item.source_key,
+                            item.derivative_key,
+                            item.sha256,
+                            item.width,
+                            item.height,
+                            len(item.source),
+                            len(item.derivative),
+                            item.pixel_std,
+                            item.featureless,
+                        ),
+                    )
+
+                    # 16 rows, one per view, never pooled (AD-13).
+                    with conn.cursor() as cursor:
+                        cursor.executemany(
+                            _INSERT_EMBEDDING,
+                            [
+                                (item.image_id, generation_id, vector, kind, index)
+                                for kind, index, vector in item.embeddings
+                            ],
+                        )
+
+            stored_images = _reference_images(conn, tile_id)
+
+            # FR-20. The Code is a snapshot in `details`, never a foreign key
+            # (AD-10), and it is the Code as it *now* stands — `changed` carries
+            # the one it had. Compared between the locked read and the
+            # `UPDATE`'s own `RETURNING`, so the entry describes what landed
+            # rather than what was asked for.
+            audit.record(
+                conn,
+                action=AuditAction.CATALOGUE_TILE_EDITED,
+                actor_id=administrator.id,
+                actor_email=administrator.email,
+                source_ip=source_ip,
+                details={
+                    "tile_id": str(tile_id),
+                    "code": tile_row["code"],
+                    "changed": _changed_fields(
+                        {
+                            "code": current["code"],
+                            "size": current["size"],
+                            "category": current["category"],
+                        },
+                        {"code": tile_row["code"], "size": size_name, "category": category_name},
+                    ),
+                    "images_added": len(prepared),
+                    "images_removed": len(removals),
+                },
+            )
+    except BaseException:
+        # Every failure, not only `Exception`, and only the objects *this*
+        # request wrote. The removed images' objects are deliberately not in
+        # this list: their rows are still there.
+        _discard(store, written)
+        raise
+
+    # Committed. The rows are gone, so the bytes can follow — best effort and
+    # logged, because a file nothing points at is an operator's tidy-up and a
+    # failed `DELETE` here must not turn a successful edit into a `500`.
+    _discard(store, orphaned, DISCARD_REMOVED)
+
+    return Tile(
+        id=tile_row["id"],
+        code=tile_row["code"],
+        size=size_name,
+        category=category_name,
+        face_number=tile_row["face_number"],
+        reference_images=stored_images,
+        created_at=tile_row["created_at"],
+        updated_at=tile_row["updated_at"],
+    )
+
+
 # --- The image read (AD-9, AD-17) ---------------------------------------------
 
 
@@ -862,9 +1500,7 @@ def read_reference_image(
         # belongs to another tile". They are the same fact to a caller holding
         # a pair that names nothing, and telling them apart would confirm which
         # ids exist.
-        raise _refusal(
-            IMAGE_NOT_FOUND, "No reference image has that id.", status.HTTP_404_NOT_FOUND
-        )
+        raise _refusal(IMAGE_NOT_FOUND, NO_SUCH_IMAGE, status.HTTP_404_NOT_FOUND)
 
     try:
         data = store.get(row["derivative_key"])
@@ -873,8 +1509,6 @@ def read_reference_image(
         # store and the database have diverged, and answered as a 404 rather
         # than a 500 — there is genuinely nothing to serve.
         logger.error("reference image %s has no stored derivative", image_id)
-        raise _refusal(
-            IMAGE_NOT_FOUND, "No reference image has that id.", status.HTTP_404_NOT_FOUND
-        ) from missing
+        raise _refusal(IMAGE_NOT_FOUND, NO_SUCH_IMAGE, status.HTTP_404_NOT_FOUND) from missing
 
     return Response(content=data, media_type="image/jpeg", headers={**NO_STORE, **NO_SNIFF})

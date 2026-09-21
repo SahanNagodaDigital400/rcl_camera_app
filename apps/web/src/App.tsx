@@ -10,6 +10,7 @@ import { AccountSettingsScreen } from './screens/AccountSettingsScreen';
 import { AddTileScreen } from './screens/AddTileScreen';
 import { AuditLogScreen } from './screens/AuditLogScreen';
 import { CreateUserScreen } from './screens/CreateUserScreen';
+import { EditTileScreen } from './screens/EditTileScreen';
 import { EditUserScreen } from './screens/EditUserScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
 import { LoginScreen } from './screens/LoginScreen';
@@ -22,22 +23,22 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 /**
  * Which surface inside the shell is showing.
  *
- * Seven values because seven surfaces exist. This is not a router and is not
+ * Eight values because eight surfaces exist. This is not a router and is not
  * the beginning of one: EXPERIENCE.md's nav is role-conditional, spans six
  * top-level surfaces and changes shape at a breakpoint, and three of those six
- * do not exist yet. Three of them do, and each has its own door on the home
+ * do not exist yet. Four of them do, and each has its own door on the home
  * panel: `'users'` is EXPERIENCE.md line 33's User List, `'audit'` is line 38's
- * Audit Log, and `'add-tile'` is Story 2.1's half of line 36's Add/Edit Tile —
- * all standing on the home panel until there is a nav to hold them. Create user
- * is not a door: line 34 reaches it from the list's "+ Add user", and
- * `'edit-user'` from a row's own Edit control on the same line.
+ * Audit Log, and `'add-tile'` and `'edit-tile'` are the two halves of line 36's
+ * Add/Edit Tile — all standing on the home panel until there is a nav to hold
+ * them. Create user is not a door: line 34 reaches it from the list's "+ Add
+ * user", and `'edit-user'` from a row's own Edit control on the same line.
  *
- * **Add tile stands on the home panel rather than behind a Catalogue list**
- * because line 36 reaches it from "+ Add Tile" *or* from a Catalogue row, and
- * the Catalogue surface is Story 2.5's. A door of its own now becomes that
- * list's "+ Add Tile" then, which is one line to move rather than a screen to
- * rebuild. When the nav arrives this becomes whatever it needs; until then it
- * is one piece of state and a swap.
+ * **Both tile surfaces stand on the home panel rather than behind a Catalogue
+ * list** because line 36 reaches Add Tile from "+ Add Tile" *or* from a
+ * Catalogue row, and Edit Tile from a row alone — and the Catalogue surface is
+ * Story 2.5's. Until it exists, Edit tile finds its own tile by an exact Code;
+ * when the list arrives it opens the same screen from a row, which is a prop to
+ * pass rather than a screen to rebuild.
  */
 type Section =
   | 'home'
@@ -46,18 +47,19 @@ type Section =
   | 'users'
   | 'edit-user'
   | 'audit'
-  | 'add-tile';
+  | 'add-tile'
+  | 'edit-tile';
 
 /**
- * Which of the ten screens the session state selects.
+ * Which of the eleven screens the session state selects.
  *
  * Named separately from `SessionStatus` because the two are not the same shape:
  * `'signed-in'` covers the forced-change screen, the shell, Account Settings,
- * Users, Create user, Edit user, the Audit log and Add tile, and the moves
- * between them are screen swaps that the status cannot see. Focus management keys off this,
- * not off the status — which is why the section is folded in here rather than
- * handled beside it: swapping the home panel for another surface unmounts
- * whatever had focus exactly as the other swaps do.
+ * Users, Create user, Edit user, the Audit log, Add tile and Edit tile, and the
+ * moves between them are screen swaps that the status cannot see. Focus
+ * management keys off this, not off the status — which is why the section is
+ * folded in here rather than handled beside it: swapping the home panel for
+ * another surface unmounts whatever had focus exactly as the other swaps do.
  */
 type Screen =
   | 'loading'
@@ -69,7 +71,8 @@ type Screen =
   | 'users'
   | 'edit-user'
   | 'audit'
-  | 'add-tile';
+  | 'add-tile'
+  | 'edit-tile';
 
 /**
  * Whether `role` can reach `section` at all.
@@ -88,7 +91,8 @@ function reachableBy(section: Section, role: Role | null): boolean {
     section === 'users' ||
     section === 'edit-user' ||
     section === 'audit' ||
-    section === 'add-tile'
+    section === 'add-tile' ||
+    section === 'edit-tile'
   ) {
     return role === 'admin';
   }
@@ -121,6 +125,7 @@ function currentScreen(
   if (section === 'users') return reachableBy(section, user.role) ? 'users' : 'shell';
   if (section === 'audit') return reachableBy(section, user.role) ? 'audit' : 'shell';
   if (section === 'add-tile') return reachableBy(section, user.role) ? 'add-tile' : 'shell';
+  if (section === 'edit-tile') return reachableBy(section, user.role) ? 'edit-tile' : 'shell';
   if (section === 'create-user') return reachableBy(section, user.role) ? 'create-user' : 'shell';
   if (section === 'edit-user') {
     // The row being edited is part of what makes this section renderable, so it
@@ -425,6 +430,20 @@ function Gate(): JSX.Element {
     );
   }
 
+  if (screen === 'edit-tile') {
+    // Inside the shell, in place of the home panel, exactly as Add tile is.
+    //
+    // Back goes to the home panel rather than to a list, because the Catalogue
+    // list is Story 2.5's and there is nowhere else this was opened from. When
+    // that list arrives it opens this screen from a row and Back returns to it.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <EditTileScreen onBack={() => showSection('home')} />
+      </AppShell>
+    );
+  }
+
   if (screen === 'edit-user' && editing !== null) {
     // `editing !== null` is unreachable at runtime — `currentScreen` already
     // answers `'users'` for an `'edit-user'` section with no row — and it is here
@@ -505,29 +524,32 @@ function Gate(): JSX.Element {
       </p>
       {/* The doors to the admin surfaces, role-conditional as EXPERIENCE.md
           line 18 requires: a Staff user never sees an entry they cannot use.
-          These are three of EXPERIENCE.md's six nav entries — line 33's User
-          List, line 38's Audit Log and line 36's Add Tile — standing in for a
-          nav that does not exist yet; the other three surfaces still do not
-          exist either. Create user is reached from the list's "+ Add user",
-          which is where line 34 reaches it from, and Edit user from a row's own
-          control, so neither is a door here.
+          These are four of EXPERIENCE.md's six nav entries — line 33's User
+          List, line 38's Audit Log and both halves of line 36's Add/Edit Tile —
+          standing in for a nav that does not exist yet; the other surfaces
+          still do not exist either. Create user is reached from the list's
+          "+ Add user", which is where line 34 reaches it from, and Edit user
+          from a row's own control, so neither is a door here.
 
-          Add tile is a door rather than a control on a Catalogue list because
-          that list is Story 2.5's; line 36 reaches Add Tile from "+ Add Tile"
-          as well as from a row, and this is that entry until there is a list to
-          hang it on.
+          Add tile and Edit tile are doors rather than controls on a Catalogue
+          list because that list is Story 2.5's; line 36 reaches Add Tile from
+          "+ Add Tile" as well as from a row, and Edit Tile from a row alone —
+          so until the list exists Edit tile finds its own tile by an exact
+          Code, and these are the entries that reach both.
 
           A convenience only. The server refuses a Staff caller at
-          `GET /admin/users`, `GET /admin/audit` and `POST /admin/tiles`
-          regardless of what this renders (AGENTS.md Policy: authorization is
-          never gated by what the UI hides), and the cached `user` read here is a
-          render cache and never a decision. */}
+          `GET /admin/users`, `GET /admin/audit`, `POST /admin/tiles`,
+          `GET /admin/tiles/lookup` and `PATCH /admin/tiles/{id}` regardless of
+          what this renders (AGENTS.md Policy: authorization is never gated by
+          what the UI hides), and the cached `user` read here is a render cache
+          and never a decision. */}
       {user.role === 'admin' && (
         // One guard for the whole group, not one each: the role rule is a
         // property of the group rather than of any one button, and two copies
         // of it are two places a further entry could be added under the wrong
-        // condition. Story 2.1 added the third entry under it and needed no
-        // second condition, which is the argument holding. It is also the seam the real nav replaces — the
+        // condition. Story 2.1 added the third entry under it and Story 2.2 the
+        // fourth, neither needing a second condition, which is the argument
+        // holding. It is also the seam the real nav replaces — the
         // fragment becomes that nav's children, and the condition becomes
         // whether the Admin section is rendered at all.
         <>
@@ -539,6 +561,13 @@ function Gate(): JSX.Element {
           </button>
           <button className={styles.addTile} type="button" onClick={() => showSection('add-tile')}>
             Add tile
+          </button>
+          <button
+            className={styles.editTile}
+            type="button"
+            onClick={() => showSection('edit-tile')}
+          >
+            Edit tile
           </button>
         </>
       )}
