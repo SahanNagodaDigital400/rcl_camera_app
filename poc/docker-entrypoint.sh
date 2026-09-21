@@ -11,6 +11,12 @@ if [ ! -f index/meta.json ]; then
         echo "  Build it with 'make index', pack it with" >&2
         echo "  'tar -czf index.tgz -C index meta.json vectors.npz refs thumbs'," >&2
         echo "  upload that, and set INDEX_URL to its URL." >&2
+        # Names only, never values -- this goes to the deploy log, and the app's
+        # other variables may be secrets. If INDEX_URL is absent from this list
+        # the variable never reached the container: check its scope (a build-time
+        # variable is invisible at run time), the spelling of the key, and that
+        # it is on this component.
+        echo "  env visible to the container: $(env | cut -d= -f1 | sort | tr '\n' ' ')" >&2
         exit 1
     fi
     # Query string stripped: a signed URL carries credentials, and this line
