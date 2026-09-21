@@ -60,9 +60,16 @@ import type { Role, User } from '@rocell/schema/user';
  * - **No unlock.** FR-4's lock shows on the Users list, and nothing anywhere in
  *   the product ends one early — no story in Epic 1 owns that (DW-64). A rename
  *   carries the lock with the account rather than clearing it.
- * - **No deactivate and no delete**, and therefore no confirmation dialog: those
- *   verbs and the dialog EXPERIENCE.md describes for them are Story 1.11's.
- *   Editing is not destructive and gets no destructive treatment.
+ * - **Not on this screen: deactivate, delete, and the confirmation dialog that
+ *   guards them.** Since Story 1.11 all three exist — the verbs are row-end
+ *   controls on `UserListScreen`, beside the Edit control that opens *this*
+ *   screen, and the dialog EXPERIENCE.md describes for them is
+ *   `components/ConfirmDialog`. They stay off this screen on purpose: editing
+ *   is not destructive and gets no destructive treatment, and a screen that
+ *   both renamed an account and deleted it would put the irreversible verb one
+ *   mis-click from the routine one. `edit-user.test.tsx` asserts
+ *   `queryByRole('dialog')` is null here, which is the assertion that the
+ *   dialog did not leak across.
  * - **No audit entry.** Story 1.12 owns the append-only log and is owed one by
  *   the endpoint behind this screen; no private log path is built meanwhile.
  *
@@ -212,10 +219,13 @@ export function EditUserScreen({ user, onSaved, onBack }: EditUserScreenProps): 
   /**
    * Whether Back has already warned about unsaved edits.
    *
-   * One warning, then the next press leaves (EXPERIENCE.md line 90, DW-81). A
-   * dialog would be a modal system this product does not have and which
-   * Story 1.11 owns for the destructive case; an inline warning plus a second
-   * press is the same guarantee without one.
+   * One warning, then the next press leaves (EXPERIENCE.md line 90, DW-81).
+   * Story 1.11 has since built the product's modal — `components/ConfirmDialog`
+   * — and this deliberately still does not use it: that dialog is for a
+   * destructive action, and losing an unsaved rename is not one. An inline
+   * warning plus a second press is the same guarantee without a modal, and it
+   * keeps EXPERIENCE.md line 42's one level of depth for the verb that needs
+   * it.
    */
   const [warned, setWarned] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);

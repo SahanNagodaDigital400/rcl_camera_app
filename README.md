@@ -134,8 +134,8 @@ One caveat, and it is the only one: the counter follows the address *into* the a
 out of it, so correcting a typo onto an address that somebody had already been guessing passwords
 at hands that lockout to the account. There is no admin unlock anywhere in Epic 1, so the whole of
 the recovery is waiting the 15 minutes out. Provisioning a second account under a different address
-still works, and now leaves a row you can delete once Story 1.11 lands rather than one nothing can
-reach.
+still works too, and the row it leaves behind can now be **deleted** — which releases its address
+for reuse as well.
 
 The credential is good for **72 hours**, or until it is claimed — whichever comes first. The new
 user can sign in with it straight away — no migration, no console command, no developer — and the
@@ -165,9 +165,8 @@ reads "Never" until the person first signs in** — the word rather than an empt
 read as a value that failed to load — so a credential that was handed over and never used is
 visible at a glance. A lockout shows on that account's status as a "Locked until" line; as
 everywhere else the lock clears itself on its own, and **there is still no control anywhere that
-ends one early — no story in Epic 1 owns an admin unlock at all.** Each row ends in an **Edit**
-control, and that is the only verb on a row: deactivating and deleting are Story 1.11's, and until
-they land the rest of the list is something to read.
+ends one early — no story in Epic 1 owns an admin unlock at all.** Each row ends in three controls:
+**Edit**, **Deactivate** (or **Activate**, on an account that is already off) and **Delete**.
 
 **Edit** opens that account's name, email and role, pre-filled, and saves the fields you actually
 changed — press Save with nothing edited and nothing is sent. The role takes effect on that
@@ -181,6 +180,38 @@ lockout counter with it**: a locked account is still locked at its new address, 
 way around a lockout. And, as with everything else in Epic 1 so far, **nothing is written down
 about who changed what**: the only trace is the row's own `updated_at`, which says neither. The
 audit log that answers it is Story 1.12.
+
+**Deactivate** takes an account's access away **immediately**. Not at their next sign-in — on their
+very next request: somebody using the app at that moment is signed out where they stand, on every
+device, and every session they hold is deleted rather than merely ignored. The account itself stays
+on the list, marked Deactivated, keeping its name, address, role and password. **Activate** gives
+the access back and nothing else: no session returns, no credential is reissued and no password is
+set, so the person signs in again with what they already had. A lockout is unaffected by either —
+neither verb is an unlock.
+
+**Delete** removes the account for good. There is no undo, no archive and no "deleted" state to
+find it in: the row is gone, its sessions go with it, and the email address becomes free to use for
+a new account. The one thing a delete does *not* remove is the address's failed-sign-in counter. A
+locked address stays locked, so deleting an account and recreating it is not a way around a
+lockout — which is the same reason changing an address carries the lock with it.
+
+**Deactivate and Delete ask first; Activate does not.** Pressing either destructive verb opens a
+dialog naming the person and saying what happens to them — never a bare "Are you sure?" — and
+nothing is written until you confirm; Cancel, `Escape` or a click outside close it having done
+nothing. **Activate** is the undo rather than the damage, so it fires on the one press and the row
+updates in place; a failure still lands in the same dialog, as a refusal. **And both destructive
+verbs are refused on the last remaining active Administrator.** Deactivating or deleting the only
+active Administrator left would leave the product with nobody who can administer it, so the dialog
+opens *as* the refusal, with no button to press: make somebody else an Administrator, or activate
+one, first. The refusal is the server's, not
+the screen's — the API refuses the same operation with the same rule however it is reached, exactly
+as it already refuses the demotion that would do the same thing by a different verb. Doing any of
+this to **your own** account is allowed while another active Administrator exists; the app drops to
+the login screen on its next request.
+
+As with everything else in Epic 1, **nothing is written down about who did any of it**. A
+deactivation and an activation leave the row's `updated_at` and nothing more; a delete leaves no
+trace at all. The audit log that answers it is Story 1.12.
 
 **A forgotten password has no self-service path at all.** There is no reset link, no reset email and
 no mail transport anywhere in the product — the app sends no email, by design, and a test fails the

@@ -141,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_five_auth_routes_health_and_the_two_admin_routes() -> None:
+def test_the_route_table_is_the_five_auth_routes_health_and_the_four_admin_paths() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -180,6 +180,22 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_two_admin_routes
     # Administrator-only through the same `require_administrator` every route
     # under `/admin/` declares.
     #
+    # `/admin/users/{user_id}/deactivate` and `/admin/users/{user_id}/activate`
+    # (Story 1.11, FR-13) are two more **new paths**, and a route that *removes*
+    # access is the furthest thing there is from a registration surface: neither
+    # takes a request body at all, so there is no shape of request to either one
+    # that names a person, an address or a password. They act on an id that must
+    # already be in the table — an id that names no row is a `404` — and the most
+    # either can do is flip a column on an account an Administrator created
+    # earlier through the collection above.
+    #
+    # Story 1.11's third verb, `DELETE /admin/users/{user_id}`, adds a **method**
+    # to the path Story 1.10 already registered and so does not change this set.
+    # Worth stating rather than leaving to inference: this guard is about paths,
+    # and a reader counting routes against it would come up short. What makes
+    # the delete safe here is the same thing twice over — it carries no body,
+    # and it can only ever remove a row.
+    #
     # The seeded Administrator (`infra/rocell_infra/seed.py`) is still the only
     # row written with no Administrator behind it, and it is written by the
     # migration runner outside the application entirely.
@@ -192,6 +208,8 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_two_admin_routes
         "/auth/password/change",
         "/admin/users",
         "/admin/users/{user_id}",
+        "/admin/users/{user_id}/deactivate",
+        "/admin/users/{user_id}/activate",
     }
 
 

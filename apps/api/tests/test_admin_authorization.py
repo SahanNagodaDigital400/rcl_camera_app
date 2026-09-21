@@ -60,8 +60,19 @@ CREATE_USER = "/admin/users"
 
 #: The member under it, added by Story 1.10: `PATCH` edits one account's name,
 #: email or role (FR-12). A second *path* rather than a third method on the one
-#: above, so the route table below states two paths and three routes.
+#: above. Story 1.11 hung `DELETE` on the same path — removing an account is the
+#: member resource's own verb, and inventing `/admin/users/{user_id}/delete` for
+#: it would be a second path naming one row.
 EDIT_USER = "/admin/users/{user_id}"
+
+#: Story 1.11's two state verbs (FR-13). Sub-resources rather than methods,
+#: because neither is a representation of the member: `POST .../deactivate`
+#: takes access away and revokes every live session with it, and
+#: `POST .../activate` gives the flag back and nothing else. Both carry no
+#: request body at all, which is what keeps `PATCH`'s three-column contract
+#: closed — a body sending `{"active": false}` is still refused there.
+DEACTIVATE_USER = "/admin/users/{user_id}/deactivate"
+ACTIVATE_USER = "/admin/users/{user_id}/activate"
 
 LOGIN = "/auth/login"
 
@@ -421,6 +432,70 @@ def test_the_edit_route_refuses_a_staff_caller_before_the_body_is_validated(
     assert response.json()["error"]["code"] == ADMINISTRATOR_REQUIRED
 
 
+def test_the_destructive_routes_refuse_a_staff_caller_and_write_nothing(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    # Story 1.11's three routes, through the same dependency, asserted on the
+    # *live* routes as well as on the throwaway one above. A route that forgot
+    # the dependency would be caught by the route-table guard and would **not**
+    # be caught by any behavioural test unless one existed — and these are the
+    # first routes in the product a Staff caller could use to remove somebody
+    # else's access.
+    #
+    # One test over the three rather than three near-identical ones: the claim
+    # is the same claim, and the loop states it once with the route named in
+    # every assertion message.
+    caller = make_user(role=Role.STAFF)
+    _sign_in(client, caller)
+
+    for label, call in (
+        ("deactivate", lambda target_id: client.post(f"/admin/users/{target_id}/deactivate")),
+        ("activate", lambda target_id: client.post(f"/admin/users/{target_id}/activate")),
+        ("delete", lambda target_id: client.delete(f"/admin/users/{target_id}")),
+    ):
+        # A fresh target per verb, so a delete that leaked through could not be
+        # mistaken for a refusal by the next iteration finding nothing to read.
+        target = make_user(role=Role.STAFF, name="Kasun Perera")
+        # Read before the refusal as well as after, so "writes nothing" is a
+        # comparison rather than a restatement of what the fixture created.
+        before = conn.execute("SELECT * FROM users WHERE id = %s", (target.id,)).fetchone()
+        assert before is not None
+
+        response = call(target.id)
+
+        assert response.status_code == 403, label
+        assert response.json()["error"]["code"] == ADMINISTRATOR_REQUIRED, label
+
+        after = conn.execute("SELECT * FROM users WHERE id = %s", (target.id,)).fetchone()
+        assert after is not None, f"{label} deleted the row it was refused on"
+        # Every column, `updated_at` included. Naming only `active` would leave
+        # the timestamp unasserted — and a handler that ran far enough to touch
+        # it before being refused is a handler whose authorization is not a
+        # dependency, which is the whole claim this test makes.
+        assert dict(after) == dict(before), label
+
+
+def test_the_destructive_routes_refuse_a_staff_caller_before_any_row_is_read(
+    client: TestClient, make_user: MakeUser
+) -> None:
+    # None of the three takes a body, so the ordering the `POST`/`PATCH` tests
+    # above make with an empty body is made here with an id that names no row: a
+    # handler that ran would answer `404`, and the dependency answers `403`
+    # first. That difference is the whole of "the authorization is a dependency,
+    # never a line in the handler".
+    caller = make_user(role=Role.STAFF)
+    _sign_in(client, caller)
+    missing = "00000000-0000-4000-8000-000000000000"
+
+    for label, response in (
+        ("deactivate", client.post(f"/admin/users/{missing}/deactivate")),
+        ("activate", client.post(f"/admin/users/{missing}/activate")),
+        ("delete", client.delete(f"/admin/users/{missing}")),
+    ):
+        assert response.status_code == 403, label
+        assert response.json()["error"]["code"] == ADMINISTRATOR_REQUIRED, label
+
+
 # --- The guard that keeps it declared -----------------------------------------
 
 
@@ -432,27 +507,34 @@ def test_the_admin_route_table_is_not_empty() -> None:
     assert _admin_routes(create_app()) != []
 
 
-def test_the_admin_route_table_is_the_three_routes_the_product_serves() -> None:
+def test_the_admin_route_table_is_the_six_routes_the_product_serves() -> None:
     # The stricter half, separated from the vacuity guard above because it is a
     # different claim with a different lifetime: this one is *meant* to fail the
     # moment a story adds a route under `/admin/` — Story 1.9 added
     # `GET /admin/users`, Story 1.10 added `PATCH /admin/users/{user_id}`, and
-    # 1.11 will add its own — and its failure means "update this list", not "the
-    # guards above stopped guarding".
+    # Story 1.11 added the three FR-13 verbs — and its failure means "update this
+    # list", not "the guards above stopped guarding".
     #
-    # Everything else in this section covers the new route without being touched,
+    # Everything else in this section covers a new route without being touched,
     # which is the property these guards were written for: both direction
     # guards, the two negative controls and the gate-chaining test are statements
-    # about the route *table*, so a third route joins them by existing.
+    # about the route *table*, so a sixth route joins them by existing.
     #
     # Compared **sorted** on both sides, so the assertion states which routes are
     # served and not the order FastAPI happens to have registered them in: with
-    # two methods on one path, declaration order inside `api/users.py` would
-    # otherwise be a thing this file silently depends on.
+    # two methods on one path twice over, declaration order inside `api/users.py`
+    # would otherwise be a thing this file silently depends on.
     routes = _admin_routes(create_app())
 
     assert sorted(f"{method} {path}" for method, path, _ in routes) == sorted(
-        [f"GET {CREATE_USER}", f"POST {CREATE_USER}", f"PATCH {EDIT_USER}"]
+        [
+            f"GET {CREATE_USER}",
+            f"POST {CREATE_USER}",
+            f"PATCH {EDIT_USER}",
+            f"DELETE {EDIT_USER}",
+            f"POST {DEACTIVATE_USER}",
+            f"POST {ACTIVATE_USER}",
+        ]
     )
 
 

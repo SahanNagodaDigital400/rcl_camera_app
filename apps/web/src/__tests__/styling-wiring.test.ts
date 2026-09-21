@@ -90,6 +90,27 @@ function rulesFor(css: string, className: string): string[] {
     .map((block) => block[2] ?? '');
 }
 
+/**
+ * The selector group *and* the body of the first rule naming `className`.
+ *
+ * `rulesFor` throws the selector away, which is fine when the claim is about
+ * the declarations. It is not fine when the claim is that some *other* selector
+ * shares the rule — a grouped selector is the only thing carrying the rule to
+ * the elements that never name the class.
+ */
+function ruleGroupFor(css: string, className: string): [string, string] {
+  const block = [...css.matchAll(/([^{}]*)\{([^}]*)\}/g)].find((candidate) =>
+    new RegExp(String.raw`(^|[\s,])\.${className}(?![\w-])`).test(candidate[1] ?? ''),
+  );
+
+  expect(block, `no rule found for .${className}`).toBeTruthy();
+  // The selector capture runs from the previous `}`, so it carries whatever
+  // comment sits above the rule — and these stylesheets argue for their rules
+  // at length, in prose with commas in it. Stripped, so a caller may split the
+  // group on `,` and get selectors rather than sentence fragments.
+  return [(block?.[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, '').trim(), block?.[2] ?? ''];
+}
+
 /** The value of one declaration inside a rule body. */
 function declaration(body: string, property: string): string {
   const value = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`, 'm').exec(body)?.[1]?.trim();
@@ -328,20 +349,155 @@ describe('a rejection is written in the colour the matrix specifies', () => {
   });
 
   it.each([
-    ['LoginScreen', 'LoginScreen.tsx'],
-    ['ForcedPasswordChangeScreen', 'ForcedPasswordChangeScreen.tsx'],
-    ['AccountSettingsScreen', 'AccountSettingsScreen.tsx'],
-    ['CreateUserScreen', 'CreateUserScreen.tsx'],
-    ['EditUserScreen', 'EditUserScreen.tsx'],
-    ['UserListScreen', 'UserListScreen.tsx'],
-  ])('is the class %s\'s alert element actually carries', (_label, file) => {
+    ['LoginScreen', join('screens', 'LoginScreen.tsx'), 'error'],
+    ['ForcedPasswordChangeScreen', join('screens', 'ForcedPasswordChangeScreen.tsx'), 'error'],
+    ['AccountSettingsScreen', join('screens', 'AccountSettingsScreen.tsx'), 'error'],
+    ['CreateUserScreen', join('screens', 'CreateUserScreen.tsx'), 'error'],
+    ['EditUserScreen', join('screens', 'EditUserScreen.tsx'), 'error'],
+    ['UserListScreen', join('screens', 'UserListScreen.tsx'), 'error'],
+    // Widened past `screens/` by Story 1.11: the confirmation dialog is a
+    // component, and its refusal state is the one alert in the product that is
+    // not on a screen at all. Its alert class is `body` rather than `error`
+    // because the same element carries the consequence sentence in the confirm
+    // state — one node, two states, and only the refusal is announced.
+    ['ConfirmDialog', join('components', 'ConfirmDialog.tsx'), 'body'],
+  ])('is the class %s\'s alert element actually carries', (_label, file, className) => {
     // The rules above are inert if the element points somewhere else. The
-    // dangling-reference check upstream proves `styles.error` resolves to a
-    // declared class; this proves it is the class on the live region.
-    const screen = read(join(SRC, 'screens', file));
+    // dangling-reference check upstream proves the class resolves to a declared
+    // one; this proves it is the class on the live region.
+    //
+    // **Matched on one element, not as two independent substrings.** A file may
+    // carry the same class on more than one node — `ConfirmDialog` puts
+    // `styles.body` on both its alert paragraph and its non-alert one — so two
+    // `toContain` calls pass with the class and the role on different elements,
+    // which is precisely the arrangement this check exists to catch. `[^<>]*`
+    // is the "same tag" constraint: no element boundary may sit between them.
+    const source = read(join(SRC, file));
+    const attribute = String.raw`className=\{styles\.${className}\}`;
+    const onOneElement = new RegExp(
+      `(?:${attribute}[^<>]*role="alert")|(?:role="alert"[^<>]*${attribute})`,
+    );
 
-    expect(screen).toContain('className={styles.error}');
-    expect(screen).toContain('role="alert"');
+    expect(
+      onOneElement.test(source),
+      `${_label} must carry styles.${className} and role="alert" on the same element`,
+    ).toBe(true);
+  });
+});
+
+describe('the confirmation dialog paints DESIGN.md\'s confirmation-dialog block', () => {
+  // The product's first modal, and the first reference to `--scrim` — declared
+  // in `tokens.css` for exactly this and pointed at by nothing until now.
+  // Nothing else in the suite can see any of it: `vite.config.ts` sets
+  // `css: false`, so jsdom applies no stylesheet and there is no computed style
+  // to read.
+  const css = (): string => read(join(SRC, 'components', 'ConfirmDialog.module.css'));
+
+  it('lays the scrim over the whole viewport in the declared scrim colour', () => {
+    // A scrim the app bar sits on top of is not a scrim, so `fixed` and the
+    // stacking level are as load-bearing as the colour. Point `background` at
+    // any other token and the dialog floats over a fully usable page with every
+    // render test still green.
+    const scrim = rule(css(), '.scrim');
+
+    expect(declaration(scrim, 'background')).toBe('var(--scrim)');
+    expect(declaration(scrim, 'position')).toBe('fixed');
+    expect(declaration(scrim, 'z-index')).toBe('var(--z-modal)');
+  });
+
+  it('gives the panel the surface and the sheet radius DESIGN.md names', () => {
+    // `{colors.surface}` and `{rounded.lg}` — DESIGN.md reserves the large
+    // radius for a full-screen sheet, which is what this becomes at phone
+    // width.
+    const panel = rule(css(), '.panel');
+
+    expect(declaration(panel, 'background')).toBe('var(--color-surface)');
+    expect(declaration(panel, 'border-radius')).toBe('var(--radius-lg)');
+  });
+
+  it('uses the scrim as its depth, never a second elevation tier', () => {
+    // DESIGN.md's Elevation & Depth section: one tier, and a modal uses a scrim
+    // instead of a heavier shadow. Counted over the whole stylesheet so a later
+    // rule cannot introduce one unseen.
+    expect(css()).not.toContain('box-shadow');
+    expect(css()).not.toContain('--elevation-card');
+  });
+
+  it('fills the confirm control with the destructive colour and writes on it in white', () => {
+    // `confirm-button: {components.button-destructive}`. White on this red is
+    // 4.87:1 and passes AA; the accent would be 2.63:1 *and* the wrong meaning.
+    const confirm = rule(css(), '.confirm');
+
+    expect(declaration(confirm, 'background')).toBe('var(--color-destructive)');
+    expect(declaration(confirm, 'color')).toBe('var(--color-destructive-foreground)');
+    expect(declaration(confirm, 'border-radius')).toBe('var(--radius-sm)');
+  });
+
+  it('leaves Cancel the navy outline, never a second fill', () => {
+    const dismiss = rule(css(), '.dismiss');
+
+    expect(declaration(dismiss, 'background')).toBe('transparent');
+    expect(declaration(dismiss, 'color')).toBe('var(--color-primary)');
+    expect(declaration(dismiss, 'border')).toBe(
+      'var(--border-hairline) solid var(--color-primary)',
+    );
+  });
+
+  it('paints nothing with the accent', () => {
+    // Orange is the one *action* a screen is for, and a dialog is not a screen.
+    // An accent control here would be a second orange thing on whatever screen
+    // opened it.
+    expect([...css().matchAll(/var\(--color-accent\)/g)]).toHaveLength(0);
+  });
+
+  it('leaves the touch-target floor to the one rule that states it', () => {
+    // Every control here is a `<button>`, and `global.css` holds buttons at
+    // `--touch-target-min` on both axes. Restating it per control is how the
+    // floor ends up stated in six places and enforced in five, so this asserts
+    // the *absence* — the floor is one rule, and the dialog inherits it.
+    expect(css()).not.toContain('--touch-target-min');
+
+    // Which puts the whole floor on the inheritance, so the inheritance is what
+    // has to be pinned — and on the half that carries it. The rule is found by
+    // its `.touchTarget` class, but nothing in this dialog uses that class:
+    // every control reaches the floor through the bare `button` sharing the
+    // selector group. Drop `button` from it and a class-only assertion stays
+    // green while every control here loses 44×44.
+    const [selector, body] = ruleGroupFor(read(join(SRC, 'styles', 'global.css')), 'touchTarget');
+
+    expect(selector.split(',').map((part) => part.trim())).toContain('button');
+    expect(declaration(body, 'min-height')).toBe('var(--touch-target-min)');
+  });
+});
+
+describe('the row-end verbs on the user list', () => {
+  // Story 1.11's three controls per row. The screen-level describe above counts
+  // accents over the whole stylesheet; this says *which* treatment each control
+  // has, which is the half a count cannot make.
+  const css = (): string => read(join(SRC, 'screens', 'UserListScreen.module.css'));
+
+  it('gives Deactivate and Delete the destructive fill', () => {
+    // DESIGN.md's `button-destructive`, and DESIGN.md:167's one behavioural
+    // contract: red means destructive or access-revoking and nothing else. Both
+    // controls also carry their verb as a word (EXPERIENCE.md:111), which is
+    // what `user-list.test.tsx` asserts — the colour is never the only signal.
+    const destructive = rule(css(), '.destructive');
+
+    expect(declaration(destructive, 'background')).toBe('var(--color-destructive)');
+    expect(declaration(destructive, 'color')).toBe('var(--color-destructive-foreground)');
+  });
+
+  it('leaves Activate the navy outline, never the destructive fill', () => {
+    // Giving an account its access back is the opposite of destructive, and red
+    // in this system has exactly one meaning. Swap this for `.destructive` and
+    // every render test stays green while the undo reads as the damage.
+    const activate = rule(css(), '.activate');
+
+    expect(declaration(activate, 'background')).toBe('transparent');
+    expect(declaration(activate, 'color')).toBe('var(--color-primary)');
+    expect(declaration(activate, 'border')).toBe(
+      'var(--border-hairline) solid var(--color-primary)',
+    );
   });
 });
 

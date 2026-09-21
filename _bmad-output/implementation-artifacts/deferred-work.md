@@ -782,3 +782,99 @@ source_spec: `spec-1-10-edit-user.md`
 severity: low
 reason: `apps/api/tests/test_login_throttling.py:689` reasons that "the way that gets noticed for real is Story 1.10 growing an 'unlock' that clears the mirror". Story 1.10 has now shipped without one, and every other copy of that prediction — `throttle.py`, `auth.py`, `README.md`, and `infra/README.md` this pass — was corrected. This one was not, because this spec's Verification pins that file as unmodified precisely to prove the story changed no existing throttle behaviour. Correcting a docstring there is safe but breaks a stated verification, so it is a call for whoever next has reason to open the file.
 status: open
+
+### DW-99: `session-expiry.test.tsx` fails about one run in five, independently of this story, by reading the DOM before the 401-to-signed-out render lands.
+origin: spec-deferred 12e0997b8f02
+location: apps/web/src/__tests__/session-expiry.test.tsx
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: medium
+reason: Measured, not inferred. With this story's new test file removed from `src/__tests__` the web suite still failed 4 of 20 runs, always inside `session-expiry.test.tsx`; with it present the rate was 1 of 20. The file is byte-identical to `831b9527`, as are `SessionProvider.tsx`, `client.ts` and `App.tsx`. The failure is a synchronous `getByText` for `/your session has ended/i` returning while the app bar is still mounted. The fix is a suite-level decision — a shared `configure({ asyncUtilTimeout })`, or awaiting the transition in that file — and touching it from this story would edit a file this spec's Verification pins as unmodified.
+status: open
+
+### DW-100: The product's first modal leaves the page behind it in the accessibility tree and scrollable, with `aria-modal` as the only signal.
+origin: spec-deferred 7ed8fec5d25a
+location: apps/web/src/components/ConfirmDialog.tsx
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: medium
+reason: `ConfirmDialog` sets `aria-modal="true"` and paints a scrim, but nothing marks the screen root `inert` or `aria-hidden`, and nothing locks body scroll. Assistive technology that ignores `aria-modal` can still reach the user table underneath, and a wheel or touch gesture still scrolls the page under the scrim. Neither EXPERIENCE.md nor DESIGN.md asks for either, so this is the point at which the product should decide its modal convention rather than a defect in this story's clauses.
+status: open
+
+### DW-101: Reactivating an account whose temporary credential already lapsed shows it as Active while nobody can sign in as it.
+origin: spec-deferred f7bafd8b90a7
+location: apps/api/api/users.py (activate_user)
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: medium
+reason: `POST /admin/users/{user_id}/activate` writes `active = true` and touches neither `must_change_password` nor `temp_credential_expires_at`, by design — a reactivation is not a credential reissue. But `api/auth.py` refuses a login whose temporary credential has lapsed (DW-44), so an unclaimed account deactivated past its 72 hours and then reactivated reads Active on Story 1.9's list and is unusable. The route that would fix it is the credential reissue DW-87 says no story in Epic 1 owns.
+status: open
+
+### DW-102: A destructive write that succeeds and is then followed by a failing list refetch replaces the whole table with a load error and never reports the success.
+origin: spec-deferred 6b7ce1638a16
+location: apps/web/src/screens/UserListScreen.tsx (run, load)
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: low
+reason: `run()` calls `load()` after the write commits. If that refetch fails, `load`'s catch sets `listing` to `{ kind: 'failed' }`, so the Administrator sees a page-level error where a deactivation or a delete has in fact happened, with nothing saying so. Keeping the table and showing the refetch failure as a banner would separate "the write failed" from "the re-read failed"; the two are one message today.
+status: open
+
+### DW-103: After a deactivation the row-end control keeps focus while its accessible name and its action flip from Deactivate to Activate.
+origin: spec-deferred 86d2a20a8047
+location: apps/web/src/screens/UserListScreen.tsx (the row-end slot)
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: low
+reason: `ConfirmDialog`'s unmount restores focus to the opener when it is still connected. The row-end button carries no `key`, so React patches the same DOM node, and the control the keyboard Administrator is returned to now reads "Activate Kasun Perera" and performs the inverse verb. Restoring focus to that position is the right behaviour; what is missing is anything announcing that the control under it changed.
+status: open
+
+### DW-104: The row's Edit control is not covered by the in-flight guard, so an Administrator can navigate off the list while a destructive request is open.
+origin: spec-deferred 39d24083eac4
+location: apps/web/src/screens/UserListScreen.tsx (the row-end slot)
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: low
+reason: `press()` refuses a second destructive verb while `pending !== null`, and since the patch pass every row's destructive controls are disabled for the duration. `Edit` calls `onEditUser(user)` directly and is not disabled, so it still leaves the screen mid-request — abandoning the dialog and the pending state, and landing the Administrator on an editor for a row that may be about to disappear.
+status: open
+
+### DW-105: `--z-modal`'s documented relationship to the skip link's stacking level is asserted by nothing.
+origin: spec-deferred 0eb3d1ba8fd9
+location: apps/web/src/styles/tokens.css
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: low
+reason: The token's comment in `tokens.css` says it sits "above AppShell's skip link (z-index 1) with room left between them", and `styling-wiring.test.ts` checks only that `.scrim` references the token. If the skip link's level is ever raised the scrim quietly stops covering the chrome, which is the exact failure the comment calls out.
+status: open
+
+### DW-106: The confirmation dialog says nothing while a destructive write is in flight, and nothing at all once it lands.
+origin: spec-deferred 4d9648b1a889
+location: apps/web/src/components/ConfirmDialog.tsx
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: medium
+reason: While `busy`, `ConfirmDialog` disables both controls, parks focus on a panel whose only text is the unchanged question, and carries no `role="status"`. Between pressing Delete and the row disappearing a screen-reader Administrator gets silence. The success side is the same: the badge flips to Deactivated, or the row goes, with no live-region sentence saying so — only the refusal path is announced. This is the product's first modal and neither EXPERIENCE.md nor DESIGN.md states a pending/confirmed announcement convention, so it belongs with the other open modal-convention question (inert, scroll lock) rather than being invented here.
+status: open
+
+### DW-107: Activate is the one verb whose control is disabled mid-flight with no dialog to restore focus from, so a keyboard Administrator is dropped to `<body>`.
+origin: spec-deferred 92c450a3d7d6
+location: apps/web/src/screens/UserListScreen.tsx (press, run)
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: low
+reason: `press('activate', …)` goes straight to `run()` — no dialog — and `run()` freezes every row's controls for the duration. Disabling the focused button moves focus to `<body>`, and there is no unmounting dialog whose cleanup would put it back: `rescueFocus` is set for `delete` only. The keyboard Administrator resumes at the top of the document. The fix is the same decision as the already-deferred "the control's name and verb flip under the returned focus" item — where focus belongs after a row verb rewrites its own row-end control — and the two should be settled together.
+status: open
+
+### DW-108: A `404` refusal tells the Administrator to reload the list, and closing it leaves the same stale list on screen with no way to do that.
+origin: spec-deferred 432e985845a2
+location: apps/web/src/screens/UserListScreen.tsx (run, the dialog's onClose)
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: low
+reason: `NO_SUCH_USER` is "That user no longer exists. Reload the list." `run()`'s catch renders it in the dialog and never refetches, and the dialog's `onClose` only clears the dialog — so the row somebody else already removed is still there, still carrying three live controls. The one-line fix is a `load()` on the failure path, but that widens the already-logged "a destructive write followed by a failing list refetch replaces the whole table with a load error" item: every extra `load()` is another place that can blank the table. The two are one decision about what a failed refetch is allowed to do to the screen, and should be settled together rather than one being patched under the other.
+status: open
+
+### DW-109: Delete-and-recreate inherits the address's lockout while the new row reads unlocked, so the list says one thing and `POST /auth/login` says another.
+origin: spec-deferred 684bcf700d47
+location: apps/web/src/screens/UserListScreen.tsx (lockNotice) / apps/api/api/throttle.py
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: medium
+reason: `login_attempts` is keyed on the submitted address and deliberately not a foreign key to `users`, so a delete leaves it behind — which is the point (DW-59: delete-and-recreate must not become the unlock this product chose not to build). The consequence only became reachable with this story: the recreated row carries `locked_until: null` and Story 1.9's list renders no lock notice, while `apps/api/tests/test_delete_user.py`'s own `test_a_recreated_account_cannot_sign_in_under_the_lock_that_was_never_cleared` drives the correct credential through `POST /auth/login` and gets `429`. The Administrator's only remedy is to wait out a lock the screen says does not exist. Surfacing it means either rendering the address's lock on a row it is not keyed to, or building the admin unlock DW-64 says no story owns — both product decisions, not handler ones.
+status: open
+
+### DW-110: "+ Add user" and "Back" stay live while an `activate` request is open — the one verb with no dialog covering them.
+origin: spec-deferred b441483c7e69
+location: apps/web/src/screens/UserListScreen.tsx (the actions block)
+source_spec: `spec-1-11-deactivate-or-delete-user.md`
+severity: low
+reason: `frozen = pending !== null` freezes every row's controls, and for a confirmed verb the scrim covers the rest of the screen anyway. `activate` fires from one press with no dialog, so during its request the two screen controls above the table are still pressable: leaving the screen there unmounts it mid-write, and the answer — including a refusal — is never shown. The write itself still commits. Disabling them is one attribute each, but it is the first time this product would disable a navigation control for a request that is not about navigation, which is a convention decision rather than a fix.
+status: open

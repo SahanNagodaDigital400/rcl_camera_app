@@ -80,7 +80,7 @@ const ALREADY_IN_USE = 'A user with that email address already exists.';
 const NO_SUCH_USER = 'That user no longer exists. Reload the list.';
 const LAST_ACTIVE_ADMINISTRATOR =
   'There must always be at least one active Administrator. ' +
-  'Make somebody else an Administrator first.';
+  'Make somebody else an Administrator, or activate one, first.';
 
 interface Reply {
   status: number;

@@ -17,10 +17,13 @@
  * a Python module, and the point is to compare the two spellings that actually
  * ship.
  *
- * The same machinery pins the request *bounds* at the bottom of this file. They
- * are numbers rather than codes, but they are the same kind of contract written
- * down twice in two languages, and the same reading of the two sources is what
- * stops them drifting.
+ * The same machinery pins two more kinds of contract further down: the request
+ * *bounds* the admin forms mirror onto their inputs, and the one refusal
+ * *sentence* a screen states in its own words before asking the server. Neither
+ * of those two is a code, but all three are the same shape of problem — a value
+ * written down twice in two languages with nothing structural holding the
+ * copies together — and the same reading of the two sources is what stops them
+ * drifting.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -68,6 +71,36 @@ function pythonInteger(source: string, name: string): number | null {
 function typescriptInteger(source: string, name: string): number | null {
   const found = new RegExp(String.raw`^const ${name}\s*=\s*(\d+);`, 'm').exec(source);
   return found === null || found[1] === undefined ? null : Number(found[1]);
+}
+
+/**
+ * Every string literal in a fragment of source, concatenated.
+ *
+ * A sentence long enough to matter is written as adjacent literals across two
+ * lines in Python and as `'…' + '…'` in TypeScript, and both are one value.
+ * Joining the parts is what lets the two be compared as the sentence they
+ * become rather than as the lines they happen to be wrapped into — so a
+ * reflow on either side is not a failure and a reword is.
+ */
+function joinLiterals(body: string, quote: string): string | null {
+  const parts = [...body.matchAll(new RegExp(`${quote}([^${quote}]*)${quote}`, 'g'))].map(
+    (match) => match[1] ?? '',
+  );
+  return parts.length === 0 ? null : parts.join('');
+}
+
+/** The value of a module-level `NAME = (\n "…"\n "…"\n)` assignment in Python. */
+function pythonSentence(source: string, name: string): string | null {
+  const found = new RegExp(String.raw`^${name}\s*=\s*\(([\s\S]*?)\)\s*$`, 'm').exec(source);
+  const body = found?.[1];
+  return body === undefined ? null : joinLiterals(body, '"');
+}
+
+/** The value of a module-level `const NAME = '…' + '…';` declaration in TypeScript. */
+function typescriptSentence(source: string, name: string): string | null {
+  const found = new RegExp(String.raw`^const ${name}\s*=\s*([\s\S]*?);$`, 'm').exec(source);
+  const body = found?.[1];
+  return body === undefined ? null : joinLiterals(body, "'");
 }
 
 const PYTHON: Record<string, { file: string; name: string }> = {
@@ -143,6 +176,61 @@ describe('the envelope codes are one contract in two languages', () => {
       new Set(Object.values(PYTHON).map((where) => where.name)),
     );
   });
+});
+
+/**
+ * The one refusal sentence a screen states in its own words.
+ *
+ * Everywhere else in the product a refusal is rendered from the API's own
+ * message: the request is made, the envelope comes back, and the screen paints
+ * whatever sentence it carries. Story 1.11's Users list has one exception, and
+ * it is deliberate. EXPERIENCE.md:148 asks for the last-Administrator refusal
+ * to *replace* the confirmation dialog rather than follow it, which can only be
+ * decided **before** a request is made — so on that path no envelope ever
+ * arrives, and the screen's own copy is the only sentence the Administrator
+ * sees.
+ *
+ * That is the failure this file exists to prevent, in its purest form. Reword
+ * the Python constant and every web test still passes while the pre-flight goes
+ * on stating the rule in words the server no longer uses — and the behavioural
+ * test in `deactivate-delete-user.test.tsx` cannot catch it, because it
+ * compares one TypeScript literal against another. This is the row that closes
+ * the chain: Python constant ↔ screen constant, with the behavioural test's own
+ * literal pinned against the rendered output at the far end of it.
+ *
+ * Compared as sentences rather than as source lines — see `joinLiterals` — so a
+ * reflow on either side is not a failure.
+ */
+const USER_LIST_SCREEN = 'UserListScreen.tsx';
+
+const SENTENCES: {
+  screen: string;
+  python: { file: string; name: string };
+  typescript: string;
+}[] = [
+  {
+    screen: USER_LIST_SCREEN,
+    python: { file: 'users.py', name: 'LAST_ACTIVE_ADMINISTRATOR' },
+    typescript: 'LAST_ACTIVE_ADMINISTRATOR',
+  },
+];
+
+describe('the one refusal a screen states before asking the server', () => {
+  it.each(SENTENCES.map((row) => [`${row.screen}: ${row.typescript}`, row] as const))(
+    '%s is the same sentence on both sides',
+    (_name, row) => {
+      const python = pythonSentence(read(join(API, row.python.file)), row.python.name);
+      const typescript = typescriptSentence(read(screenPath(row.screen)), row.typescript);
+
+      // Both halves asserted non-null first, for the reason the codes above
+      // give: a comparison of `null` with `null` passes forever, so a renamed
+      // or moved constant has to fail here as a missing one rather than as a
+      // match against nothing.
+      expect(python, `${row.python.name} is missing from api/${row.python.file}`).not.toBeNull();
+      expect(typescript, `${row.typescript} is missing from ${row.screen}`).not.toBeNull();
+      expect(typescript).toBe(python);
+    },
+  );
 });
 
 /**

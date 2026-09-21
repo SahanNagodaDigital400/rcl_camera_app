@@ -1,0 +1,118 @@
+/* The confirmation dialog — DESIGN.md's `confirmation-dialog` block.
+ *
+ * `{colors.surface}` panel, `{rounded.lg}`, over `scrim: rgba(24, 24, 48, 0.55)`
+ * — which `tokens.css` declared as `--scrim` for exactly this and which nothing
+ * referenced until now. The confirm control is `{components.button-destructive}`:
+ * destructive fill, its own foreground.
+ *
+ * **No shadow anywhere.** DESIGN.md's Elevation & Depth section allows one
+ * elevation tier and says a modal uses a scrim instead of a heavier one, so the
+ * scrim *is* the depth here and the card elevation token is deliberately not
+ * reached for. `{rounded.lg}` is DESIGN.md's radius for a full-screen sheet,
+ * which is what this becomes at phone width.
+ *
+ * Its own stylesheet rather than a block inside `UserListScreen.module.css`,
+ * beside its own `.tsx`: the styling-wiring guard resolves a module's consumers
+ * by directory, and the user-list module is pinned shadow-free and single-accent
+ * as a screen. A component with its own surface treatment is not that screen.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target floor
+ * and the accent focus ring are already on `button` in global.css and are
+ * deliberately not restated. */
+
+/* The overlay and the dismiss target in one. Fixed rather than absolute so it
+ * covers the app bar too — a modal the chrome sits on top of is not modal. */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: var(--scrim);
+}
+
+/* The sheet. `min(...)` rather than a plain max-width: at 375px the gutter above
+ * has to stay a gutter, and the page must never scroll sideways. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: min(var(--measure-form), 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: var(--space-6);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* The question, or the rule. The heading type role — not `display`, which
+ * DESIGN.md reserves for the single most important word on a whole screen. */
+.heading {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: var(--color-text);
+}
+
+/* The consequence, in plain body text. Never muted: it is the sentence the
+ * Administrator is being asked to read before pressing an irreversible
+ * control. */
+.body {
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--color-text);
+}
+
+/* Wrapping rather than shrinking: at the narrowest phone width two controls on
+ * one line would push them below the touch-target floor. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* DESIGN.md's `button-destructive`: destructive fill, its own foreground,
+ * `{rounded.sm}`. White on this red is 4.87:1 and passes AA. The control also
+ * carries a word — "Deactivate", "Delete" — because red alone is never the
+ * signal (EXPERIENCE.md:111). */
+.confirm {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-destructive);
+  color: var(--color-destructive-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* Cancel, and Close on the refusal: DESIGN.md's secondary button — navy
+ * outline, navy text, transparent fill. Never the accent: orange is the one
+ * action a *screen* is for, and this dialog is not that screen. */
+.dismiss {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* Dimmed rather than hidden while the confirmed request is in flight, so the
+ * button does not move under the thumb (the `--disabled-opacity` note in
+ * tokens.css). */
+.confirm:disabled,
+.dismiss:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}

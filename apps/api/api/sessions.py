@@ -200,8 +200,9 @@ UPDATE sessions
 
 _DELETE_SESSION = "DELETE FROM sessions WHERE token_hash = %s"
 
-#: Every session a user holds, on any device. Used by the forced password
-#: change and nothing else — see `delete_sessions_for_user`.
+#: Every session a user holds, on any device. Two callers, and only two — the
+#: forced password change and Story 1.11's deactivation. See
+#: `delete_sessions_for_user`.
 _DELETE_USER_SESSIONS = "DELETE FROM sessions WHERE user_id = %s"
 
 #: How many dead rows one sign-in will clear. A sign-in adds one row, so any
@@ -365,19 +366,33 @@ def delete_session(conn: psycopg.Connection, raw_token: str | None) -> None:
 def delete_sessions_for_user(conn: psycopg.Connection, user_id: UUID) -> int:
     """Revoke every session this user holds, anywhere. Returns how many went.
 
-    Credential rotation, not session management. It exists for one caller: the
-    forced password change, where the temporary credential the sessions were
-    issued on has just stopped being trusted. A temporary credential travels by
-    whatever channel an Administrator used — spoken, written on a note,
-    messaged — so a session opened by someone who saw it has to go with it,
-    including one on a device the user cannot reach.
+    Revocation, not session management, and it has exactly two callers.
 
-    Not a session-management surface. Listing a user's sessions is in no story,
-    and an Administrator revoking another user's sessions is delivered by
-    Story 1.11's deactivation — through `u.active` in `_SELECT_SESSION` and the
-    `ON DELETE CASCADE` on `sessions.user_id` — not by a function like this
-    one. This is one user, acting on their own account, in the same transaction
-    that replaces their digest.
+    **The forced password change** (`api.auth`), where the temporary credential
+    the sessions were issued on has just stopped being trusted. A temporary
+    credential travels by whatever channel an Administrator used — spoken,
+    written on a note, messaged — so a session opened by someone who saw it has
+    to go with it, including one on a device the user cannot reach. That is one
+    user acting on their own account, in the same transaction that replaces
+    their digest.
+
+    **Story 1.11's deactivation** (`api.users.deactivate_user`), where an
+    Administrator is taking somebody else's access away. This docstring used to
+    predict that 1.11 would *not* need a function like this one — that `u.active`
+    in `_SELECT_SESSION` and the `ON DELETE CASCADE` on `sessions.user_id` would
+    be the whole of it — and that was half wrong. The `ON DELETE CASCADE` does
+    carry a *delete*: the row goes and its sessions go with it, and
+    `api.users.delete_user` calls nothing here. A *deactivation* has no cascade
+    behind it, only a flag. `u.active` makes the target's very next request a
+    `401` the instant the flag lands, which is FR-13's literal clause, but it
+    leaves the rows in the table — and a later reactivation would bring every
+    still-unexpired one of them back to life, handing back sessions the
+    Administrator believed they had revoked. AGENTS.md line 18 says *revoke*,
+    not *refuse*, so the deactivation deletes them here, in its own transaction,
+    and reactivation has nothing to resurrect.
+
+    Still not a session-management surface. Listing a user's sessions is in no
+    story, and neither is revoking one of them: this ends all of them or none.
     """
     return conn.execute(_DELETE_USER_SESSIONS, (user_id,)).rowcount
 

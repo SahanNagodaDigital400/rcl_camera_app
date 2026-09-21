@@ -1,10 +1,13 @@
 """`/admin/users` — the collection an Administrator writes to, reads back and edits.
 
-Three routes over two paths. `POST /admin/users` provisions somebody else's
+Six routes over four paths. `POST /admin/users` provisions somebody else's
 login (FR-11), `GET /admin/users` lists every account with its status and last
-sign-in (FR-10), and `PATCH /admin/users/{user_id}` changes a name, an address
-or a role on one of them (FR-12) — the first routes in the product that are not
-about the caller's own identity. Four things about the write are load-bearing:
+sign-in (FR-10), `PATCH /admin/users/{user_id}` changes a name, an address or a
+role on one of them (FR-12), and Story 1.11 adds the three verbs that take
+access away or give it back (FR-13): `POST /admin/users/{user_id}/deactivate`,
+`POST /admin/users/{user_id}/activate` and `DELETE /admin/users/{user_id}` —
+the first routes in the product that are not about the caller's own identity.
+Four things about the write are load-bearing:
 
 **It is the only writer of a `User` row inside the running product.** The one
 account before it — the seeded Administrator — is written by the migration
@@ -58,27 +61,62 @@ lands on the target's very next request by itself — FR-12's "live session" hal
 is proved by `tests/test_edit_user.py` rather than built here, and this handler
 must never start managing sessions.
 
-**Not here.** No deactivate, no delete, no `active` toggle, no admin-set
-password, no credential reissue — and **no unlock**. Story 1.11 owns
-deactivating and deleting. The unlock is the one that changed: `throttle.py`,
-`auth.py` and `README.md` all used to predict it "in Story 1.10", and epics.md
-1.10 scopes this story to name, email and role, so it was not built and **no
-story in Epic 1 now owns it** (DW-64, still open, now with no predicted owner).
-What the edit does owe the lockout is `throttle.carry_failures`: a rename moves
-the account's run of failures to the new address rather than stranding it on the
-old string, so that editing an address is not the unlock this product has
-decided not to have (DW-59). **No mail of
-any kind**, not a dependency, not a stub, not a "send the credential" control on
-the screen: AGENTS.md Policy and FR-11 both put distribution in the
-Administrator's hands, and `tests/test_no_password_reset.py` asserts the absence
-over the source tree and the dependency manifests. **No audit entry** — Story
-1.12 owns the append-only log and owes this endpoint one, and no private log path
-is built in the meantime, so until then the only trace of a provisioning is the
-row's own `created_at` — and of an edit, its own `updated_at`, which does not say
-by whom or what changed. And **no throttle**: this is the fourth Argon2id-backed
-endpoint in the product and a direct extension of DW-40/DW-69, which are open
-and are decisions about what a counter would be keyed on — it is also
-Administrator-only, so the caller is already authenticated and already named.
+**The three verbs are routes of their own, never a widening of `PATCH`.** The
+obvious alternative — `active` on `EditUserRequest` — is refused for three
+reasons. `PATCH`'s body is closed and its refusal of `{"active": false}` is
+pinned by a shipped test whose comment explains that the route does not
+deactivate accounts. The Administrator floor would then have to be evaluated
+against both `COALESCE(role)` and `COALESCE(active)` in one statement, which is
+a harder rule to read and an easier one to get wrong. And deactivation has a
+side effect an edit does not — revoking sessions — which would put a
+destructive write inside the route the UI reaches on every name correction.
+Three verbs carrying **no request body at all** also means no new request
+model, no new `extra="forbid"` surface, and no new code for `apps/web` to
+learn. Reactivation is the inverse the other two need: a deactivate with no way
+back is a one-way door recoverable only by a developer holding `DATABASE_URL`,
+which is the dependency Epic 1 exists to remove, and EXPERIENCE.md:148 already
+tells the Administrator facing the floor refusal to "activate or create a
+second Administrator first".
+
+**Not here.** No `active` toggle on the edit body, no admin-set password, no
+credential reissue, no soft-delete marker column, no session-listing or
+per-session-revocation surface — and **no unlock**. Neither destructive verb
+touches `login_attempts`: the counter is keyed on the submitted address and is
+deliberately not a foreign key to `users`, so a delete leaves it behind, and
+clearing it would make "delete the account and recreate it" an unlock — the
+same lock-evasion path Story 1.10 refused to open when it carried a rename's
+run instead of clearing it (DW-59/DW-91).
+
+The unlock is the one that changed: `throttle.py`, `auth.py` and `README.md`
+all used to predict it "in Story 1.10", and epics.md 1.10 scopes that story to
+name, email and role, so it was not built and **no story in Epic 1 now owns
+it** (DW-64, still open, now with no predicted owner). What the edit does owe
+the lockout is `throttle.carry_failures`: a rename moves the account's run of
+failures to the new address rather than stranding it on the old string, so that
+editing an address is not the unlock this product has decided not to have
+(DW-59).
+
+**No mail of any kind**, not a dependency, not a stub, not a "send the
+credential" control on the screen: AGENTS.md Policy and FR-11 both put
+distribution in the Administrator's hands, and
+`tests/test_no_password_reset.py` asserts the absence over the source tree and
+the dependency manifests.
+
+**No audit entry** — Story 1.12 owns the append-only log and owes every route
+in this module one, and no private log path is built in the meantime, so until
+then the only trace of a provisioning is the row's own `created_at`, and of an
+edit, a deactivation or a reactivation, its own `updated_at`, which does not
+say by whom or what changed. A **delete** leaves no trace at all, which makes
+1.12's problem the harder one it now inherits: AD-4 denies the application role
+`DELETE` on the audit table and the spine draws `USER ||--o{ AUDIT_LOG_ENTRY`,
+so a hard user delete means the actor reference has to be AD-10's denormalised
+snapshot rather than a foreign key. That is 1.12's decision to make.
+
+**And no throttle on the one route that spends a hash.** `POST /admin/users` is
+the fourth Argon2id-backed endpoint in the product and a direct extension of
+DW-40/DW-69, which are open and are decisions about what a counter would be
+keyed on — it is also Administrator-only, so the caller is already
+authenticated and already named. The five routes beside it hash nothing at all.
 """
 
 from __future__ import annotations
@@ -103,7 +141,15 @@ from shared_schema.user import TEMP_CREDENTIAL_LIFETIME_HOURS, Role, User
 # is a second opinion about what a refused password looks like. `_weak_password`
 # is private to that module in the sense that nothing outside `apps/api` may
 # have it — importing it here is what keeps the two refusals one refusal.
-from api import throttle
+#
+# `api.sessions` is imported for the same reason and read the same way: Story
+# 1.11's deactivation revokes the target's sessions through
+# `sessions.delete_sessions_for_user`, which already exists, rather than through
+# a second delete statement against that table written here.
+# `tests/test_source_guards.py` forbids the second copy outright (AD-3: one
+# module owns that table), and the rule is right — a revocation written twice
+# is a revocation that drifts.
+from api import sessions, throttle
 from api.auth import MAX_EMAIL_LENGTH, MAX_PASSWORD_FIELD_LENGTH, _weak_password
 from api.db import get_connection
 from api.dependencies import NO_STORE, require_administrator
@@ -199,12 +245,18 @@ NO_SUCH_USER = "That user no longer exists. Reload the list."
 #: writing a second copy of the rule.
 LAST_ADMINISTRATOR = "last_administrator"
 
-#: What it says: the rule that failed and the way out of it, in one sentence
+#: What it says: the rule that failed and the ways out of it, in one sentence
 #: (EXPERIENCE.md:87). It names no person — the refusal is about how many active
 #: Administrators the product has, not about who the target is.
+#:
+#: **Both** ways out, since Story 1.11: EXPERIENCE.md:148 tells the Administrator
+#: facing this refusal that they "must activate or create a second Administrator
+#: first", and `POST /admin/users/{user_id}/activate` is what makes the first
+#: half reachable. A refusal that names only the harder remedy is a refusal that
+#: hides the easy one.
 LAST_ACTIVE_ADMINISTRATOR = (
     "There must always be at least one active Administrator. "
-    "Make somebody else an Administrator first."
+    "Make somebody else an Administrator, or activate one, first."
 )
 
 
@@ -970,3 +1022,353 @@ def edit_user(
                     row["locked_until"] = carried
 
     return User.model_validate(row)
+
+
+#: FR-13's first write: flip `active` off, behind the Administrator floor.
+#:
+#: **The floor is `_UPDATE_USER`'s predicate, arm for arm.** Story 1.10 built
+#: it, this statement copies it, and `_DELETE_USER` below copies it again —
+#: one rule, one code, one sentence across demote, deactivate and delete. The
+#: one arm `_UPDATE_USER` carries that is missing here is the
+#: `COALESCE(%s::text, role) = 'admin'` head, which asks "does the row end up an
+#: Administrator": that arm belongs to a statement that can *change* the role,
+#: and this one cannot. What is left is Story 1.10's three: the row was never an
+#: Administrator, **or** it is already deactivated (a deactivated account is not
+#: one of the active Administrators the floor counts, so deactivating it again
+#: is idempotent rather than refused), **or** somebody else is an active
+#: Administrator.
+#:
+#: A predicate inside the statement rather than a `SELECT count(*)` in Python,
+#: for `_UPDATE_USER`'s reason and AD-8's: a count read a moment earlier is the
+#: read-then-write that lets two concurrent deactivations each see the other and
+#: both succeed. Zero rows written therefore means the floor refused — the id is
+#: already known to exist, because `_SELECT_USER_FOR_UPDATE` found and locked it.
+#:
+#: **`updated_at` is set by hand.** `users` carries no BEFORE UPDATE trigger
+#: (DW-17 names this story explicitly) and the column's DEFAULT applies to
+#: inserts only, so every writer sets it.
+#:
+#: Nothing else moves. `must_change_password`, `temp_credential_expires_at`,
+#: `locked_until` and `password_hash` are all left exactly as they were: a
+#: deactivation is the removal of access, not a credential event, and a
+#: reactivation has to put the account back the way it was rather than the way a
+#: fresh one starts.
+#:
+#: The `RETURNING` list is `_INSERT_USER`'s, `_SELECT_USERS`' and
+#: `_UPDATE_USER`'s, character for character — the eleven-column shape
+#: `User.model_validate` wants. Repeated rather than shared through a constant
+#: because `tests/test_source_guards.py` forbids a statement assembled from a
+#: value; `tests/test_deactivate_user.py` is what holds the lists together.
+_DEACTIVATE_USER = """
+UPDATE users
+   SET active = false,
+       updated_at = now()
+ WHERE id = %s
+   AND (role = 'staff'
+        OR NOT active
+        OR EXISTS (SELECT 1
+                     FROM users AS other
+                    WHERE other.id <> users.id
+                      AND other.role = 'admin'
+                      AND other.active))
+RETURNING id, name, email, role, active, must_change_password,
+          temp_credential_expires_at, last_login_at, locked_until,
+          created_at, updated_at
+"""
+
+#: The inverse, and **deliberately without a floor predicate**.
+#:
+#: Raising the number of active Administrators can never reduce it, so there is
+#: no state this write can reach that the floor exists to prevent. Copying the
+#: predicate here "for symmetry" would be a guard that can never fire — dead
+#: code reading as though reactivation were a counted decision — and the
+#: verification step for this story is to add one and watch nothing fail.
+#:
+#: **It restores nothing else.** No session comes back (the rows were deleted,
+#: not disabled — see `deactivate_user`), no temporary credential is reissued,
+#: no password is set, and `must_change_password` is untouched. Reactivation is
+#: the exact inverse of the flag and of nothing else: the account resumes with
+#: the credential it already had, and the person signs in again.
+#:
+#: Idempotent on an already-active row, which is why it carries no `AND active
+#: IS false`: a second press writes the same value and answers the same row,
+#: where a predicate would answer a zero-row result that the handler would have
+#: to describe as something. `updated_at` moves either way (DW-17).
+_ACTIVATE_USER = """
+UPDATE users
+   SET active = true,
+       updated_at = now()
+ WHERE id = %s
+RETURNING id, name, email, role, active, must_change_password,
+          temp_credential_expires_at, last_login_at, locked_until,
+          created_at, updated_at
+"""
+
+#: FR-13's hard delete, behind the identical floor.
+#:
+#: The same three arms as `_DEACTIVATE_USER`, for the same reason and worded the
+#: same way: one rule across all three verbs, so an Administrator refused a
+#: deactivation and an Administrator refused a delete are told the same thing
+#: by the same code. A deactivated Administrator deletes freely — the `NOT
+#: active` arm — because the floor counts *active* Administrators and that row
+#: was never one of them.
+#:
+#: **`RETURNING id` is what makes a zero-row result readable.** A bare `DELETE`
+#: reports a row count and nothing else, and zero would then mean either "no
+#: such row" or "the floor refused" with no way to tell them apart. The locking
+#: read above has already settled the first, so `RETURNING` here is belt to that
+#: brace: the statement answers a row when it removed one, and nothing when the
+#: predicate held it back.
+#:
+#: **Nothing cleans up after it.** `sessions.user_id` carries `ON DELETE
+#: CASCADE` (`infra/migrations/20260917T1300_create_sessions.up.sql` says in as
+#: many words that it is there for this), so the target's sessions go with the
+#: row and no application code has to remember. `login_attempts` deliberately
+#: does *not* go: it is keyed on the submitted address and is not a foreign key
+#: to `users`, so a lockout survives the account it was earned on — clearing it
+#: would make delete-and-recreate an unlock (DW-59/DW-91). `users.locked_until`
+#: does go, and that is correct: it is a mirror of the counter, not the counter.
+_DELETE_USER = """
+DELETE FROM users
+ WHERE id = %s
+   AND (role = 'staff'
+        OR NOT active
+        OR EXISTS (SELECT 1
+                     FROM users AS other
+                    WHERE other.id <> users.id
+                      AND other.role = 'admin'
+                      AND other.active))
+RETURNING id
+"""
+
+
+@router.post("/admin/users/{user_id}/deactivate", response_model=User)
+def deactivate_user(
+    user_id: UUID,
+    response: Response,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> User:
+    """FR-13 — take an account's access away, on the target's very next request.
+
+    **The `administrator` parameter is the authorization, not a value.** As on
+    every other route in this module: it is the caller, resolved from the
+    session cookie and re-read from Postgres on this request (AD-3), and
+    declaring the dependency is the whole of its job. It is unread below on
+    purpose. A Staff caller is refused before this function is entered, and an
+    Administrator still holding a temporary credential is refused before that by
+    `require_claimed_user`, which `require_administrator` chains on.
+
+    **No request body at all**, so there is no shape of request to this route
+    that says anything but "this id, off". The id is in the path and the verb is
+    the route.
+
+    **Both halves of the revocation, and neither is redundant.**
+    `sessions._SELECT_SESSION` joins `AND u.active`, so the flag alone makes the
+    target's very next request a `401` the instant it lands (AD-3, and the whole
+    of FR-13's "not just future logins" clause — proved by a test rather than
+    built here). Deleting the rows is what makes it *durable*: without it a
+    later reactivation would bring every still-unexpired session back to life,
+    handing back access the Administrator believed they had revoked, and that is
+    two clicks away now that `activate_user` exists. AGENTS.md line 18 says
+    *revoke*, not *refuse*, and this is what revoking is.
+    `sessions.delete_sessions_for_user` is reused rather than copied — AD-3
+    keeps every statement against that table in one module.
+
+    **The Administrator lock is taken unconditionally**, where `edit_user` takes
+    it only for a demotion. `edit_user` can read the intent off the body; this
+    route has no body, so the target's role is not known until a row is read —
+    and reading the target first is precisely the lock-ordering inversion
+    `_LOCK_ACTIVE_ADMINISTRATORS`'s `ORDER BY id` exists to prevent. That widens
+    DW-94 (a bogus id still serialises the Administrator set) from one route to
+    three, which is accepted rather than overlooked: the caller is already an
+    authenticated Administrator and these are rare operations.
+
+    **Idempotent.** Deactivating an already-deactivated account answers `200`
+    with the same row and still sweeps any session rows left behind — a row that
+    survived an earlier failure is a live credential, and the second press is
+    exactly when somebody would notice.
+
+    **A caller may deactivate their own row**, while another active
+    Administrator exists. The answer lands, and their own next request is the
+    `401` this route just made it — `apps/web` drops to Login on it. There is
+    nothing to protect them from that the floor below does not already refuse.
+
+    Sync, not `async def`: psycopg is a synchronous driver
+    (`tests/test_source_guards.py`), and FastAPI runs a sync endpoint in its
+    threadpool. No hash is spent here — this route touches no credential.
+
+    `NO_STORE` for the reason every authenticated response carries it. The
+    response is a `User`, which has no `password_hash` field to leave out.
+
+    Story 1.12 owes this endpoint an audit entry: removing somebody's access is
+    the clearest "user change" AGENTS.md Policy's log is for. No private log
+    path is built in the meantime, so the only trace today is the row's own
+    `updated_at`, which says neither who nor what.
+    """
+    response.headers.update(NO_STORE)
+
+    # One unit of work. The flag and the session sweep must commit together or
+    # not at all: a flag without its sweep leaves rows a reactivation would
+    # resurrect, and a sweep without its flag signs somebody out of a shift for
+    # nothing.
+    with conn.transaction():
+        # Unconditionally, and before the target row's own lock. See the
+        # docstring above and `_LOCK_ACTIVE_ADMINISTRATORS` for both halves.
+        conn.execute(_LOCK_ACTIVE_ADMINISTRATORS)
+
+        current = conn.execute(_SELECT_USER_FOR_UPDATE, (user_id,)).fetchone()
+        if current is None:
+            # Distinguished from the floor refusal by this read rather than by
+            # guessing at a zero-row write: two different states must not share
+            # one answer because one statement cannot tell them apart.
+            raise _user_not_found()
+
+        row = conn.execute(_DEACTIVATE_USER, (user_id,)).fetchone()
+        if row is None:
+            # The id exists — it was found and locked above — so the only way
+            # the statement matched nothing is its own floor predicate. The
+            # raise rolls the transaction back, which is what leaves the row and
+            # its sessions untouched rather than merely unwritten.
+            raise _last_administrator()
+
+        # After the flag, inside the same transaction. The order is not load
+        # bearing for correctness — nothing between them can be observed — but
+        # it reads the way the rule does: the account is closed, then what it
+        # had open is closed with it.
+        sessions.delete_sessions_for_user(conn, user_id)
+
+    return User.model_validate(row)
+
+
+@router.post("/admin/users/{user_id}/activate", response_model=User)
+def activate_user(
+    user_id: UUID,
+    response: Response,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> User:
+    """FR-13's inverse — give a deactivated account its access back.
+
+    **Why it exists at all.** Neither of Story 1.11's two named verbs is this
+    one, and a third route is a real widening. It is here because a deactivate
+    with no inverse is a one-way door recoverable only by a developer holding
+    `DATABASE_URL` — the exact dependency Epic 1 exists to remove — and because
+    the binding UX spine already presumes the control: EXPERIENCE.md:148 tells
+    the Administrator facing the last-Administrator refusal that they must
+    "activate or create a second Administrator first".
+
+    **No floor, and no lock.** Raising the number of active Administrators can
+    never reduce it, so there is no counted decision here and nothing to
+    serialise. Paying for `_LOCK_ACTIVE_ADMINISTRATORS` on this route would
+    queue every reactivation behind every deactivation for a rule this statement
+    cannot break.
+
+    **It restores the flag and nothing else.** No session comes back — the rows
+    were deleted, so there is nothing to restore, which is the durable half of
+    what `deactivate_user` did. No temporary credential is reissued and no
+    password is set: `must_change_password` and `temp_credential_expires_at` are
+    left exactly as they were, so an account that was claimed resumes claimed
+    and one that never was resumes with whatever is left of its 72 hours. The
+    person signs in again with the credential they already had.
+
+    **The lockout comes back with it**, because it never went: `login_attempts`
+    is keyed on the address and `users.locked_until` rides on the row. A
+    deactivation is not an unlock and neither is a reactivation (DW-59/DW-91,
+    DW-64 — no unlock exists anywhere in Epic 1).
+
+    Idempotent on an already-active account: `200`, same row, nothing to say.
+
+    The `administrator` parameter, the sync `def`, `NO_STORE` and Story 1.12's
+    owed audit entry are all as on `deactivate_user` above.
+    """
+    response.headers.update(NO_STORE)
+
+    # One unit of work for two statements, so the row this answers with is the
+    # row the locking read found. `api.db` hands out autocommit connections.
+    with conn.transaction():
+        current = conn.execute(_SELECT_USER_FOR_UPDATE, (user_id,)).fetchone()
+        if current is None:
+            raise _user_not_found()
+
+        row = conn.execute(_ACTIVATE_USER, (user_id,)).fetchone()
+        if row is None:  # pragma: no cover - the row is locked one line above
+            # Unreachable: the statement carries no predicate and the row it
+            # names is held under `FOR UPDATE`, so the only zero-row result
+            # would be a row that vanished while locked. Answered as the `404`
+            # it would be rather than as a `500`, and never as the floor — this
+            # route has no floor to refuse from.
+            raise _user_not_found()
+
+    return User.model_validate(row)
+
+
+@router.delete("/admin/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user(
+    user_id: UUID,
+    response: Response,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> None:
+    """FR-13 — remove the account outright. A hard delete, not a marker column.
+
+    **`204`, with no body.** There is no row left to return, and answering with
+    the row that was deleted would be the product describing something that no
+    longer exists. `apps/web`'s `apiRequest` answers `null` for a `204` without
+    trying to parse a body, so nothing on the client has to learn a new shape.
+
+    **The sessions go by cascade, not by code.** `sessions.user_id` carries `ON
+    DELETE CASCADE` and the migration that wrote it says it is there for exactly
+    this, so the target's very next request is a `401` with no session logic on
+    this path at all. `deactivate_user` calls
+    `sessions.delete_sessions_for_user` because a flag has no cascade behind it;
+    a delete does.
+
+    **The lockout does not go.** `login_attempts` is keyed on the submitted
+    address and deliberately not on `users.id`, so a live lock outlives the
+    account. That is the point: clearing it would make "delete the account and
+    recreate it" the admin unlock this product has decided not to have
+    (DW-59/DW-91, DW-64). The row ages out through the existing sweep.
+
+    **The address is freed.** The unique index is over `lower(users.email)`, so
+    once the row is gone the address can be provisioned again — which closes the
+    delete half of DW-79: a mistyped address is no longer consumed forever.
+
+    **The floor is the same rule, and a deactivated Administrator is not on the
+    right side of it by accident.** `_DELETE_USER` carries `_DEACTIVATE_USER`'s
+    three arms unchanged, so deleting the last *active* Administrator is refused
+    with the same `409` and the same sentence, while deleting a deactivated one
+    is allowed — the floor counts active Administrators, and that row was never
+    one of them.
+
+    The Administrator lock is taken unconditionally, for the reason
+    `deactivate_user` gives at length: no body means no way to know the target's
+    role before a row is read, and reading first is the lock-ordering inversion
+    `ORDER BY id` exists to prevent (DW-94, widened here on purpose).
+
+    **A caller may delete their own row** while another active Administrator
+    exists — the same reasoning as a self-demotion or a self-deactivation. Their
+    next request is a `401` and `apps/web` drops to Login.
+
+    The `administrator` parameter, the sync `def` and `NO_STORE` are as on the
+    two routes above. Story 1.12 owes this one an audit entry and inherits a
+    harder problem with it: a deleted user cannot be a foreign key from an audit
+    row (AD-4 grants the application role no `DELETE` on that table), so the
+    actor and target references have to be AD-10's denormalised snapshot.
+    """
+    response.headers.update(NO_STORE)
+
+    with conn.transaction():
+        # Unconditionally, and before the target row's own lock — see
+        # `deactivate_user`.
+        conn.execute(_LOCK_ACTIVE_ADMINISTRATORS)
+
+        current = conn.execute(_SELECT_USER_FOR_UPDATE, (user_id,)).fetchone()
+        if current is None:
+            raise _user_not_found()
+
+        if conn.execute(_DELETE_USER, (user_id,)).fetchone() is None:
+            # The id exists, so the only way the statement matched nothing is
+            # its own floor predicate. The raise rolls back, leaving the row and
+            # every session it holds exactly as they were.
+            raise _last_administrator()

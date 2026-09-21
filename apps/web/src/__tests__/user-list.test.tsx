@@ -10,10 +10,14 @@
  *
  * Three assertions here are the ones nothing else in the suite can make: that a
  * deactivated account renders the *word* "Deactivated" and not only a class,
- * that a lock in the future is shown and a lapsed one is not, and that the only
- * verb on a row is Story 1.10's Edit — nothing here deactivates, deletes,
- * unlocks or sets a password, which is Story 1.11's scope and, for the unlock,
- * nobody's (DW-64), and which a screenshot review would have to catch otherwise.
+ * that a lock in the future is shown and a lapsed one is not, and that a row
+ * carries exactly three controls — Edit, the state verb, Delete — with nothing
+ * that unlocks an account or sets a password, which no story in Epic 1 owns
+ * (DW-64) and which a screenshot review would have to catch otherwise.
+ *
+ * What those three verbs *do* — the dialog, the pre-flight refusal, the request
+ * and the row updating inline — is `deactivate-delete-user.test.tsx`. This file
+ * stays about the list.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { StrictMode } from 'react';
@@ -87,8 +91,30 @@ function lockedFor(minutes: number): string {
   return new Date(Date.now() + minutes * 60_000).toISOString();
 }
 
-const LOCKED: User = { ...STAFF, locked_until: lockedFor(15) };
-const LOCK_LAPSED: User = { ...STAFF, locked_until: lockedFor(-60) };
+/**
+ * Distinct rows rather than `{ ...STAFF }` with a lock added.
+ *
+ * `LOCKED` appears in the same list as `STAFF` below, and React keys a row on
+ * `user.id` — two rows sharing one id is a duplicate-key warning and, worse, a
+ * reconciler free to reuse one row's controls for the other. `LOCK_LAPSED` is
+ * only ever rendered on its own today, and carries its own id anyway: the
+ * hazard is not that it shares a list now, it is that adding it to one is a
+ * one-line change nothing would warn about.
+ */
+const LOCKED: User = {
+  ...STAFF,
+  id: 'c58e2a91-6d04-4b73-8f21-9a7c3e5d0b16',
+  name: 'Ishara Fernando',
+  email: 'ishara@rocell.lk',
+  locked_until: lockedFor(15),
+};
+const LOCK_LAPSED: User = {
+  ...STAFF,
+  id: '7f1b3c85-2e49-4a07-b6d3-5c80a9e4f217',
+  name: 'Nimali Silva',
+  email: 'nimali@rocell.lk',
+  locked_until: lockedFor(-60),
+};
 
 interface Reply {
   status: number;
@@ -607,25 +633,52 @@ describe('the controls', () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
-  it('offers nothing that deactivates, deletes or unlocks a row', async () => {
-    // Retargeted by Story 1.10 rather than deleted: Edit has arrived and is
-    // asserted below, and the three verbs still absent are Story 1.11's
-    // (deactivate, delete) and nobody's (unlock — DW-64 lost its predicted owner
-    // when this story shipped without one). Asserted over the rendered control
-    // names rather than by eye, so a row-end menu added later fails here.
+  it('gives a row exactly three controls, and nothing else has appeared', async () => {
+    // Retargeted by Story 1.11 rather than deleted, as Story 1.10 retargeted it
+    // before: the two verbs this test used to assert the *absence* of now exist,
+    // so it becomes the statement of exactly which controls a row carries.
+    //
+    // Asserted over the rendered control names rather than by eye, so a fourth
+    // verb, a row-end menu or a bulk-select column added later fails here. The
+    // order is the visual order — Edit, then the state verb, then Delete — with
+    // Activate standing in for Deactivate on the deactivated row, so the Actions
+    // column holds three controls whatever state a row is in.
+    //
+    // **The lockout is the absence that is still real.** No control anywhere in
+    // the product ends a lock early: no story in Epic 1 owns an admin unlock at
+    // all (DW-64), and deleting an account deliberately does not clear its
+    // counter either.
     stubList([ADMIN, STAFF, DEACTIVATED, LOCKED]);
     renderScreen();
 
     await screen.findByRole('table');
     const names = screen.getAllByRole('button').map((control) => control.textContent ?? '');
 
-    expect(names).toEqual(['+ Add user', 'Back', 'Edit', 'Edit', 'Edit', 'Edit']);
-    for (const verb of [/deactivate/i, /delete/i, /unlock/i, /remove/i, /password/i]) {
+    expect(names).toEqual([
+      '+ Add user',
+      'Back',
+      'Edit',
+      'Deactivate',
+      'Delete',
+      'Edit',
+      'Deactivate',
+      'Delete',
+      'Edit',
+      'Activate',
+      'Delete',
+      'Edit',
+      'Deactivate',
+      'Delete',
+    ]);
+    for (const verb of [/unlock/i, /remove/i, /password/i, /reset/i, /suspend/i]) {
       expect(screen.queryByRole('button', { name: verb })).toBeNull();
     }
     expect(screen.queryByRole('link')).toBeNull();
     expect(screen.queryByRole('menuitem')).toBeNull();
     expect(screen.queryByRole('checkbox')).toBeNull();
+    // Nothing is open until something is pressed: the dialog is a response to a
+    // press, never part of the screen's resting state.
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('gives every row one Edit control, named for the person it belongs to', async () => {

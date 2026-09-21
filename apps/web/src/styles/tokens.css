@@ -132,6 +132,12 @@
   /* A control that is present but cannot be used yet — an in-flight submit.
    * Dimmed rather than hidden, so the button does not move under the thumb. */
   --disabled-opacity: 0.55;
+  /* The one stacking level above the page. DESIGN.md has no z-index scale
+   * because it has no second elevation tier — a modal uses a scrim, not a
+   * heavier shadow — but a scrim that does not cover the app bar is not a
+   * scrim, so the one modal surface in the product needs a layer of its own.
+   * Above AppShell's skip link (z-index 1) with room left between them. */
+  --z-modal: 100;
 
   /* The one breakpoint in the system: below it, mobile scan surfaces with
    * generous spacing and a bottom tab bar; at and above it, desktop admin

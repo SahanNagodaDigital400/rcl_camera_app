@@ -59,7 +59,7 @@ table and a column it is still selecting.
 |---|---|
 | `20260917T1200_create_users` | the `users` table and its `lower(email)` unique index |
 | `20260917T1210_seed_administrator` | the one seeded Administrator (a marker, see below) |
-| `20260917T1300_create_sessions` | the `sessions` table — the architecture spine's `SESSION` ERD block, with `ON DELETE CASCADE` from `users` so deleting an account ends its sessions rather than orphaning them, a unique index on `token_hash` and an index on `user_id` |
+| `20260917T1300_create_sessions` | the `sessions` table — the architecture spine's `SESSION` ERD block, with `ON DELETE CASCADE` from `users` so deleting an account ends its sessions rather than orphaning them (`DELETE /admin/users/{id}` relies on exactly this and deletes no session row itself), a unique index on `token_hash` and an index on `user_id` |
 | `20260917T1400_track_session_activity` | `sessions.last_seen_at` — the idle half of a session's two deadlines (see below). No index on it, on purpose |
 | `20260918T1000_add_login_throttling` | the `login_attempts` table — FR-4's failed-sign-in counter, keyed on the **submitted address** and never on `users.id` — plus `users.locked_until`, which mirrors a lock onto the account's status and is never read to decide anything. No index on either, on purpose (see below) |
 
@@ -72,9 +72,11 @@ out for 15 minutes; the lock clears itself, and **no unlock command exists** —
 `make migrate` has no counterpart for it, and **no story in Epic 1 owns one**.
 Story 1.10 was where one was predicted; it shipped the user editor without it
 (DW-64), so waiting it out remains the only recovery. It resets the run, so the
-ladder is available again from the start. One thing the editor did change: an
-address change *carries* the run to the new address rather than clearing it, so
-renaming an account is not an unlock either.
+ladder is available again from the start. Two things the admin surfaces did
+*not* change: an address change **carries** the run to the new address rather
+than clearing it, and deactivating or **deleting** an account leaves its
+address's row exactly where it was. So neither renaming, nor closing, nor
+deleting and recreating an account is a way around a lock.
 
 The key is the address as typed, lowercased and stripped — not an account.
 An address that has never been a user accrues the same count, the same delays
@@ -86,7 +88,9 @@ person until you look at the account.
 `users.locked_until` is the mirror, written on the failure that locks and never
 cleared. A value in the past means "locked recently, not locked now". Nothing
 enforces from it — `apps/api` reads `login_attempts` for every decision it
-makes — so editing it changes what an Administrator sees and nothing else.
+makes — so editing it changes what an Administrator sees and nothing else. It
+goes with the row when an account is deleted, which is correct for the same
+reason: it is the mirror, not the counter, and the counter stays behind.
 
 Neither object carries an index. The primary key serves every read; the only
 scan is the sweep, which runs on each failed attempt and deletes rows older
@@ -120,8 +124,8 @@ that has been used every hour for a week is still refused on the seventh day.
 
 There is no warning before either deadline and no countdown — signing in again
 is the whole of the recovery. A session refused for *any* of these reasons
-answers the same `401` as a revoked one or a deactivated owner, and says which
-it was to nobody.
+answers the same `401` as a revoked one, a deactivated owner or an owner whose
+account has been deleted outright, and says which it was to nobody.
 
 `last_seen_at` carries no index deliberately: it is written on most
 authenticated requests, and an index would be maintained on every one of those
@@ -251,7 +255,9 @@ system:
 - it refuses against a database with no `users` table, naming `make migrate`
   rather than surfacing a driver error; and
 - it never touches `active`, so an Administrator deactivated on purpose stays
-  deactivated. Reissuing a credential is not a reactivation.
+  deactivated. Reissuing a credential is not a reactivation — reactivating is
+  `POST /admin/users/{id}/activate`, in the running product, and it is another
+  Administrator's to press.
 
 It changes the password, the expiry and nothing else. It runs at the console,
 with the same environment access `make migrate` needs.
