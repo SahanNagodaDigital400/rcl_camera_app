@@ -536,7 +536,7 @@ def test_the_admin_route_table_is_not_empty() -> None:
     assert _admin_routes(create_app()) != []
 
 
-def test_the_admin_route_table_is_the_eleven_routes_the_product_serves() -> None:
+def test_the_admin_route_table_is_the_twelve_routes_the_product_serves() -> None:
     # The stricter half, separated from the vacuity guard above because it is a
     # different claim with a different lifetime: this one is *meant* to fail the
     # moment a story adds a route under `/admin/` — Story 1.9 added
@@ -544,8 +544,12 @@ def test_the_admin_route_table_is_the_eleven_routes_the_product_serves() -> None
     # Story 1.11 added the three FR-13 verbs, and Story 1.13 added
     # `GET /admin/audit`, and Story 2.1 added `POST /admin/tiles` and
     # `GET /admin/tiles/{tile_id}/images/{image_id}`, and Story 2.2 added
-    # `PATCH /admin/tiles/{tile_id}` and `GET /admin/tiles/lookup` — and its
-    # failure means "update this list", not "the guards above stopped guarding".
+    # `PATCH /admin/tiles/{tile_id}` and `GET /admin/tiles/lookup`, and Story
+    # 2.3 added `DELETE /admin/tiles/{tile_id}` — and its failure means "update
+    # this list", not "the guards above stopped guarding".
+    #
+    # The comparison is over `f"{method} {path}"`, so the removal is a *twelfth*
+    # entry rather than a second method on a path already listed.
     #
     # The count is in the name on purpose, the same way `test_audit.py` names
     # its vocabulary size: a story that adds a route has to change the name as
@@ -574,6 +578,7 @@ def test_the_admin_route_table_is_the_eleven_routes_the_product_serves() -> None
             f"POST {ADD_TILE}",
             f"GET {TILE_IMAGE}",
             f"PATCH {EDIT_TILE}",
+            f"DELETE {EDIT_TILE}",
             f"GET {TILE_LOOKUP}",
         ]
     )

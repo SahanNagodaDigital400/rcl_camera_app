@@ -760,7 +760,7 @@ describe('saving is the one action on the add tile screen', () => {
   });
 });
 
-describe('saving is the one action on the edit tile screen', () => {
+describe('saving is the one accented action on the edit tile screen', () => {
   // DESIGN.md's "exactly one per screen" for the accent-filled primary, on a
   // screen with two stages: Find takes the accent while no tile is loaded and
   // Save takes it once one is, they are never rendered together, and the
@@ -844,6 +844,36 @@ describe('saving is the one action on the edit tile screen', () => {
     // and it is transcribed off a physical tile, in the lookup field and in
     // the edit field alike.
     expect(declaration(rule(css(), '.code'), 'font-family')).toBe('var(--font-mono)');
+  });
+
+  it('gives the tile removal the destructive fill and its own foreground', () => {
+    // DESIGN.md's `button-destructive`, the same treatment `UserListScreen`
+    // already writes once: white on this red is 4.87:1 and passes AA. An accent
+    // fill here would be a second primary action on a screen DESIGN.md allows
+    // exactly one — which is what the accent count below holds.
+    const destructive = rule(css(), '.destructive');
+
+    expect(declaration(destructive, 'background')).toBe('var(--color-destructive)');
+    expect(declaration(destructive, 'color')).toBe('var(--color-destructive-foreground)');
+    expect(declaration(destructive, 'border-radius')).toBe('var(--radius-sm)');
+  });
+
+  it('meets the touch-target floor on the tile removal', () => {
+    // Stated on the rule rather than left to `global.css`'s floor on `button`:
+    // this is the one control on the screen whose press cannot be taken back,
+    // so the hit area is part of the control and not of the reset.
+    expect(declaration(rule(css(), '.destructive'), 'min-height')).toBe(
+      'var(--touch-target-min)',
+    );
+  });
+
+  it('sets the removal apart from the form it is not part of', () => {
+    // Nothing in the removal section travels with Save. The separator is what
+    // says so on screen, and it is a hairline in the border token rather than a
+    // second surface — DESIGN.md has one elevation tier and this is not it.
+    expect(declaration(rule(css(), '.removal'), 'border-top')).toBe(
+      'var(--border-hairline) solid var(--color-border)',
+    );
   });
 
   it('paints nothing else with the accent', () => {

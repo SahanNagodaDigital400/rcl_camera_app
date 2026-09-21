@@ -1,6 +1,6 @@
 """`/admin/tiles` — the Catalogue's write path, and the query that proves it worked.
 
-Four routes and one function that is not a route:
+Five routes and one function that is not a route:
 
 * `POST /admin/tiles` (FR-14) takes a Code, a Size, an optional Category and
   one to eight reference images, and creates a Tile that a Scan can return in
@@ -9,6 +9,9 @@ Four routes and one function that is not a route:
   Category, and the Reference Images it carries — adding new ones through the
   *same* intake, embedding and derivative path the add uses, and removing old
   ones for real.
+* `DELETE /admin/tiles/{tile_id}` (FR-16) withdraws one outright — the Tile,
+  its Reference Images and every embedding those images produced leave the
+  searchable graph in one statement, by the migration's own cascades.
 * `GET /admin/tiles/lookup?code=` finds one Tile by an **exact** Code, which is
   the whole door the edit screen has until Story 2.5 ships the Catalogue list.
   Not a search: no substring, no listing, no pagination.
@@ -60,13 +63,14 @@ writes no entry at all — a `409`, a `422` or a `413` changed nothing, so there
 is nothing to record. The edit is the same shape, one story later.
 
 **Removal is real removal** (AD-5, epic context). `edit_tile` issues
-`DELETE FROM reference_image` so that `reference_embedding` cascades out of the
-index: there is no soft-delete flag and no query-time predicate, because a
-predicate is a thing exactly one call site has to remember and Epic 3's scan is
-the call site that must not forget. The one asymmetry with the add's ordering
-is deliberate and is argued for at `edit_tile`: objects belonging to *removed*
-images are deleted **after** the commit, because a live row pointing at absent
-bytes is the unrecoverable state and an orphaned object is not.
+`DELETE FROM reference_image` and `remove_tile` issues `DELETE FROM tile`, in
+both cases so that the rows below cascade out of the index: there is no
+soft-delete flag and no query-time predicate, because a predicate is a thing
+exactly one call site has to remember and Epic 3's scan is the call site that
+must not forget. The one asymmetry with the add's ordering is deliberate and is
+argued for at `edit_tile`: objects belonging to *removed* images — and to a
+removed Tile — are deleted **after** the commit, because a live row pointing at
+absent bytes is the unrecoverable state and an orphaned object is not.
 
 **A Tile always keeps at least one Reference Image.** An edit whose net effect
 is zero images is refused (FR-7): the reference image is what lets a member of
@@ -81,9 +85,11 @@ proxied by the `GET` below, which re-checks authorization on every request.
 the score because ranking and every server log line need it; nothing on the
 `Tile` contract carries one, and no route here emits one.
 
-Not here, deliberately: the Tile removal (2.3), the bulk path (2.4), the
-catalogue **list and substring search** (2.5), Epic 3's scan endpoint, and any
-crop step — AD-11 resolved that one explicitly as *no* for admin uploads.
+Not here, deliberately: the bulk path (2.4), the catalogue **list and substring
+search** (2.5), Epic 3's scan endpoint, and any crop step — AD-11 resolved that
+one explicitly as *no* for admin uploads. Nor any way back from a removal: no
+restore, no undo, no trash state and no grace period. The confirmation on the
+screen is the safeguard, and a Tile that should come back is added again.
 """
 
 from __future__ import annotations
@@ -234,7 +240,16 @@ TOP_K = 3
 #: warning cannot otherwise tell a write that was undone from a removal whose
 #: bytes could not follow it.
 DISCARD_ROLLED_BACK = "the write was rolled back"
-DISCARD_REMOVED = "the reference image was removed"
+
+#: **Worded about the rows rather than about a Reference Image**, because two
+#: call sites now pass it: `edit_tile` removing one image from a Tile, and
+#: `remove_tile` withdrawing the whole Tile. It read "the reference image was
+#: removed" while only the first existed, and left as it was it would have told
+#: an operator cleaning up after a Tile removal that an image had gone — which
+#: is a different, and smaller, event than the one that happened. This sentence
+#: is true of the orphan in front of them either way: the rows that pointed at
+#: these bytes are gone and no further request will name them.
+DISCARD_REMOVED = "the rows pointing at it were removed"
 
 #: Sent with the reference-image bytes and with nothing else in the product.
 #: See `read_reference_image` for why this one response needs it.
@@ -395,6 +410,44 @@ _DELETE_REFERENCE_IMAGE = """
 DELETE FROM reference_image
  WHERE id = %s AND tile_id = %s
 RETURNING source_key, derivative_key
+"""
+
+#: Every storage key one Tile's Reference Images point at.
+#:
+#: Read **before** the Tile is deleted, because afterwards there is no row to
+#: read them from and these keys are the only way back to the bytes. Ordered so
+#: that a log line naming a key that could not be removed is reproducible
+#: between two runs of the same removal.
+#:
+#: The `ReferenceImage` contract deliberately carries neither column (AD-9), so
+#: this is a statement of its own rather than a widening of
+#: `_SELECT_TILE_IMAGES`: one query answers the screen and one answers the
+#: store, and the day a key becomes servable it has to be an edit here.
+_SELECT_TILE_IMAGE_KEYS = """
+SELECT source_key, derivative_key
+  FROM reference_image
+ WHERE tile_id = %s
+ ORDER BY created_at, id
+"""
+
+#: FR-16's whole mechanism. **One statement, and the schema carries the rest.**
+#:
+#: `reference_image` cascades from `tile` and `reference_embedding` cascades
+#: from `reference_image`, both by the migration's own `ON DELETE CASCADE` and
+#: both with AD-5 named in the comment there. Deleting the children by hand
+#: would be a second statement of a rule the schema already makes, and the two
+#: would drift the first time a table is added below `reference_image`.
+#:
+#: `tile_size` and `tile_category` are referenced *by* `tile` and never the
+#: other way, so a removal cannot reach them: they are shared lookups, not the
+#: Tile's property, and the next Tile filed under `45X90` finds it already
+#: there.
+#:
+#: No `RETURNING`: the row was read and locked a moment earlier, so there is
+#: nothing this statement could report that the caller does not already hold —
+#: and the `404` is decided by that read, never by a zero-row `DELETE`.
+_DELETE_TILE = """
+DELETE FROM tile WHERE id = %s
 """
 
 _SELECT_ACTIVE_GENERATION = """
@@ -576,11 +629,16 @@ def find_candidates(
     `shared/vision/tests/test_pipeline.py` asserts the two produce bit-identical
     vectors.
 
-    Fewer than `limit` come back when the catalogue holds fewer Tiles, and
-    none at all when it holds none — an empty catalogue has no active
-    generation, and answering that with an empty list rather than by opening
-    one is what keeps this function a reader. Never padded, never deduplicated
-    by Category (AD-18), never averaged across views (AD-13).
+    Fewer than `limit` come back when the catalogue holds fewer Tiles, and none
+    at all when it holds none. There are two shapes of "none" and both answer
+    the empty list, by different routes: a catalogue that has *never* been
+    indexed has no active generation and returns below without embedding, while
+    one emptied by removals keeps its generation — a removal takes vectors out
+    of the graph (AD-5), it does not retire the generation they were cut into —
+    so it embeds and then finds nothing. Answering either with an empty list
+    rather than by opening a generation is what keeps this function a reader.
+    Never padded, never deduplicated by Category (AD-18), never averaged across
+    views (AD-13).
     """
     generation_id = active_generation(conn)
     if generation_id is None:
@@ -736,17 +794,19 @@ def _prepare(tile_id: UUID, accepted: shared_vision.IntakeResult) -> _Prepared:
 def _discard(store: ObjectStore, keys: list[str], why: str = DISCARD_ROLLED_BACK) -> None:
     """Remove objects no row points at any more. Best effort, always.
 
-    Two call sites, and they are mirror images of each other — which is what
-    `why` is for. It reaches the log line and nothing else: the two cases leave
-    an identical orphan behind and an operator reading a warning has no other
-    way to tell "a write failed and was undone" from "a removal committed and
-    its bytes could not follow".
+    Three call sites in two shapes, which is what `why` is for. It reaches the
+    log line and nothing else: both shapes leave an identical orphan behind and
+    an operator reading a warning has no other way to tell "a write failed and
+    was undone" from "the rows committed their disappearance and the bytes
+    could not follow".
 
     * `add_tile` and `edit_tile` call it from their `except` clause, with every
       key the failed request wrote. The transaction has rolled back, so the
       rows those objects belonged to do not exist.
     * `edit_tile` calls it once more *after* its commit, with the keys of the
       images the edit removed. The rows are gone, so the objects are next.
+    * `remove_tile` calls it after its own commit, with every key the removed
+      Tile's images held. Same reasoning one level up: the rows are gone.
 
     Best effort by construction: an object that resists deletion must not turn
     a `409` the Administrator can act on into a `500` they cannot, nor turn a
@@ -1449,6 +1509,119 @@ def edit_tile(
         reference_images=stored_images,
         created_at=tile_row["created_at"],
         updated_at=tile_row["updated_at"],
+    )
+
+
+# --- The removal (FR-16) ------------------------------------------------------
+
+
+@router.delete("/admin/tiles/{tile_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_tile(
+    tile_id: UUID,
+    response: Response,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    store: Annotated[ObjectStore, Depends(get_object_store)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
+) -> None:
+    """FR-16 — withdraw a Tile from the Catalogue, index and all.
+
+    **Real removal, and one statement of it** (AD-5). `DELETE FROM tile` and the
+    migration's two `ON DELETE CASCADE`s carry `reference_image` and then
+    `reference_embedding` out of the HNSW graph with it. There is no
+    soft-delete column, no `deleted_at` and no query-time predicate anywhere:
+    a predicate is a thing exactly one call site has to remember, and Epic 3's
+    scan is the call site that must not forget. `_SELECT_CANDIDATES` joins
+    through both tables, so a removed Tile leaves the result set by the cascade
+    alone, with no filter to add and none to forget.
+
+    **`204`, with no body**, exactly as `delete_user` answers. There is no row
+    left to return and answering with the one that was deleted would be the
+    product describing something that no longer exists; `apps/web`'s
+    `apiRequest` answers `null` for a `204` without parsing a body.
+
+    **Not idempotent, on purpose.** An unknown id is `404 tile_not_found` and
+    not a silent `204`: a caller told "removed" about a Tile that was never
+    there has been told they removed something they did not. The `404` is
+    decided by the locking read, never by a zero-row `DELETE` — a zero-row
+    `DELETE` cannot tell "no such id" from anything else.
+
+    **`FOR UPDATE OF t`**, so a `PATCH` on the same Tile serializes against this
+    rather than adding an image into a row that is going. Whichever commits
+    second sees the other: an edit that loses the race answers `404` and
+    discards every object it wrote.
+
+    **Database first, storage second — the inverse of the add's ordering, and
+    the same rule read backwards.** `add_tile` writes objects before rows so a
+    failed request leaves an orphan rather than a row pointing at nothing;
+    deleting the bytes before this commit would leave a live row pointing at
+    nothing if the transaction then rolled back. So the bytes go last, best
+    effort and logged — a file an operator can delete, never a `500` over a
+    removal that succeeded.
+
+    **The entry is written after the `DELETE` and inside its transaction**, so
+    it exists exactly when the removal committed, and its `details` are an
+    AD-10 snapshot taken from the locked read because there is nothing left to
+    read them from. `target_user_id`/`target_email` stay empty — those columns
+    are an account's, and a Tile is not one.
+
+    **Nothing here touches the log** beyond appending to it (AD-4). The entries
+    that already name this Tile — the `catalogue_tile_added` that recorded it,
+    every `catalogue_tile_edited` since — stay exactly as they are, which is
+    the whole point of recording the removal beside them. The log carries no
+    foreign key into `tile` for precisely this reason — AD-4 grants the
+    application no `DELETE` there, so one would leave a choice between blocking
+    every removal and cascading into a table nothing may delete from.
+
+    Sync, not `async def`, for `add_tile`'s reason: psycopg is synchronous.
+    Nothing here decodes or embeds anything — a removal takes rows out of the
+    active generation, it does not cut a new one — so the route needs no model
+    artifact and reads no pipeline stamp.
+    """
+    response.headers.update(NO_STORE)
+
+    with conn.transaction():
+        current = conn.execute(_SELECT_TILE_FOR_UPDATE, (tile_id,)).fetchone()
+        if current is None:
+            raise _tile_not_found()
+
+        # Before the `DELETE`, because afterwards there is no row to read them
+        # from — and these keys are the only way back to the bytes.
+        held = conn.execute(_SELECT_TILE_IMAGE_KEYS, (tile_id,)).fetchall()
+
+        deleted = conn.execute(_DELETE_TILE, (tile_id,)).rowcount
+        # The row was found and locked three lines above, so the statement
+        # cannot have matched nothing. Asserted rather than branched on: there
+        # is no second outcome for this handler to describe.
+        assert deleted == 1, "the locked tile cannot have vanished under its own lock"
+
+        # FR-20's answer to "who took this out of the Catalogue, and when".
+        # Every value is a snapshot from the locked read (AD-10) and none of
+        # them is a foreign key — the Tile they name is gone by the time this
+        # row is visible, which is exactly the state the log has to survive.
+        audit.record(
+            conn,
+            action=AuditAction.CATALOGUE_TILE_REMOVED,
+            actor_id=administrator.id,
+            actor_email=administrator.email,
+            source_ip=source_ip,
+            details={
+                "tile_id": str(tile_id),
+                "code": current["code"],
+                "size": current["size"],
+                "category": current["category"],
+                "images_removed": len(held),
+            },
+        )
+
+    # Committed. The rows are gone, so the bytes can follow — best effort and
+    # logged, for the reason above. A storage failure here must not turn a
+    # removal that has already landed into a `500` the Administrator would read
+    # as "nothing happened".
+    _discard(
+        store,
+        [key for row in held for key in (row["source_key"], row["derivative_key"])],
+        DISCARD_REMOVED,
     )
 
 

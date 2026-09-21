@@ -95,6 +95,10 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   // same shape for the same reason: subject, then verb.
   catalogue_tile_added: 'Tile added',
   catalogue_tile_edited: 'Tile edited',
+  // The third of the same pair, and the one whose subject is gone by the time
+  // this renders: nothing can be fetched to explain the row, so the label and
+  // the entry's own `details` are the whole record.
+  catalogue_tile_removed: 'Tile removed',
 };
 
 /**

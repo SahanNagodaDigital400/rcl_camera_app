@@ -539,7 +539,8 @@ function Gate(): JSX.Element {
 
           A convenience only. The server refuses a Staff caller at
           `GET /admin/users`, `GET /admin/audit`, `POST /admin/tiles`,
-          `GET /admin/tiles/lookup` and `PATCH /admin/tiles/{id}` regardless of
+          `GET /admin/tiles/lookup`, `PATCH /admin/tiles/{id}` and
+          `DELETE /admin/tiles/{id}` regardless of
           what this renders (AGENTS.md Policy: authorization is never gated by
           what the UI hides), and the cached `user` read here is a render cache
           and never a decision. */}

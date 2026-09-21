@@ -55,7 +55,8 @@ export type AuditAction =
   | 'user_activated'
   | 'user_deleted'
   | 'catalogue_tile_added'
-  | 'catalogue_tile_edited';
+  | 'catalogue_tile_edited'
+  | 'catalogue_tile_removed';
 
 /**
  * Every action the product records today. Iterable, so a label map cannot miss
@@ -77,6 +78,7 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   'user_deleted',
   'catalogue_tile_added',
   'catalogue_tile_edited',
+  'catalogue_tile_removed',
 ];
 
 export interface AuditLogEntry {

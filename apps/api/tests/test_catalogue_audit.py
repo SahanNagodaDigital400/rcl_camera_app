@@ -6,24 +6,26 @@ other than an account. Three properties, and the third is the one a later story
 is most likely to break:
 
 * a successful write records **exactly one** entry — `catalogue_tile_added`
-  from Story 2.1, `catalogue_tile_edited` from Story 2.2 — with the actor, the
-  source address and the Code;
+  from Story 2.1, `catalogue_tile_edited` from Story 2.2, `catalogue_tile_removed`
+  from Story 2.3 — with the actor, the source address and the Code;
 * a refused write records **none** — a `409`, a `422` or a `413` changed
   nothing, so there is nothing to record;
 * the entry and the change are in **one transaction**, so neither can exist
   without the other.
 
 The Tile is named in `details` as a denormalized snapshot, never as a foreign
-key (AD-10): removal (Story 2.3) is a hard delete and the log may neither
-block it nor be cascaded into. An edit never rewrites the add's entry either —
-AD-4 makes the log append-only at every level, so a rename adds an entry beside
-the one that recorded the old Code.
+key (AD-10): the removal is a hard delete and the log may neither block it nor
+be cascaded into — the entries that named the Tile outlive it, which is the
+whole point of recording that it went. An edit never rewrites the add's entry
+either — AD-4 makes the log append-only at every level, so a rename adds an
+entry beside the one that recorded the old Code.
 """
 
 from __future__ import annotations
 
 import io
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -387,3 +389,174 @@ def test_a_refused_caller_writes_no_edit_entry(
 
     assert edit(client, "00000000-0000-4000-8000-000000000000", code=CODE).status_code == 403
     assert edit_entries(conn, audit_rows) == []
+
+
+# --- Story 2.3's entry --------------------------------------------------------
+# The one entry whose subject no longer exists by the time it can be read. Every
+# value in `details` is an AD-10 snapshot taken from the locked read, because
+# after the `DELETE` there is nothing left to take it from — and the entries
+# that already named this Tile stay exactly as they are, which is the whole
+# point of recording the removal beside them (AD-4).
+
+REMOVED_ACTION = "catalogue_tile_removed"
+
+
+def removal_entries(conn: psycopg.Connection, rows: AuditRows) -> list[dict[str, object]]:
+    return [row for row in rows(conn) if row["action"] == REMOVED_ACTION]
+
+
+def remove(client: TestClient, tile_id: str) -> Any:
+    return client.delete(f"{ADD_TILE}/{tile_id}")
+
+
+@needs_model
+def test_a_successful_removal_writes_one_entry_naming_who_what_and_from_where(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    created = add(client).json()
+
+    assert remove(client, created["id"]).status_code == 204
+
+    entries = removal_entries(conn, audit_rows)
+    assert len(entries) == 1
+    entry = entries[0]
+
+    assert entry["actor_user_id"] == administrator.id
+    assert entry["actor_email"] == administrator.email
+    assert entry["source_ip"] == "127.0.0.1"
+    assert entry["created_at"] is not None
+    # The target columns are an account's. A Tile is not one, and a Tile that
+    # no longer exists is emphatically not one.
+    assert entry["target_user_id"] is None
+    assert entry["target_email"] is None
+
+    details = entry["details"]
+    assert isinstance(details, dict)
+    assert details["tile_id"] == created["id"]
+    assert details["code"] == CODE
+    assert details["size"] == "45X90"
+    assert details["category"] == "CREMA MARMOL"
+    assert details["images_removed"] == 1
+
+
+@needs_model
+def test_the_entry_counts_every_image_the_removed_tile_held_not_one(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # The count is the only part of the snapshot that is computed rather than
+    # copied, and the rest of this file's removals carry a single image — so a
+    # hardcoded `1`, or the length of the wrong list, reads as correct
+    # everywhere else. A Tile that held three says three.
+    created = add(
+        client,
+        files=[
+            ("images", (f"reference-{seed}.jpg", an_image(seed), "image/jpeg"))
+            for seed in (11, 12, 13)
+        ],
+    ).json()
+
+    assert remove(client, created["id"]).status_code == 204
+
+    details = removal_entries(conn, audit_rows)[0]["details"]
+    assert isinstance(details, dict)
+    assert details["images_removed"] == 3
+
+
+@needs_model
+def test_the_removal_entry_carries_no_storage_key_and_no_secret(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # `api.audit.record`'s standing rule about `details`, at the one call site
+    # that reads the storage keys on its way past: they are in the handler's
+    # hands here and must not reach the log, which outlives the objects (AD-9).
+    created = add(client).json()
+
+    remove(client, created["id"])
+
+    details = str(removal_entries(conn, audit_rows)[0]["details"])
+    for forbidden in ("source_key", "derivative_key", "tiles/", ".jpg", "password", "token"):
+        assert forbidden not in details, details
+
+
+@needs_model
+def test_the_entries_that_already_named_the_tile_survive_it(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # `audit_log` carries no foreign key into `tile` (AD-10), so a hard delete
+    # can neither be blocked by the log nor cascade into it — and AD-4 grants
+    # the application no DELETE there in any case. Both earlier entries are
+    # still readable, unchanged, after the Tile they name is gone.
+    created = add(client).json()
+    added = catalogue_entries(conn, audit_rows)[0]
+    edit(client, created["id"], code="RP.CMA.0002DJ.SM.0T")
+    edited = edit_entries(conn, audit_rows)[0]
+
+    assert remove(client, created["id"]).status_code == 204
+
+    assert catalogue_entries(conn, audit_rows) == [added]
+    assert edit_entries(conn, audit_rows) == [edited]
+    assert len(removal_entries(conn, audit_rows)) == 1
+
+
+@needs_model
+def test_a_removal_of_an_unknown_tile_writes_no_entry(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # The `404` changed nothing, so there is nothing to record — and an entry
+    # here would say an Administrator removed a Tile that was never there.
+    add(client)
+
+    assert remove(client, "00000000-0000-4000-8000-000000000000").status_code == 404
+
+    assert removal_entries(conn, audit_rows) == []
+
+
+def test_a_refused_caller_writes_no_removal_entry(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser, audit_rows: AuditRows
+) -> None:
+    account = make_user(role=Role.STAFF)
+    client.post(LOGIN, json={"email": account.email, "password": account.password})
+
+    assert remove(client, "00000000-0000-4000-8000-000000000000").status_code == 403
+    assert removal_entries(conn, audit_rows) == []
+
+
+@needs_model
+def test_an_audit_failure_leaves_the_tile_where_it_was(
+    client: TestClient,
+    conn: psycopg.Connection,
+    administrator: Any,
+    audit_rows: AuditRows,
+    storage_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The removal and its entry are one unit of work, proved by breaking one half.
+
+    A Tile that vanished without a record of who removed it is the state AD-4
+    and FR-20 exist to prevent, and — unlike the add's version of this — it is
+    not recoverable by re-running anything. The only way to assert the
+    transaction is really shared is to make the second write fail and check the
+    first did not take effect.
+    """
+    created = add(client).json()
+
+    def refuse(*_: Any, **__: Any) -> None:
+        raise psycopg.errors.InsufficientPrivilege("no INSERT on the audit table")
+
+    monkeypatch.setattr(audit_module, "record", refuse)
+
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        remove(client, created["id"])
+
+    row = conn.execute("SELECT count(*) AS total FROM tile").fetchone()
+    assert row is not None and row["total"] == 1
+    images = conn.execute("SELECT count(*) AS total FROM reference_image").fetchone()
+    assert images is not None and images["total"] == 1
+    # 16, because AD-13 stores sixteen views per Reference Image — four clean
+    # rotations and twelve augmented crops — and none of them moved.
+    vectors = conn.execute("SELECT count(*) AS total FROM reference_embedding").fetchone()
+    assert vectors is not None and vectors["total"] == 16
+    assert removal_entries(conn, audit_rows) == []
+    # And nothing was deleted from storage: the objects go after the commit,
+    # and there was no commit.
+    assert len([path for path in storage_root.rglob("*") if path.is_file()]) == 2

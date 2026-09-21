@@ -46,12 +46,12 @@ function anEntry(overrides: Record<string, unknown> = {}): Record<string, unknow
 }
 
 describe('the shared AuditAction', () => {
-  it('is the fifteen actions the product writes', () => {
-    // Thirteen from Epic 1 and two from Epic 2's catalogue writes — the add
-    // (Story 2.1) and the edit (Story 2.2). The count is in the name on
-    // purpose: an addition has to be a deliberate edit here and in the Python
-    // twin, not a set that quietly grew.
-    expect(AUDIT_ACTIONS).toHaveLength(15);
+  it('is the sixteen actions the product writes', () => {
+    // Thirteen from Epic 1 and three from Epic 2's catalogue writes — the add
+    // (Story 2.1), the edit (Story 2.2) and the removal (Story 2.3). The count
+    // is in the name on purpose: an addition has to be a deliberate edit here
+    // and in the Python twin, not a set that quietly grew.
+    expect(AUDIT_ACTIONS).toHaveLength(16);
     expect(new Set(AUDIT_ACTIONS)).toEqual(
       new Set<AuditAction>([
         'login_succeeded',
@@ -69,6 +69,7 @@ describe('the shared AuditAction', () => {
         'user_deleted',
         'catalogue_tile_added',
         'catalogue_tile_edited',
+        'catalogue_tile_removed',
       ]),
     );
   });
@@ -78,6 +79,7 @@ describe('the shared AuditAction', () => {
     ['user_deleted', true],
     ['catalogue_tile_added', true],
     ['catalogue_tile_edited', true],
+    ['catalogue_tile_removed', true],
     // An action from an epic this build predates. The narrower answers
     // false and the *screen* still renders it, which is the asymmetry the
     // fallback label exists for.

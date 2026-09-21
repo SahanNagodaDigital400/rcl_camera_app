@@ -1568,3 +1568,27 @@ source_spec: `spec-2-2-edit-product.md`
 severity: low
 reason: One `make test` invocation during this pass failed at `apps/web/src/__tests__/edit-user.test.tsx:506` asserting focus had returned to the email box; the same file passed alone (44/44) immediately afterwards and the next full `make test` was green at 1277/1277. Two prior sightings are already recorded against `session-expiry.test.tsx` at `:321` (Story 2.1) and `:476` (this story). Neither file is touched by this story. Three sightings across two files, all of them focus- or timing-dependent assertions that pass in isolation, is a suite-level defect rather than three separate flaky tests.
 status: open
+
+### DW-197: No `FOR UPDATE` read anywhere in the API sets a `lock_timeout`, so one stuck transaction blocks every request that touches the same row indefinitely.
+origin: spec-deferred 74e63ce217a8
+location: apps/api/api/catalogue.py remove_tile, edit_tile; apps/api/api/users.py delete_user
+source_spec: `spec-2-3-remove-product.md`
+severity: medium
+reason: `catalogue.remove_tile` and `catalogue.edit_tile` take `_SELECT_TILE_FOR_UPDATE`, and `users.delete_user`/`deactivate_user` take their own locking reads, none of them under a `SET LOCAL lock_timeout`. A transaction that acquires a row lock and then hangs holds a worker per waiting request until the pool is exhausted. Not caused by this story — the pattern predates it in three handlers — and a timeout value plus the refusal it maps to is a product decision rather than an edit.
+status: open
+
+### DW-198: The `needs_model` skipif block is now written out verbatim in four test files rather than living in `conftest.py`.
+origin: spec-deferred cf42c1c826b0
+location: apps/api/tests/conftest.py
+source_spec: `spec-2-3-remove-product.md`
+severity: low
+reason: `pytest.mark.skipif(not pipeline.MODEL_PATH.exists(), ...)` appears identically in `test_add_tile.py`, `test_catalogue_audit.py`, `test_remove_tile.py` and — added by this story — `test_catalogue_authorization.py`, each with its own `shared_vision` imports. `conftest.py` already supplies every other shared fixture these files use. A fourth copy is the point at which the duplication is worth collapsing, but doing it touches three files this story does not otherwise own.
+status: open
+
+### DW-199: `session-expiry.test.tsx`'s sign-out assertion is flaky under the full suite's parallel load, failing roughly one run in four while passing every time the file is run alone.
+origin: spec-deferred 488bd6f73d8d
+location: apps/web/src/__tests__/session-expiry.test.tsx:165
+source_spec: `spec-2-3-remove-product.md`
+severity: low
+reason: Observed during this pass: `make test` failed once at `session-expiry.test.tsx:165` (`findByLabelText(/password/i)` timing out after the sign-out click, with the signed-in home panel still rendered), then passed on two consecutive full runs and on an isolated run of that file. Nothing in this story touches session handling or that screen — the only edits near it are comment-only lines in `App.tsx` and `api/client.ts` — so the flake predates this change and is a property of the test's waiting strategy under 23 parallel workers, not of the diff.
+status: open

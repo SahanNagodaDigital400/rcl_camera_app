@@ -2,10 +2,14 @@
 
 `tests/test_admin_authorization.py` proves the *rule* over the route table —
 every route under `/admin/` declares `require_administrator`, and every route
-declaring it is under `/admin/`, with Story 2.1's two and Story 2.2's two now in
-its expected set. This file proves the *behaviour* on those four routes
-specifically, and the one thing the table guard cannot see: that a refused
-caller leaves the database and the object store untouched.
+declaring it is under `/admin/`, with Story 2.1's two, Story 2.2's two and Story
+2.3's one now in its expected set. This file proves the *behaviour* on those
+five routes specifically, and the one thing the table guard cannot see: that a
+refused caller leaves the database and the object store untouched.
+
+For the removal that claim is inverted and is the stronger half: there is a Tile
+in the catalogue when the refused call arrives, so "nothing was written" becomes
+"the Tile, its images, its embeddings and its objects are all still there".
 
 That second half matters more here than it did for Story 1.8's user write. The
 add path decodes images, runs 16 forward passes and writes two objects per
@@ -29,11 +33,20 @@ import shared_vision
 from fastapi.testclient import TestClient
 from PIL import Image
 from shared_schema.user import Role
+from shared_vision import pipeline
 
 MakeUser = Callable[..., Any]
 
 ADD_TILE = "/admin/tiles"
 LOGIN = "/auth/login"
+
+#: The removal's refusals need a Tile to fail to remove, and putting one in the
+#: catalogue runs the real embedding path. Every other test in this file is
+#: refused before a byte is decoded and needs no artifact at all.
+needs_model = pytest.mark.skipif(
+    not pipeline.MODEL_PATH.exists(),
+    reason="model not downloaded; run `make model`",
+)
 
 
 def an_image() -> bytes:
@@ -75,6 +88,16 @@ def patch_tile(client: TestClient) -> Any:
 
 def lookup_tile(client: TestClient) -> Any:
     return client.get(f"{ADD_TILE}/lookup", params={"code": REFUSED_FIELDS["code"]})
+
+
+def delete_tile(client: TestClient, tile_id: str | None = None) -> Any:
+    """Story 2.3's removal.
+
+    The id names no Tile unless one is given, for `patch_tile`'s reason: a
+    handler that ran would answer `404`, and the dependency answers `403` or
+    `401` first.
+    """
+    return client.delete(f"{ADD_TILE}/{tile_id or uuid4()}")
 
 
 def sign_in(client: TestClient, account: Any) -> None:
@@ -293,7 +316,7 @@ def test_an_administrator_demoted_mid_session_is_refused_on_the_next_request(
     nothing_was_written(conn, storage_root)
 
 
-@pytest.mark.parametrize("send", [post_tile, get_image, patch_tile, lookup_tile])
+@pytest.mark.parametrize("send", [post_tile, get_image, patch_tile, lookup_tile, delete_tile])
 def test_every_refusal_is_uncacheable(
     client: TestClient, make_user: MakeUser, send: Callable[[TestClient], Any]
 ) -> None:
@@ -303,3 +326,102 @@ def test_every_refusal_is_uncacheable(
     sign_in(client, make_user(role=Role.STAFF))
 
     assert send(client).headers["cache-control"] == "no-store"
+
+
+# --- The removal (Story 2.3) --------------------------------------------------
+# The inverse claim, and the stronger one: there *is* a Tile when the refused
+# call arrives, so what has to hold is not "nothing was written" but "nothing
+# was taken away" — from the database and from the object store alike.
+
+
+@pytest.fixture
+def a_catalogued_tile(client: TestClient, make_user: MakeUser) -> Any:
+    """One Tile, added by an Administrator whose session is then replaced.
+
+    Returned as the id a later caller tries and fails to remove. The sign-in
+    below overwrites the admin session cookie, so the refused caller really is
+    the only session the request carries.
+    """
+    sign_in(client, make_user(role=Role.ADMIN, name="Nadeesha Silva"))
+    response = post_tile(client)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def nothing_was_removed(conn: psycopg.Connection, storage_root: Path) -> None:
+    """The one Tile, its one image, its 16 views and its two objects, all intact.
+
+    Sixteen because AD-13 embeds sixteen views of every Reference Image; two
+    objects because each one is stored as a source and a derivative.
+    """
+    expected = (1, 1, 16)
+    for statement, total in zip(_COUNTS, expected, strict=True):
+        row = conn.execute(statement).fetchone()
+        assert row is not None
+        assert row["total"] == total, statement
+    assert len([path for path in storage_root.rglob("*") if path.is_file()]) == 2
+
+
+@needs_model
+def test_a_staff_caller_is_refused_the_removal_and_removes_nothing(
+    client: TestClient,
+    conn: psycopg.Connection,
+    storage_root: Path,
+    make_user: MakeUser,
+    a_catalogued_tile: Any,
+    audit_rows: Callable[[psycopg.Connection], list[dict[str, object]]],
+) -> None:
+    sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
+
+    response = delete_tile(client, a_catalogued_tile["id"])
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "administrator_required"
+    nothing_was_removed(conn, storage_root)
+    assert [r for r in audit_rows(conn) if r["action"] == "catalogue_tile_removed"] == []
+
+
+@needs_model
+def test_a_signed_out_caller_is_refused_the_removal_and_removes_nothing(
+    client: TestClient,
+    conn: psycopg.Connection,
+    storage_root: Path,
+    a_catalogued_tile: Any,
+    audit_rows: Callable[[psycopg.Connection], list[dict[str, object]]],
+) -> None:
+    client.cookies.clear()
+
+    response = delete_tile(client, a_catalogued_tile["id"])
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+    nothing_was_removed(conn, storage_root)
+    assert [r for r in audit_rows(conn) if r["action"] == "catalogue_tile_removed"] == []
+
+
+def test_a_staff_caller_is_refused_the_removal_before_any_row_is_read(
+    client: TestClient, conn: psycopg.Connection, storage_root: Path, make_user: MakeUser
+) -> None:
+    # The id names no Tile, so a handler that ran would answer `404`. The
+    # dependency answers `403` first, which is the whole of "the authorization
+    # is a dependency, never a line in the handler" — and needs no Tile, and
+    # therefore no model artifact, to state.
+    sign_in(client, make_user(role=Role.STAFF))
+
+    response = delete_tile(client)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "administrator_required"
+    nothing_was_written(conn, storage_root)
+
+
+def test_a_signed_out_caller_is_refused_the_removal(
+    client: TestClient, conn: psycopg.Connection, storage_root: Path
+) -> None:
+    response = delete_tile(client)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+    # The half the route-table guard cannot see, as on every other refusal in
+    # this file: the caller reached neither the database nor the store.
+    nothing_was_written(conn, storage_root)

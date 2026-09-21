@@ -68,6 +68,17 @@ import type { Tile } from '@rocell/schema/tile';
  * that would empty it (FR-7), and this screen renders that refusal in the
  * server's own words rather than restating a rule it does not own.
  *
+ * **The tile itself can be removed here too** (FR-16), and this is the only
+ * door that reaches one until Story 2.5's Catalogue list ships — which is also
+ * what closes the loop the last-image refusal opens, since its own sentence
+ * tells the Administrator to "remove the tile instead". The control is
+ * destructive-filled and carries the word, never the accent: Save is this
+ * screen's one accent action once a tile is loaded. It confirms in the same
+ * `ConfirmDialog`, and a confirmed removal returns the screen to its lookup
+ * stage with the removal announced, because there is no longer a tile for the
+ * form to be about. There is no undo, no restore and no trash state — the
+ * confirmation is the safeguard.
+ *
  * **Reference images are proxied, never linked** (AD-9). Each thumbnail's `src`
  * is `GET /admin/tiles/{id}/images/{imageId}` on this same origin, so the
  * session cookie travels with it and the server re-checks the Administrator
@@ -86,8 +97,9 @@ import type { Tile } from '@rocell/schema/tile';
  * - **No similarity value, in any form** (AD-20).
  * - **No catalogue list and no substring search.** Story 2.5's, and the lookup
  *   above is deliberately not the beginning of one.
- * - **No tile removal.** Story 2.3's. This screen removes reference images and
- *   never the tile they belong to.
+ * - **No undo after a removal**, and no restore, trash state or grace period.
+ *   The confirmation is the safeguard; a tile that should come back is added
+ *   again.
  * - **No client-side check of what a file is.** Content decides, and only the
  *   server can sniff content (AGENTS.md Policy).
  */
@@ -95,6 +107,7 @@ import type { Tile } from '@rocell/schema/tile';
 /** Shown for a failure that arrives as something other than an `ApiRequestError`. */
 const UNEXPECTED = 'The tile could not be saved. Try again.';
 const LOOKUP_FAILED = 'The tile could not be looked up. Try again.';
+const REMOVE_FAILED = 'The tile could not be removed. Try again.';
 
 /**
  * Refuse an empty field here rather than letting the API answer for it.
@@ -129,6 +142,17 @@ const MUST_KEEP_AN_IMAGE =
 /** The save indicator's two spoken states (DESIGN.md's `save-indicator`). */
 const SAVING = 'Saving…';
 const SAVED = 'Saved.';
+
+/**
+ * The same indicator's word for the one in-flight request that is not a save.
+ *
+ * A removal borrows `submitting` — it freezes the same controls for the same
+ * reason — but the form stays mounted behind the confirmation sheet's scrim
+ * while the `DELETE` is out, so the indicator is legible the whole time. Left
+ * on `SAVING`, the most destructive action on the screen would spend its whole
+ * duration calling itself a save.
+ */
+const REMOVING = 'Removing…';
 
 /**
  * The server's own bounds, mirrored onto the inputs.
@@ -232,6 +256,8 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
   const categoryHintId = useId();
   const imagesHintId = useId();
   const imagesLabelId = useId();
+  const removalLabelId = useId();
+  const removalHintId = useId();
 
   const [lookupCode, setLookupCode] = useState('');
   const [tile, setTile] = useState<Tile | null>(null);
@@ -246,14 +272,27 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
   const [submitting, setSubmitting] = useState(false);
   const [saved, setSaved] = useState(false);
   /**
+   * What the lookup stage says once a removal has landed, and nothing else.
+   *
+   * Spoken by the lookup row's own live region rather than by a fourth one:
+   * after a removal the edit form is gone, so its indicator is gone with it,
+   * and the stage the Administrator is left looking at is the one that has to
+   * say what happened. Cleared the moment anything else is typed or pressed, so
+   * it can never describe a tile other than the one it named.
+   */
+  const [removed, setRemoved] = useState('');
+  /**
    * Which sheet is open, if any.
    *
-   * Three states rather than a boolean, because EXPERIENCE.md:148 has a third:
-   * an operation that was never going to be honoured opens the dialog *as* the
+   * Four states rather than a boolean. EXPERIENCE.md:148 has the third: an
+   * operation that was never going to be honoured opens the dialog *as* the
    * refusal instead of walking the Administrator through a confirm that would
-   * have failed. `ConfirmDialog` already has both shapes.
+   * have failed. The fourth is the tile removal, which is a different question
+   * from a destructive save — it names the tile rather than a count of images,
+   * and confirming it ends the form rather than submitting it. `ConfirmDialog`
+   * already has both shapes, and only ever one sheet is rendered.
    */
-  const [sheet, setSheet] = useState<'none' | 'confirm' | 'refusal'>('none');
+  const [sheet, setSheet] = useState<'none' | 'confirm' | 'refusal' | 'remove'>('none');
 
   const lookupRef = useRef<HTMLInputElement>(null);
   const codeRef = useRef<HTMLInputElement>(null);
@@ -277,12 +316,14 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
 
   function refuse(message: string, field: Field | null): void {
     setSaved(false);
+    setRemoved('');
     setError({ message, fieldAtFault: field });
     if (field !== null) focus(field);
   }
 
   /** Seed the form from a tile the API just handed back. */
   function adopt(found: Tile): void {
+    setRemoved('');
     setTile(found);
     setCode(found.code);
     setSize(found.size);
@@ -296,6 +337,7 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
   function typed<T>(set: (value: T) => void): (value: T) => void {
     return (value) => {
       setSaved(false);
+      setRemoved('');
       set(value);
     };
   }
@@ -335,6 +377,11 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
     setLooking(true);
     setError(null);
     setSaved(false);
+    // The announcement is about a tile this lookup is not looking for. Cleared
+    // here and not only on the next keystroke, because pressing Find again with
+    // the field untouched would otherwise leave `<code> removed.` standing
+    // under `Finding…` — and wearing the navy the announcement carries.
+    setRemoved('');
 
     try {
       // `URLSearchParams` rather than a template literal: a Code holds `.`, and
@@ -455,6 +502,75 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
     }
   }
 
+  /**
+   * FR-16 — take the whole tile out, once the sheet has been confirmed.
+   *
+   * **Nothing is sent until the dialog's own control is pressed**, which is
+   * what makes a destructive action safe to sit one press away from the form.
+   * The same `submitting`/`looking` guard the save carries, because the sheet
+   * calls this directly and so inherits neither.
+   *
+   * On success there is no tile left for the form to be about, so the screen
+   * returns to its lookup stage: the form unmounts, the removal is announced
+   * beside the lookup, and focus moves to the lookup field — the one control
+   * that can still do anything, and the one the announcement belongs to.
+   *
+   * A `404` is the dead end the save already models: the tile went while this
+   * form was open, so the form goes with it and the server's own sentence is
+   * what explains why. Any other refusal leaves the form standing — the tile is
+   * still there, and the rest of the form is still the Administrator's work.
+   */
+  async function removeTile(): Promise<void> {
+    if (tile === null || submitting || looking) return;
+
+    // Read before the request, because the answer is a `204` with no body and
+    // the tile is cleared from state the moment it lands: the announcement has
+    // to name the Code that was removed, not whatever is loaded afterwards.
+    const removedCode = tile.code;
+
+    setSubmitting(true);
+    setError(null);
+    setSaved(false);
+    setRemoved('');
+
+    try {
+      // `apiRequest` answers `null` for a `204` without trying to parse a body,
+      // so there is nothing to narrow here and nothing to render from.
+      await apiRequest(`/admin/tiles/${tile.id}`, { method: 'DELETE' });
+      setSheet('none');
+      setTile(null);
+      setMarked([]);
+      setFiles([]);
+      if (imagesRef.current) imagesRef.current.value = '';
+      setRemoved(`${removedCode} removed.`);
+      lookupRef.current?.focus();
+    } catch (failure) {
+      // The dialog closes either way, so the refusal is readable on the screen
+      // it belongs to rather than behind a scrim.
+      setSheet('none');
+      const dropped = failure instanceof ApiRequestError && failure.code === TILE_NOT_FOUND;
+      if (dropped) {
+        // Everything the success path clears, because the outcome on screen is
+        // the same one: the form is gone and the tile it described is gone.
+        // Staged files and the native input's own value are the two that do not
+        // unmount with it — the input is recreated empty by React, but the
+        // `File` objects in state are not, and a later save would carry files
+        // chosen for a tile that no longer exists.
+        setTile(null);
+        setMarked([]);
+        setFiles([]);
+        if (imagesRef.current) imagesRef.current.value = '';
+      }
+      refuse(failure instanceof ApiRequestError ? failure.message : REMOVE_FAILED, null);
+      // `refuse` moves focus only when a control is at fault, and nothing here
+      // faults one. With the form just unmounted, focus would otherwise fall to
+      // `<body>` — outside the alert that explains why.
+      if (dropped) lookupRef.current?.focus();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const removing = marked.length;
   /**
    * What the tile is left with if this save lands. Named in the confirmation.
@@ -500,9 +616,12 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
   }
 
   // One expression rather than a nested ternary in the markup: three states,
-  // and the empty one is the default.
+  // and the empty one is the default. `submitting` covers both writes, so the
+  // open removal sheet is what tells them apart — it is set before the request
+  // and cleared only once the answer is in, in both the success and the
+  // refusal branch of `removeTile`.
   let indicator = '';
-  if (submitting) indicator = SAVING;
+  if (submitting) indicator = sheet === 'remove' ? REMOVING : SAVING;
   else if (saved) indicator = SAVED;
 
   // One node, rendered directly below whichever field is at fault — and after
@@ -592,9 +711,18 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
             Back
           </button>
           {/* The lookup's own wait, so a slow round trip is not a screen that
-              appears to have ignored the press. Empty at rest. */}
-          <span className={styles.indicator} role="status">
-            {looking ? 'Finding…' : ''}
+              appears to have ignored the press — and, after a removal, what
+              says the tile is gone. Empty at rest, and the two can never
+              overlap: starting a lookup clears the announcement.
+
+              Navy once it has something to report, never orange: this is the
+              confirmation that an action fired, and DESIGN.md's
+              `save-indicator` reserves the accent for one that has not. */}
+          <span
+            className={removed === '' ? styles.indicator : `${styles.indicator} ${styles.saved}`}
+            role="status"
+          >
+            {looking ? 'Finding…' : removed}
           </span>
         </div>
       </form>
@@ -733,9 +861,11 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
                           thumbnail, so the position is obvious on screen. The
                           accessible name carries the distinguisher instead:
                           out of the gallery's context these are otherwise
-                          three identically named checkboxes on the one
-                          destructive control of the screen, and they name the
-                          same image the thumbnail above already names. */}
+                          three identically named checkboxes, on the one
+                          destructive control *inside the form* — Remove tile
+                          sits below it and ends the tile instead — and they
+                          name the same image the thumbnail above already
+                          names. */}
                       Remove
                     </label>
                   </li>
@@ -802,6 +932,45 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
         </form>
       )}
 
+      {/* FR-16, outside the form and after it. Outside because nothing here
+          travels with Save — everything above is the edit, and this ends the
+          tile instead; after it because a destructive control placed beside the
+          primary one is one slip away from the wrong outcome.
+
+          Not a row-end menu: EXPERIENCE.md puts destructive catalogue actions
+          in one on the Catalogue list, and that list is Story 2.5's. Until it
+          exists this screen is the only thing that reaches a tile at all. */}
+      {tile !== null && (
+        <section className={styles.removal} aria-labelledby={removalLabelId}>
+          <h2 className={styles.subtitle} id={removalLabelId}>
+            Remove this tile
+          </h2>
+          <p className={styles.hint} id={removalHintId}>
+            The tile and everything the catalogue indexed from it are deleted permanently. Scans
+            can no longer return it, and this cannot be undone.
+          </p>
+          {/* Destructive fill and the word together — red is never the only
+              signal (EXPERIENCE.md's accessibility floor). Disabled under an
+              in-flight lookup as well as an in-flight save: a Find still in
+              flight will `adopt()` whatever it finds, and a removal pressed
+              under it would name whichever tile was loaded first. */}
+          <button
+            className={styles.destructive}
+            type="button"
+            aria-describedby={removalHintId}
+            disabled={submitting || looking}
+            onClick={() => {
+              setSaved(false);
+              setRemoved('');
+              setError(null);
+              setSheet('remove');
+            }}
+          >
+            Remove tile
+          </button>
+        </section>
+      )}
+
       {sheet === 'refusal' && tile !== null && (
         // The refusal state: **no destructive control is rendered at all**,
         // because there is nothing to press (EXPERIENCE.md:148). Its body is
@@ -833,6 +1002,26 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
           kind="confirm"
           onClose={() => setSheet('none')}
           onConfirm={() => void save()}
+        />
+      )}
+
+      {sheet === 'remove' && tile !== null && (
+        // Names the tile and the consequence, never a bare "Are you sure?"
+        // (EXPERIENCE.md:56, :72, :144). The consequence is stated as the whole
+        // of it — the tile and everything the catalogue indexed from it —
+        // because there is no undo behind this one and the sheet is the last
+        // place to say so.
+        <ConfirmDialog
+          body={
+            `${tile.code} and everything the catalogue indexed from it are deleted ` +
+            'permanently. Scans can no longer return this tile, and this cannot be undone.'
+          }
+          busy={submitting}
+          confirmLabel="Remove tile"
+          heading={`Remove ${tile.code}?`}
+          kind="confirm"
+          onClose={() => setSheet('none')}
+          onConfirm={() => void removeTile()}
         />
       )}
     </section>

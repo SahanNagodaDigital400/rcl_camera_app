@@ -69,6 +69,8 @@ const SECOND_IMAGE = '7d1e4b90-3c26-4a85-91f7-5e0b2d6c8a13';
 
 const LOOKUP = `/api/admin/tiles/lookup?code=${encodeURIComponent(CODE)}`;
 const SAVE = `/api/admin/tiles/${TILE_ID}`;
+/** The same path as the save; the queue is keyed by method, so the two differ. */
+const REMOVE = SAVE;
 
 /** What the API answers on the lookup and on a successful save. */
 const FOUND: Tile = {
@@ -173,6 +175,26 @@ function lookUp(code = CODE): void {
 
 function save(): void {
   fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+}
+
+/**
+ * The Remove tile control on the screen, never the one inside the sheet.
+ *
+ * Both carry the same word, deliberately: the sheet's confirm repeats the verb
+ * that opened it rather than saying "Yes". `getAllByRole` would find two once
+ * the dialog is open, so the trigger is taken from outside it by name and the
+ * confirm is always reached `within(dialog)`.
+ */
+function removeControl(): HTMLElement {
+  return screen
+    .getAllByRole('button', { name: /^remove tile$/i })
+    .find((control) => control.closest('[role="dialog"]') === null)!;
+}
+
+function confirmRemoval(): void {
+  fireEvent.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: /^remove tile$/i }),
+  );
 }
 
 /** Everything a control's `aria-describedby` actually points at, as one string. */
@@ -1084,6 +1106,426 @@ describe('the refusals', () => {
   });
 });
 
+describe('removing the tile', () => {
+  it('offers no removal control until a tile has been found', () => {
+    stubFetch({});
+    renderScreen();
+
+    // There is nothing to remove, and a destructive control on a screen with no
+    // subject is a control that can only be pressed by mistake.
+    expect(screen.queryByRole('button', { name: /^remove tile$/i })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /remove this tile/i })).toBeNull();
+  });
+
+  it('offers it once a tile is loaded, without the accent', async () => {
+    stubFetch({ [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }] });
+    await open();
+
+    expect(removeControl()).toBeTruthy();
+    // Save is still the screen's one primary action: the removal is a second
+    // *action*, never a second primary. The fill is asserted in
+    // `styling-wiring.test.ts`; what belongs here is that the two are distinct
+    // controls with distinct words.
+    expect(screen.getByRole('button', { name: /^save$/i })).toBeTruthy();
+  });
+
+  it('names the tile and the consequence before anything is requested', async () => {
+    const { calls } = stubFetch({
+      [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }],
+      [`DELETE ${REMOVE}`]: [{ status: 204 }],
+    });
+    await open();
+
+    fireEvent.click(removeControl());
+
+    const dialog = await screen.findByRole('dialog');
+
+    // Never a bare "Are you sure?" (EXPERIENCE.md:56, :72, :144).
+    expect(within(dialog).getByRole('heading').textContent).toContain(CODE);
+    expect(dialog.textContent).toContain(CODE);
+    expect(dialog.textContent).toMatch(/permanently/i);
+    expect(dialog.textContent).toMatch(/cannot be undone/i);
+    // The confirm carries a word as well as the destructive fill — red is never
+    // the only signal.
+    expect(within(dialog).getByRole('button', { name: /^remove tile$/i })).toBeTruthy();
+    // And nothing has been sent: the lookup, and no removal.
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'Cancel',
+      (): void => {
+        fireEvent.click(
+          within(screen.getByRole('dialog')).getByRole('button', { name: /^cancel$/i }),
+        );
+      },
+    ],
+    [
+      'Escape',
+      (): void => {
+        fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+      },
+    ],
+    [
+      'a scrim click',
+      (): void => {
+        const scrim = screen.getByRole('dialog').parentElement;
+        expect(scrim, 'the dialog is not inside a scrim').toBeTruthy();
+        fireEvent.mouseDown(scrim as HTMLElement);
+        fireEvent.click(scrim as HTMLElement);
+      },
+    ],
+  ])('requests nothing when the sheet is dismissed by %s', async (_label, dismiss) => {
+    // All three, because all three are ways out of a sheet that has not been
+    // confirmed — and a removal is the one action on this screen with nothing
+    // behind it to undo, so a dismissal that leaked a request would be
+    // unrecoverable rather than merely surprising.
+    const { calls } = stubFetch({
+      [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }],
+      [`DELETE ${REMOVE}`]: [{ status: 204 }],
+    });
+    await open();
+
+    fireEvent.click(removeControl());
+    await screen.findByRole('dialog');
+    dismiss();
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // Only the lookup. No removal was sent.
+    expect(calls).toHaveLength(1);
+    expect(calls.some(([, init]) => init.method === 'DELETE')).toBe(false);
+    // The form is exactly as it was: dismissing the sheet is not an edit.
+    expect(screen.getByLabelText(/^code$/i)).toHaveProperty('value', CODE);
+    expect(screen.getByLabelText(/^size$/i)).toHaveProperty('value', '45X90');
+    expect(screen.getByLabelText(/^category$/i)).toHaveProperty('value', 'CREMA MARMOL');
+  });
+
+  it('issues a DELETE with no body once it is confirmed', async () => {
+    const { calls } = stubFetch({
+      [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }],
+      [`DELETE ${REMOVE}`]: [{ status: 204 }],
+    });
+    await open();
+
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    await waitFor(() => {
+      expect(calls.filter(([, sent]) => sent.method === 'DELETE')).toHaveLength(1);
+    });
+    const [path, sent] = calls.find(([, each]) => each.method === 'DELETE')!;
+
+    expect(path).toBe(REMOVE);
+    // A `DELETE` names its subject in the path; a body would be a second way to
+    // say which tile, and the two could disagree.
+    expect(sent.body).toBeUndefined();
+  });
+
+  it('returns to the lookup stage, announces the removal and focuses the field', async () => {
+    stubFetch({
+      [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }],
+      [`DELETE ${REMOVE}`]: [{ status: 204 }],
+    });
+    await open();
+
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    // The form goes with the tile: there is nothing left for it to be about.
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/^size$/i)).toBeNull();
+    });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^remove tile$/i })).toBeNull();
+    // Announced by name, in the live region beside the lookup — the only stage
+    // still on screen. A `204` carries no body, so the Code has to have been
+    // read before the request.
+    expect(screen.getByRole('status').textContent).toBe(`${CODE} removed.`);
+    // And focus lands on the one control that can still do anything.
+    expect(document.activeElement).toBe(screen.getByLabelText(/find a tile by code/i));
+  });
+
+  it('clears the announcement as soon as another code is typed', async () => {
+    stubFetch({
+      [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }],
+      [`DELETE ${REMOVE}`]: [{ status: 204 }],
+    });
+    await open();
+
+    fireEvent.click(removeControl());
+    confirmRemoval();
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(`${CODE} removed.`);
+    });
+
+    fireEvent.change(screen.getByLabelText(/find a tile by code/i), {
+      target: { value: 'SOMETHING-ELSE' },
+    });
+
+    // A sentence naming one tile, left standing beside a field holding another,
+    // is a sentence about the wrong tile.
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('clears the announcement when Find is pressed without the field being retyped', async () => {
+    // The field still holds the removed tile's Code, so nothing is typed and
+    // the keystroke clear never fires. Without a clear in the lookup itself the
+    // screen would render `Finding…` beside — and in the colour of — a sentence
+    // announcing a removal that has already happened.
+    stubFetch({
+      [`GET ${LOOKUP}`]: [
+        { status: 200, body: FOUND },
+        refusal(TILE_NOT_FOUND, NO_SUCH_TILE, 404),
+      ],
+      [`DELETE ${REMOVE}`]: [{ status: 204 }],
+    });
+    await open();
+
+    fireEvent.click(removeControl());
+    confirmRemoval();
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(`${CODE} removed.`);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^find$/i }));
+
+    // The lookup is now the only thing that region is about.
+    expect(screen.getByRole('status').textContent).not.toContain('removed.');
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', NO_SUCH_TILE);
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('renders the server’s own sentence and closes the form when the tile is already gone', async () => {
+    stubFetch({
+      [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }],
+      [`DELETE ${REMOVE}`]: [refusal(TILE_NOT_FOUND, NO_SUCH_TILE, 404)],
+    });
+    await open();
+
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', NO_SUCH_TILE);
+    // The same dead end a failed save already models: everything on that form
+    // would fail identically on every further press, so the form goes.
+    expect(screen.queryByLabelText(/^size$/i)).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(document.activeElement).toBe(screen.getByLabelText(/find a tile by code/i));
+    // Nothing is announced: the tile was not removed by this Administrator.
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('leaves the form standing for a refusal that is not the tile being gone', async () => {
+    stubFetch({
+      [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }],
+      [`DELETE ${REMOVE}`]: [
+        refusal(ADMINISTRATOR_REQUIRED, 'Only an administrator can do that.', 403),
+      ],
+    });
+    await open();
+
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      'Only an administrator can do that.',
+    );
+    // The tile is still there, and so is the Administrator's work on it.
+    expect(screen.getByLabelText(/^size$/i)).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('surfaces a failure that never reached the API', async () => {
+    stubFetch({ [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }] });
+    await open();
+    vi.stubGlobal('fetch', () => Promise.reject(new TypeError('offline')));
+
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    // `apiRequest` turns a dead connection into its own `ApiRequestError`, so
+    // what is rendered is a sentence rather than silence — and `REMOVE_FAILED`
+    // is only reachable when nothing came back to carry one of the API's.
+    expect((await screen.findByRole('alert')).textContent).toMatch(/could not reach the server/i);
+    expect(screen.getByLabelText(/^size$/i)).toBeTruthy();
+  });
+
+  it('is frozen while a save is in flight', async () => {
+    // A removal started underneath a save would race a request the
+    // Administrator is still waiting on, and would win — leaving a `404` for
+    // the save and no way to tell which press caused it.
+    vi.stubGlobal('fetch', (_input: string, init: RequestInit = {}) => {
+      if ((init.method ?? 'GET') === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(FOUND),
+        } as Response);
+      }
+      return new Promise<Response>(() => undefined);
+    });
+
+    await open();
+    save();
+
+    await waitFor(() => {
+      expect(screen.getByText('Saving…')).toBeTruthy();
+    });
+    expect((removeControl() as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('is frozen while a lookup is in flight', async () => {
+    // A Find still in flight will `adopt()` whatever it finds, so a removal
+    // pressed under it would name whichever tile was loaded first.
+    let release = NOT_YET;
+    let answered = 0;
+    vi.stubGlobal('fetch', () => {
+      answered += 1;
+      if (answered === 1) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(FOUND),
+        } as Response);
+      }
+      return new Promise<Response>((resolve) => {
+        release = (): void =>
+          resolve({ ok: true, status: 200, json: () => Promise.resolve(FOUND) } as Response);
+      });
+    });
+
+    await open();
+    lookUp('SOMETHING-ELSE');
+
+    await waitFor(() => {
+      expect(screen.getByText('Finding…')).toBeTruthy();
+    });
+    expect((removeControl() as HTMLButtonElement).disabled).toBe(true);
+
+    release();
+    await waitFor(() => {
+      expect(screen.queryByText('Finding…')).toBeNull();
+    });
+  });
+
+  it('freezes every way out of the sheet while the removal is in flight', async () => {
+    // `ConfirmDialog`'s own rule, at this call site: none of Cancel, `Escape`
+    // or the scrim cancels the request, so a sheet dismissed mid-flight would
+    // reappear the moment the request failed.
+    vi.stubGlobal('fetch', (_input: string, init: RequestInit = {}) => {
+      if ((init.method ?? 'GET') === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(FOUND),
+        } as Response);
+      }
+      return new Promise<Response>(() => undefined);
+    });
+
+    await open();
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => {
+      expect(
+        (within(dialog).getByRole('button', { name: /^cancel$/i }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+    });
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
+  it('says it is removing, not saving, while the removal is in flight', async () => {
+    // The form stays mounted behind the sheet's scrim, so its save indicator is
+    // on screen for the whole of the `DELETE`. `submitting` drives both writes,
+    // and left undifferentiated the most destructive action on the screen would
+    // spend its entire duration announcing itself as a save.
+    vi.stubGlobal('fetch', (_input: string, init: RequestInit = {}) => {
+      if ((init.method ?? 'GET') === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(FOUND),
+        } as Response);
+      }
+      return new Promise<Response>(() => undefined);
+    });
+
+    await open();
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    await waitFor(() => {
+      expect(screen.getByText('Removing…')).toBeTruthy();
+    });
+    expect(screen.queryByText('Saving…')).toBeNull();
+  });
+
+  it('sends one removal however many times the confirm is pressed', async () => {
+    // Two presses on one confirm is an ordinary double-click, and the second
+    // would otherwise send a `DELETE` for a tile the first is already removing
+    // — answered `404`, and rendered as a refusal for an action that in fact
+    // succeeded. `ConfirmDialog`'s `busy` freezes the control and
+    // `removeTile`'s own `submitting` guard is the belt behind it; this asserts
+    // the outcome both exist for.
+    const calls: [string, RequestInit][] = [];
+    vi.stubGlobal('fetch', (input: string, init: RequestInit = {}) => {
+      calls.push([input, init]);
+      if ((init.method ?? 'GET') === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(FOUND),
+        } as Response);
+      }
+      // Never answered: the guard only exists while the removal is unanswered.
+      return new Promise<Response>(() => undefined);
+    });
+
+    await open();
+    fireEvent.click(removeControl());
+    const dialog = await screen.findByRole('dialog');
+
+    const confirm = within(dialog).getByRole('button', { name: /^remove tile$/i });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    await waitFor(() => {
+      expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    });
+    expect(calls.filter(([, init]) => init.method === 'DELETE')).toHaveLength(1);
+  });
+
+  it('offers no way back after a removal', async () => {
+    // No undo, no restore, no trash state and no grace period (AD-5): the
+    // confirmation is the safeguard, and an "Undo" here would be a promise the
+    // API has no route to keep.
+    stubFetch({
+      [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }],
+      [`DELETE ${REMOVE}`]: [{ status: 204 }],
+    });
+    const { container } = render(<EditTileScreen onBack={(): void => undefined} />);
+    lookUp();
+    await screen.findByLabelText(/^code$/i);
+
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/^size$/i)).toBeNull();
+    });
+    const text = container.textContent ?? '';
+    expect(/\bundo\b/i.test(text)).toBe(false);
+    expect(/\brestore\b/i.test(text)).toBe(false);
+    expect(screen.queryByRole('button', { name: /undo|restore/i })).toBeNull();
+  });
+});
+
 describe('the screen’s controls', () => {
   it('has exactly the controls it is meant to have before a tile is found', () => {
     stubFetch({});
@@ -1138,8 +1580,9 @@ describe('the screen’s controls', () => {
 
   it('names each remove checkbox for the image it removes', async () => {
     // Out of the gallery's visual context these are otherwise three checkboxes
-    // all called "Remove", on the one destructive control of the screen — and
-    // the thumbnail beside each already names the image it belongs to.
+    // all called "Remove", on the one destructive control inside the form —
+    // Remove tile sits below the form and ends the tile instead — and the
+    // thumbnail beside each already names the image it belongs to.
     stubFetch({ [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }] });
     await open();
 
@@ -1163,6 +1606,15 @@ describe('the screen’s controls', () => {
     expect(describedBy(/^size$/i)).toMatch(/top-level folder/i);
     expect(describedBy(/^category$/i)).toMatch(/UNKNOWN/);
     expect(describedBy(/add reference images/i)).toMatch(/at a time/i);
+
+    // The one control on the screen whose press cannot be taken back. Its
+    // consequence — permanent, and scans stop returning the tile — is stated
+    // beside it and nowhere else on this stage, so unbound it reaches a
+    // screen-reader user only as the two words on the button.
+    const remove = screen.getByRole('button', { name: /^remove tile$/i });
+    const removeHint = remove.getAttribute('aria-describedby');
+    expect(removeHint).toBeTruthy();
+    expect(document.getElementById(removeHint!)?.textContent).toMatch(/cannot be undone/i);
   });
 
   it('goes back when Back is pressed', () => {

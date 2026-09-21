@@ -269,11 +269,12 @@ export const IMAGE_NOT_FOUND = 'image_not_found';
 /**
  * The envelope code for "no tile has that id, or that code".
  *
- * A `404` from `GET /admin/tiles/lookup` and from `PATCH /admin/tiles/{id}`,
- * and it marks **no field**: on the lookup the Code the Administrator typed is
- * a perfectly well-formed Code that nothing holds, and on the edit the id came
- * from this app rather than from them. The API's own sentence says the tile may
- * have been renamed or removed, which is the thing they can act on.
+ * A `404` from `GET /admin/tiles/lookup`, from `PATCH /admin/tiles/{id}` and
+ * from `DELETE /admin/tiles/{id}`, and it marks **no field**: on the lookup the
+ * Code the Administrator typed is a perfectly well-formed Code that nothing
+ * holds, and on the edit and the removal the id came from this app rather than
+ * from them. The API's own sentence says the tile may have been renamed or
+ * removed, which is the thing they can act on.
  *
  * The lookup is an **exact** match, so this is also the answer to a partial
  * Code. Substring search is Story 2.5's catalogue list, not this route.

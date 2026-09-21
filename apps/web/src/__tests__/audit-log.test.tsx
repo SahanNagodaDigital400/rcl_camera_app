@@ -122,6 +122,25 @@ const TILE_EDITED: AuditLogEntry = {
   details: { changed: { code: { from: 'RP.CMA.0001DJ.SM.0T', to: 'RP.CMA.0002DJ.SM.0T' } } },
 };
 
+/**
+ * Story 2.3's entry — the third of the same set, and the only one whose subject
+ * is gone by the time this screen renders it.
+ *
+ * It needs a row of its own here for the reason the pair above has one:
+ * `ACTION_LABELS` is `Record<AuditAction, string>`, so the compiler forces the
+ * *key* and says nothing at all about the value, and `audit-contract.test.ts`
+ * never reads the map. A removal labelled "Tile edited" would type-check, pass
+ * every contract test, and tell an Administrator reading the log that a tile
+ * they can no longer find was merely corrected.
+ */
+const TILE_REMOVED: AuditLogEntry = {
+  ...SIGNED_IN,
+  id: '708192a3-b4c5-46d7-a8e9-f01234567890',
+  created_at: '2026-09-21T09:05:00Z',
+  action: 'catalogue_tile_removed',
+  details: { code: 'RP.CMA.0003DJ.SM.0T' },
+};
+
 /** An action from an epic this build predates. Served and rendered verbatim. */
 const UNKNOWN_ACTION: AuditLogEntry = {
   ...SIGNED_IN,
@@ -406,7 +425,7 @@ describe('the entries', () => {
   });
 
   it('writes each action in words', async () => {
-    stubPage([SIGNED_IN, EDITED, NO_ACTOR_ENTRY, TILE_ADDED, TILE_EDITED]);
+    stubPage([SIGNED_IN, EDITED, NO_ACTOR_ENTRY, TILE_ADDED, TILE_EDITED, TILE_REMOVED]);
     renderScreen();
 
     await screen.findByRole('table');
@@ -414,8 +433,8 @@ describe('the entries', () => {
     expect(screen.getByText('Signed in')).toBeTruthy();
     expect(screen.getByText('User edited')).toBeTruthy();
     expect(screen.getByText('Sign-in failed')).toBeTruthy();
-    // The catalogue pair. Asserted by row rather than by page text so that
-    // mapping both actions to one label, or swapping the two, fails here:
+    // The catalogue set. Asserted by row rather than by page text so that
+    // mapping two actions to one label, or swapping any of them, fails here:
     // `getByText` alone is satisfied by either string appearing anywhere.
     expect(rowForDetail('code: RP.CMA.0001DJ.SM.0T').textContent).toContain('Tile added');
     expect(
@@ -423,6 +442,7 @@ describe('the entries', () => {
         'changed: {"code":{"from":"RP.CMA.0001DJ.SM.0T","to":"RP.CMA.0002DJ.SM.0T"}}',
       ).textContent,
     ).toContain('Tile edited');
+    expect(rowForDetail('code: RP.CMA.0003DJ.SM.0T').textContent).toContain('Tile removed');
   });
 
   it.each(['toString', 'constructor', 'valueOf', '__proto__'])(

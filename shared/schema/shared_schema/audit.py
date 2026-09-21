@@ -134,6 +134,14 @@ class AuditAction(StrEnum):
     # entry recorded, and a reader following a Tile through the log needs the
     # two to be distinguishable without parsing `details`.
     CATALOGUE_TILE_EDITED = "catalogue_tile_edited"
+    # Story 2.3's withdrawal. A member of its own rather than a
+    # `catalogue_tile_edited` carrying a flag, for a reason the edit's argument
+    # only half covers: a removal is the one catalogue event whose subject no
+    # longer exists once it has been written. Nothing can be fetched to explain
+    # the entry afterwards, so the entry has to say what happened by itself —
+    # and a reader following a Tile through the log needs the last thing that
+    # happened to it to be readable as the end of the trail.
+    CATALOGUE_TILE_REMOVED = "catalogue_tile_removed"
 
 
 class AuditLogEntry(BaseModel):
