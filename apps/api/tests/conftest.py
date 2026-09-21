@@ -35,6 +35,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from api import db
 from api.db import DATABASE_URL
 from api.main import create_app
 from fastapi.testclient import TestClient
@@ -190,9 +191,69 @@ def migrated_url(database_url: str) -> str:
 
 @pytest.fixture
 def conn(migrated_url: str) -> Iterator[psycopg.Connection]:
-    """An autocommit connection to this test's migrated database."""
+    """An autocommit connection to this test's migrated database.
+
+    **This is the table owner, and on the ephemeral cluster a superuser.** It
+    can do anything to any table, including `UPDATE audit_log` — so it is
+    exactly the wrong connection to prove AD-4's immutability with. Use it to
+    arrange state and to read results; use `app_role_conn` below to act with
+    the privileges the product actually has.
+    """
     with psycopg.connect(migrated_url, autocommit=True, row_factory=dict_row) as connection:
         yield connection
+
+
+@pytest.fixture
+def app_role_conn(migrated_url: str) -> Iterator[psycopg.Connection]:
+    """A connection built the way `apps/api` builds one, `rocell_app` and all.
+
+    Through `db.create_pool` rather than `psycopg.connect` with an `options`
+    argument copied from it: a test that assembled its own connection string
+    would pass on the day somebody dropped the `options` entry from the pool,
+    which is the single change that turns AD-4's enforcement off. Going
+    through the product's own constructor is what makes these tests fail for
+    that edit.
+    """
+    pool = db.create_pool(migrated_url)
+    try:
+        with pool.connection() as connection:
+            yield connection
+    finally:
+        pool.close()
+
+
+_SELECT_AUDIT_ROWS = """
+SELECT id, created_at, action, actor_user_id, actor_email,
+       target_user_id, target_email, source_ip, details
+  FROM audit_log
+ ORDER BY created_at, id
+"""
+
+
+def _audit_rows(connection: psycopg.Connection) -> list[dict[str, object]]:
+    """Every audit entry, oldest first.
+
+    **`created_at` defaults to `now()`, which is the transaction timestamp**,
+    so two entries written by one request share it exactly and `id` — a random
+    UUID — is the only tiebreaker available. The order between rows of one
+    transaction is therefore arbitrary: a test that cares which of two entries
+    a request wrote should select by `action`, not by index. Across requests
+    the order is real.
+
+    Handed out by the `audit_rows` fixture below as a *callable* rather than
+    as a snapshot: most callers want to read the log twice in one test, before
+    and after a write, and a fixture returning rows would give them one
+    reading. A fixture at all — rather than a module-level function a test
+    imports — because the suite runs under `--import-mode=importlib` with no
+    `__init__.py`, so `conftest` is not an importable module name.
+    """
+    return list(connection.execute(_SELECT_AUDIT_ROWS).fetchall())
+
+
+@pytest.fixture
+def audit_rows() -> Callable[[psycopg.Connection], list[dict[str, object]]]:
+    """`audit_rows(conn)` — every audit entry, oldest first. See `_audit_rows`."""
+    return _audit_rows
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,7 +323,17 @@ def client(migrated_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestC
     """
     monkeypatch.setenv(DATABASE_URL, migrated_url)
 
-    with TestClient(create_app(), base_url="https://testserver") as test_client:
+    with TestClient(
+        create_app(),
+        base_url="https://testserver",
+        # A peer address that is actually an address. Starlette's default is
+        # the literal string `testclient`, which `api.audit.source_ip`
+        # correctly refuses to store — every entry would then carry a NULL
+        # `source_ip` and the assertions that it is captured at all would be
+        # asserting the default. Loopback, because that is what a request to a
+        # locally served API really comes from.
+        client=("127.0.0.1", 50000),
+    ) as test_client:
         yield test_client
 
 

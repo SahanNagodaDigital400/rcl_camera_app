@@ -282,9 +282,11 @@ interface UserListScreenProps {
  *   action is *labelled*, which a plain labelled button satisfies directly. The
  *   role and status badges stay display-only (EXPERIENCE.md line 66) — never a
  *   button, at any width.
- * - **No audit entry.** Story 1.12 owns the append-only log and is owed one by
- *   all four endpoints behind this screen; no private log path is built
- *   meanwhile.
+ * - **No view of the audit log.** All four endpoints behind this screen now
+ *   write an append-only entry naming the Administrator who acted and the
+ *   account they acted on (Story 1.12) — a deactivation records how many
+ *   sessions it revoked, a delete records the row it removed. Nothing here
+ *   renders any of it; the log's own surface is Story 1.13.
  *
  * Copy follows EXPERIENCE.md's tone rules: short, factual, no exclamation marks.
  */

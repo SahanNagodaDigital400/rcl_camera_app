@@ -497,16 +497,20 @@ def record_failure(conn: psycopg.Connection, email_key: str) -> AttemptState:
     # and logs nothing — it changed nothing.
     if state.failure_count == FAILURES_BEFORE_LOCKOUT and state.locked_until is not None:
         # The brief's security addendum wants a lockout logged and visible to
-        # administrators. The *visible* half is the mirror below; Story 1.12
-        # owes this endpoint the audit entry, and until it lands this is the
-        # only operational trace a lock leaves outside two table values.
+        # administrators. The *visible* half is the mirror below; the durable
+        # half is the audit entry `api.auth` writes for the same attempt,
+        # carrying `details.locked_until` on the `login_failed` row that
+        # crossed the threshold (Story 1.12). This line is the operational
+        # trace, for whoever is watching the process rather than the table.
         #
-        # **The address is not logged**, and neither is anything derived from
-        # it. Most of what this counter holds was never an account, and an
-        # application log that accumulated every address someone guessed would
-        # be a list of candidate usernames in a file with none of the audit
-        # log's protections. The count and the duration are what an operator
-        # needs to see a run happening.
+        # **The address is still not logged here**, and neither is anything
+        # derived from it. Most of what this counter holds was never an
+        # account, and an application log that accumulated every address
+        # someone guessed would be a list of candidate usernames in a file
+        # with none of the audit log's protections. The address *is* recorded
+        # — in the audit log, which has AD-4's protections and exists to hold
+        # exactly this. The count and the duration are what an operator needs
+        # here to see a run happening.
         logger.info(
             "a sign-in lockout was written after %d failures, for %d seconds",
             state.failure_count,

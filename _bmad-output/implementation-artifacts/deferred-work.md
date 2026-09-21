@@ -613,7 +613,8 @@ location: apps/api/api/users.py (create_user)
 source_spec: `spec-1-8-create-user-account.md`
 severity: medium
 reason: AGENTS.md Policy requires the append-only log to cover user changes, and `POST /admin/users` is the clearest one there is. Story 1.12 owns the write path and this endpoint's docstring names the entry it owes; no private log path was built in the meantime. Until that log exists the only trace is the row's own `created_at`, which does not say by whom.
-status: open
+resolution: `spec-1-12-immutable-audit-log-write-path.md`. `apps/api/api/audit.py` owns the only INSERT against `audit_log`, and `create_user` writes a `user_provisioned` entry naming the Administrator, the account created and the source address. Its bare autocommit INSERT gained an explicit `with conn.transaction():` so the row and its entry land together or neither does — proved by `test_audit_immutability.py`'s atomicity case, which revokes the INSERT grant and asserts no `users` row is written. A refused provisioning (409, 403) writes nothing.
+status: resolved
 
 ### DW-78: DW-69 is now a four-endpoint problem — `POST /admin/users` adds a 64 MiB Argon2id hash per call, reachable by any Administrator session and bounded by nothing.
 origin: spec-deferred 087e6af07b3d
@@ -877,4 +878,252 @@ location: apps/web/src/screens/UserListScreen.tsx (the actions block)
 source_spec: `spec-1-11-deactivate-or-delete-user.md`
 severity: low
 reason: `frozen = pending !== null` freezes every row's controls, and for a confirmed verb the scrim covers the rest of the screen anyway. `activate` fires from one press with no dialog, so during its request the two screen controls above the table are still pressable: leaving the screen there unmounts it mid-write, and the answer — including a refusal — is never shown. The write itself still commits. Disabling them is one attribute each, but it is the first time this product would disable a navigation control for a request that is not about navigation, which is a convention decision rather than a fix.
+status: open
+
+### DW-111: `rocell_app` is adopted over the owner's `DATABASE_URL` rather than being a login role with a credential of its own, so a compromise of the application's connection string still hands over the table owner.
+origin: spec-deferred 1.12-audit-write-path
+location: apps/api/api/db.py (APPLICATION_ROLE, CONNECTION_OPTIONS) / infra/migrations/20260921T1000_create_audit_log.up.sql
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: medium
+reason: AD-4's literal reading is a second login role with its own secret in its own DSN. That was not shipped because hosting, CI/CD and secrets management are all Deferred in the architecture spine and AGENTS.md Policy forbids a committed credential — a second DSN today would mean inventing a deployment contract this story had no authority to invent. What is shipped gives the same grant model: the role is created NOLOGIN (adoption through libpq's `options=-c role=rocell_app` needs membership, not the ability to log in — proved by `test_audit_immutability.py` running the product's own pool against it) and with no password, so the cluster gains no new login principal. `-c role=` is a startup GUC, so `RESET ROLE` returns to `rocell_app` rather than to the owner. The residual gap is that the connection *authenticates* as the owner: anyone holding `DATABASE_URL` can open a session that is not role-switched and do anything, and a `SET ROLE <owner>` from inside the application would climb out (forbidden by a source guard in `tests/test_source_guards.py`, which is code discipline rather than a grant). Closing it means `ALTER ROLE rocell_app LOGIN PASSWORD '...'` at deployment time, putting that password in whichever secret store the deployment picks, and pointing `DATABASE_URL` at it — a decision that belongs with the hosting choice, not with this story. Two operational facts go with it: the migrating role now needs CREATEROLE (documented in `infra/README.md`, the root `README.md` and `make help`), and both the role and the owner's membership in it are cluster-scoped, so the `.down.sql`'s `REVOKE rocell_app FROM <owner>` reaches every database on the server — the "roll the application back first" rule means *every* application on that cluster.
+status: open
+
+### DW-112: `audit_log.created_at` defaults to `now()`, the transaction timestamp, so the two entries one request writes are indistinguishable in time and there is no total order to page through but `(created_at, id)` with a random `id`.
+origin: spec-deferred 1.12-audit-write-path
+location: infra/migrations/20260921T1000_create_audit_log.up.sql (created_at) / apps/api/tests/conftest.py (_audit_rows)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: `POST /auth/password` and `POST /auth/password/change` each write two entries inside one transaction — the password write and the revocation it performed — and both carry the same `created_at` to the microsecond, because `now()` is the transaction's start. The tiebreaker in the index is `id`, a `gen_random_uuid()`, so the order between them is arbitrary and stable rather than chronological. Nothing in this story depends on it: the tests select entries by `action`, and both entries describe the same instant honestly. It matters to Story 1.13, which pages the log: a keyset page on `(created_at, id)` is correct and complete, but "the claim came before the revocation" is not something the data can say. The fixes are a `clock_timestamp()` default (loses "one transaction, one instant", which is the property that makes two entries obviously atomic) or a monotonic sequence column (a schema addition this story's spec did not authorise). Settle it with 1.13, which is the first reader that has an opinion.
+status: open
+
+### DW-113: A refused admin write and a refused authenticated request leave no trace at all, so a Staff caller probing `/admin/users` or an Administrator repeatedly hitting the last-Administrator floor is invisible.
+origin: spec-deferred 1.12-audit-write-path
+location: apps/api/api/users.py (all five handlers) / apps/api/api/dependencies.py (require_administrator)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: The story's I/O matrix is explicit that a 403, 404 or 409 writes no row — "nothing was written, so there is nothing to record" — and that is right for a log whose job is attributing *changes*: an entry for an attempt cannot be told from an entry for a change by anything downstream. The login half does record refusals, because there the attempt is the event. The gap is the middle case: a signed-in Staff account walking the admin routes is an authorization probe, and it is exactly the anomaly FR-22 will want, yet `require_administrator` refuses before any handler is entered and nothing counts it. Recording it means either a second action class ("refused") with a rule about which refusals qualify, or FR-22's own counter — both product decisions, and DW-55's per-source-IP counter is the same question from the other side.
+status: open
+
+### DW-114: The audit log has no retention, partitioning or archival path, and the malformed-address login branch appends a row per request from an unauthenticated caller the throttle cannot count.
+origin: spec-deferred 0d81423d0cba
+location: apps/api/api/audit.py, apps/api/api/auth.py (login)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: medium
+reason: AD-4's grant model denies the application role DELETE, so no principal in the product can prune the table - `api/audit.py` states this as a virtue. The malformed-address path in `login` previously touched no database at all; it now takes a pool connection and writes an entry, and it is deliberately uncounted because the address carries a NUL and cannot be a `login_attempts` key. An attacker appending a control character to every guess therefore grows an unprunable table at request rate. Nothing (partitioning, an owner-run archival runbook, a volume alert in `infra/README.md`) answers what happens when it fills the disk.
+status: open
+
+### DW-115: There is no erasure path for the personal data the log now keeps permanently.
+origin: spec-deferred 12984da52175
+location: n/a
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: medium
+reason: `details.changed` records name and email before/after values, `user_deleted` records the deleted account's address, and `target_email` survives a hard delete by design (AD-10). Combined with "no update or delete path at any level", a departed staff member's name and address become unremovable. The delete route's docstring presents this as the point of the snapshot rule without noting it is also a data-protection commitment nobody has signed off.
+status: open
+
+### DW-116: ARCHITECTURE-SPINE.md AD-4 is now narrower than the shipped design in two places, and was not amended.
+origin: spec-deferred de5a21471d6c
+location: _bmad-output/planning-artifacts/architecture/architecture-rcl_camera_app-2026-08-30/ARCHITECTURE-SPINE.md
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: medium
+reason: AD-4 reads "`source_ip` is read only from the trusted reverse-proxy's forwarded-IP header"; the implementation reads the non-forgeable TCP peer when no header is configured. AD-4 also reads "the application's database role"; the implementation adopts `rocell_app` over the owner's DSN at connection startup rather than authenticating as it (DW-111). Both choices are argued at length in `api/audit.py` and `api/db.py`, but the next person implementing against AD-4 reads the unamended rule. Amending a planning artifact is an architect's call, not an unattended build's.
+status: open
+
+### DW-117: The seeded Administrator and `make reseed-admin` are user changes that still write no audit entry, and the middle path the architecture review suggests was not weighed.
+origin: spec-deferred fe94c0f05ec2
+location: infra/rocell_infra/seed.py
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: medium
+reason: `infra/README.md`'s "Not audited, and not an oversight" section argues that inventing an actor is worse than a gap. The UX/architecture review rubric proposes, for the structurally identical `scripts/ingest` case, an entry "attributed to an operator/service USER row, with `source_ip` null or a documented sentinel for offline runs". That option - a NULL actor with `details.source = "cli"` - is never considered, and AGENTS.md:17 requires the log to cover user changes without exempting console ones.
+status: open
+
+### DW-118: Nothing asserts the universal "every mutating route writes an entry" at the surface where it could regress.
+origin: spec-deferred 9ff26e8d194e
+location: apps/api/tests
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: medium
+reason: Coverage is per-handler HTTP tests plus one sweep over `api/users.py`'s five routes. The new source guards catch a *second* writer of the table, never an *omitted* one, so a route added in Epic 2 or 3 that forgets its entry fails nothing. The three existing route-table walkers (`test_admin_authorization.py`, `test_forced_change_gate.py`, `test_no_registration.py`) are the precedent for the missing test: walk `create_app()`'s table and require every mutating route to be either on a written allowlist or observed writing an entry.
+status: open
+
+### DW-119: `login_failed` records the targeted account in `actor_user_id` while `login_refused_locked`, written for the same unauthenticated caller, leaves the actor NULL.
+origin: spec-deferred 78694ab865e0
+location: apps/api/api/auth.py (_count_and_refuse)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: `_count_and_refuse` passes `actor_id=user_id` - the account being guessed at, not whoever made the request, whose identity was never proven. The matrix in this spec's frozen intent-contract prescribes exactly that, and no information is lost because `target_user_id` carries the same value, but the two unauthenticated events now disagree about what the actor column means. Story 1.13 renders one of these as "who did it" and must settle it.
+status: open
+
+### DW-120: A failed login snapshots the Python-folded address while a successful one snapshots the column Postgres stored, so two entries about one account can carry different addresses.
+origin: spec-deferred 1236fb39c57a
+location: apps/api/api/auth.py (_count_and_refuse)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: `_count_and_refuse` writes `actor_email`/`target_email` from `email_key` (Python `strip().lower()`); `_authenticate`'s success path writes `user_row["email"]`. `api/users.py` already documents at length, for `_INSERT_USER` and `edit_user`, that the Python fold and Postgres's `lower()` are not guaranteed to agree on non-ASCII addresses. The failure path knows the row whenever `user_id` is not None and could use the stored value there.
+status: open
+
+### DW-121: `source_ip` is stored as `text` where `inet` would make the validation a database property.
+origin: spec-deferred 580000ab516b
+location: infra/migrations/20260921T1000_create_audit_log.up.sql
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: The column holds an `ipaddress.ip_address()`-validated string. `inet` would enforce that in the same place the grants are enforced (the migration's own argument for preferring the database over code discipline), normalize `::1` against its expanded form, and hand FR-22's anomaly work containment and CIDR operators. The cost is that psycopg3 returns `ipaddress` objects for `inet`, so every assertion comparing to a string would change - which is why it was not done under review.
+status: open
+
+### DW-122: The trusted-header reader assumes exactly one trusted hop; behind two proxies it records the inner proxy's address as the user's.
+origin: spec-deferred a214946a1a50
+location: apps/api/api/audit.py (source_ip)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: `source_ip` takes the last element of the last header line - correct for one trusted hop. With `client, real-client, edge1` the recorded value is the inner proxy's: a plausible but wrong address, which is the outcome the function's own docstring says the design exists to avoid. A configurable hop count would settle it; nothing in the README's "whatever your edge layer uses" guidance distinguishes the case.
+status: open
+
+### DW-123: `TRUSTED_PROXY_HEADER` is read per request with no startup validation, so a typo records NULL for the life of a deployment with nothing surfacing it.
+origin: spec-deferred 9e67de298f6a
+location: apps/api/api/audit.py
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: Every other configuration value in this service is resolved once at startup and fails loudly (`database_url` refuses to default). A misspelt header name instead produces a silently empty column - the precise failure the root README warns about in bold. Reading it per request is what lets tests monkeypatch it, so the fix is a startup check rather than a different read.
+status: open
+
+### DW-124: An `options` parameter already present in `DATABASE_URL` is silently overridden by the pool's `kwargs`.
+origin: spec-deferred 4825315b7e01
+location: apps/api/api/db.py (create_pool)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: `create_pool` passes `"options": CONNECTION_OPTIONS` in `kwargs`, which libpq resolves after the connection string, so an operator who set `?options=-c statement_timeout=5s` loses it without warning. Merging the two (`conninfo_to_dict(url).get("options")` plus the role) would preserve both. No operator sets one today.
+status: open
+
+### DW-125: A sign-in that spends the cookie it arrived with deletes that session and writes no `sessions_revoked` entry.
+origin: spec-deferred ff0212a6d23b
+location: apps/api/api/auth.py (_authenticate)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: `_authenticate` calls `delete_session(conn, rocell_session)` before issuing the new one, so a session the log claims to cover ends with only the `login_succeeded` row to show for it. Every other revocation in this story - both password writes, the expired-credential path, a deactivation - records one. Consistency, not loss: the event is inferable from the login entry.
+status: open
+
+### DW-126: `details` is an untyped `dict[str, Any]` whose key vocabulary lives in `api/auth.py` and `api/users.py` rather than in the module that owns the log.
+origin: spec-deferred f698542dfb54
+location: apps/api/api/audit.py
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: `api/audit.py` describes `AuditAction` as the log's whole vocabulary, but the `REASON_*` and `CAUSE_*` constants are plain module constants in `api/auth.py`, and the keys a reader must know (`reason`, `cause`, `count`, `changed`, `locked_until`, `sessions_revoked`) are declared nowhere in one place. Story 1.13's renderer has to import refusal reasons from the auth module and guess at the rest.
+status: open
+
+### DW-127: `GRANT rocell_app TO current_user` is unguarded in the shared-cluster case the surrounding `DO` block is written for.
+origin: spec-deferred ba8d6e01ada1
+location: infra/migrations/20260921T1000_create_audit_log.up.sql
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: The `CREATE ROLE` catches `duplicate_object` because a second database in the same cluster may already hold the role - but if that database was migrated by a different owner, the unguarded `GRANT` then fails for want of ADMIN OPTION on a role this user did not create. Failing loudly is arguably right (the application cannot adopt a role it is not a member of), which is why it was not patched; the comment block argues the first half of the scenario and misses the second.
+status: open
+
+### DW-128: CLAUDE.md still describes `make migrate`'s environment contract as `DATABASE_URL` plus `SEED_ADMIN_*`, which is now incomplete.
+origin: spec-deferred 629a1a7b3a74
+location: CLAUDE.md
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: The migration added in this story creates a database role, so the migrating role needs CREATEROLE or superuser. That prerequisite was documented in the migration header, `infra/README.md`, `README.md`, the Makefile and `make help`, but CLAUDE.md's Commands table was left alone deliberately: it is the project's own instruction file, not product documentation, and editing it is the user's call rather than an unattended run's.
+status: open
+
+### DW-129: Nothing verifies at startup that the pool's `-c role=rocell_app` was actually adopted, so a missing role or membership surfaces as a hang rather than a named failure.
+origin: spec-deferred 66504778599f
+location: apps/api/api/db.py (create_pool), apps/api/api/main.py (lifespan)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: medium
+reason: `create_pool` calls `pool.open(wait=False)`, so a DSN whose role is not a member of `rocell_app` is refused by libpq at connect time and every request instead dies on the 10-second `POOL_TIMEOUT_SECONDS` acquisition failure. That is the most likely new deployment failure this story introduces, and `api/db.py`'s own precedent is the opposite: it refuses to default `DATABASE_URL` and fails loudly. A probe in `lifespan` would settle it; the spec's Code Map pins `lifespan` as unchanged, so this was not done under review.
+status: open
+
+### DW-130: An active lockout appends a `login_refused_locked` row per request from an unauthenticated caller, with no counter and no bound.
+origin: spec-deferred 9348c20d6c7b
+location: apps/api/api/auth.py (login, the two lockout gates)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: medium
+reason: The intent-contract matrix prescribes exactly this ("Attempt during an active lockout ... One `login_refused_locked` row; no counter write"), so it is not a deviation - but it is a second unbounded-growth path beside the malformed-address branch already recorded above, and it needs no malformed input to reach. Once an address is locked, every further guess is a free append to a table no principal in the product may prune. Coalescing repeats within the lock window, or counting refusals, would settle it; either is an intent-level change.
+status: open
+
+### DW-131: `user_deleted` records no session count, while the less destructive `user_deactivated` does.
+origin: spec-deferred 58a0afd84af2
+location: apps/api/api/users.py (delete_user)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: `deactivate_user` calls `delete_sessions_for_user` and writes `details.sessions_revoked`; `delete_user` relies on the `ON DELETE CASCADE` at `users.py` and records nothing, so "how many devices did this delete sign out" is unrecoverable the moment the row is gone - which is the class of fact AD-10's snapshot rule exists to preserve. The matrix does not require it, which is why it was not patched.
+status: open
+
+### DW-132: Session revocation is encoded two incompatible ways, so Story 1.13 must union two shapes to answer one question.
+origin: spec-deferred 9535bad30ba9
+location: apps/api/api/audit.py, apps/api/api/users.py (deactivate_user)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: The two password paths write a separate `sessions_revoked` row carrying `details.count`; a deactivation instead writes `details.sessions_revoked` on the `user_deactivated` row. Both follow the matrix, which prescribes the first and is silent on the second. Neither key is declared in `api/audit.py`, the module that describes `AuditAction` as the log's whole vocabulary.
+status: open
+
+### DW-133: `login_refused_locked` leaves `target_user_id` NULL even when the locked address names a real account.
+origin: spec-deferred 7180ee42fd9a
+location: apps/api/api/auth.py (login, the two lockout gates)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: The first lockout gate refuses before any `users` read - that is what makes the refusal cost one indexed lookup - so the row genuinely has no id in hand. The consequence is that a lockout cannot be joined to the account it was against without matching on the email snapshot, which the entry above about the Python fold versus Postgres's `lower()` shows is not always the same string. Distinct from the actor-column disagreement already recorded above, which is about `login_failed`.
+status: open
+
+### DW-134: The down migration's `REVOKE rocell_app FROM current_user` does not revoke what its comment says, and is unguarded against a missing ADMIN OPTION.
+origin: spec-deferred fd2371362364
+location: infra/migrations/20260921T1000_create_audit_log.down.sql
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: The header says that after the revert "the owner is no longer one of its members", but the statement names `current_user` - the role running the revert, which need not be the role the `up` granted. A revert run by a second operator silently leaves the original membership behind, and a revert run by an operator without ADMIN OPTION on the role raises. This is the mirror of the hazard already recorded above for the `up`'s unguarded `GRANT`, on the reverse path, and failing loudly is arguably right for the same reason.
+status: open
+
+### DW-135: `audit_log_created_at_idx` is the table's only index; the columns an operator and FR-22 will filter on carry none.
+origin: spec-deferred 2c1178255e8b
+location: infra/migrations/20260921T1000_create_audit_log.up.sql
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: The index serves Story 1.13's chronological page. "Everything this Administrator did" filters `actor_user_id`, "everything that happened to this account" filters `target_user_id`, and FR-22's anomaly work filters `action` - all sequential scans today. Because nothing may prune this table, the index is only ever built against a monotonically growing relation, so deferring it gets strictly more expensive. Which indexes the read surface needs is Story 1.13's to decide, which is why this was not added here.
+status: open
+
+### DW-136: The two Python AD-4 guards treat prose inconsistently, so the rule can be explained in a `#` comment but not in a docstring.
+origin: spec-deferred 88451ff34a05
+location: apps/api/tests/test_source_guards.py
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: `test_nothing_climbs_back_to_the_table_owner` strips whole-line `#` comments through `_without_comments`; `test_nothing_mutates_the_audit_table` strips nothing, and neither strips docstrings. A future module docstring writing "never `UPDATE audit_log`" or "never `SET ROLE`" therefore fails the build - the "guard somebody argues with rather than obeys" outcome the comments say they exist to avoid. Stripping docstrings needs an AST walk rather than a line filter, which is why it was not patched.
+status: open
+
+### DW-137: Address forms a real reverse proxy emits - a bracketed host with a port, an RFC 7239 `for=` element, a zone-suffixed link-local address - all fail `ip_address()` and record NULL.
+origin: spec-deferred 43ca9175c2fc
+location: apps/api/api/audit.py (source_ip)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: medium
+reason: `source_ip` takes the last comma-separated element and hands it straight to `ipaddress.ip_address()`. An IPv6-aware edge commonly writes `X-Forwarded-For: [2001:db8::1]:443`, `Forwarded: for="[2001:db8::1]"` carries quotes and a `for=` prefix, and `fe80::1%eth0` carries a zone - none parses, so a correctly configured deployment silently logs an empty column for every request. That is the "configured and silently empty" failure the root README warns about in bold, and it is distinct from the unvalidated-header-name entry above: here the header name is right and the value is well formed. Stripping brackets, a port and a `for=` prefix before validating would settle it; which forms to accept is a deployment contract question the README's "whatever your edge layer uses" guidance does not answer.
+status: open
+
+### DW-138: Activating an account that is already active writes a `user_activated` entry for a change that did not happen.
+origin: spec-deferred c6f87a3fa565
+location: apps/api/api/users.py (activate_user, deactivate_user)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: medium
+reason: `activate_user`'s own docstring says "Idempotent on an already-active account: 200, same row, nothing to say", and then records an entry indistinguishable from a real reactivation; `deactivate_user` has the same shape with `sessions_revoked: 0`. `logout` takes the opposite position in this very change - "a row saying otherwise would be the log recording an event that did not happen, which is a worse defect in an audit log than a missing one" - so the two halves of the story disagree. The matrix prescribes an entry for each of the five admin writes that succeeds and a 200 is a success, so resolving it means either dropping an entry the matrix requires or adding a `details` key the docstring argues against: an intent-level call.
+status: open
+
+### DW-139: `login_refused_locked` writes an explicit `locked_until: null` where `login_failed` omits the key, so one fact has two encodings in `details`.
+origin: spec-deferred 273fd24f5e49
+location: apps/api/api/auth.py (login, _count_and_refuse)
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: Both lockout gates pass `details={"locked_until": _locked_until_iso(state)}` unconditionally, and that helper returns `None` for a state with no lock; `_count_and_refuse` instead adds the key only when it has a value. A reader of the log therefore cannot tell "no lock" from "not recorded" without knowing which action wrote the row. Distinct from the vocabulary entry above, which is about which keys exist rather than how absence is spelled.
+status: open
+
+### DW-140: The `.sql` guards duplicate `test_source_guards.py`'s scanning helpers in a second module, and live under `apps/api` though they only read `infra/migrations`.
+origin: spec-deferred 302210d1210a
+location: apps/api/tests/test_audit_immutability.py, apps/api/tests/test_source_guards.py
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: `_at`, the comment-blanking helper and the mutation regex now exist twice - `test_source_guards.py` (`_without_comments`, whole-line `#`) and `test_audit_immutability.py` (`_statements`, truncate at `--`) - with the same intent and different implementations. A later fix to one (docstring stripping, a new verb, an `ONLY`-qualified table) will not reach the other, which is the failure mode the last two review passes both found in the line-by-line scans. Moving the `.sql` pair to `infra/tests` beside the migrations it reads would also put it where somebody editing a migration looks.
+status: open
+
+### DW-141: `api/audit.py`'s headline claim to be the only file naming `audit_log` is false as written, and `api/db.py` stays clean only by accident.
+origin: spec-deferred 454d02b4fc40
+location: apps/api/api/audit.py
+source_spec: `spec-1-12-immutable-audit-log-write-path.md`
+severity: low
+reason: The migration pair, `conftest.py`, four test modules and both READMEs all name the table; the guard that is cited as enforcing the claim exempts `tests` and reads no `.sql`. `api/db.py` passes only because `create_audit_log` has no word boundary before `audit` - documented at `db.py`, so rewording that comment to "the audit_log migration" would fail the build for no substantive reason. The claim is true of the application's own modules and should say so; tightening the guard to match the sentence instead is the larger change.
 status: open

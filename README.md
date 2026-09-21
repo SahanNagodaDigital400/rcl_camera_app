@@ -62,6 +62,12 @@ password lands in shell history, and `make migrate SEED_ADMIN_PASSWORD=…` addi
 the process's arguments, where `ps` shows it to every other user on the machine. `unset` it
 afterwards because an exported password is inherited by everything the shell runs next. `make migrate` prints the address it seeded and the deadline it has to be claimed by.
 
+**The role behind `DATABASE_URL` needs `CREATEROLE`** (or superuser) for this,
+which is new and is easy to miss: the audit-log migration creates `rocell_app`,
+the role the service runs as, so migrating now needs a cluster-level privilege
+and not just write access to one database. Without it `make migrate` stops on
+`permission denied to create role` and applies nothing.
+
 That creates the `users` table and seeds **exactly one** Administrator, in the
 `must_change_password` state — the only account in the product's lifetime that no Administrator
 created. Re-running `make migrate` never produces a second one, and on an already-seeded database
@@ -70,6 +76,27 @@ it needs no `SEED_ADMIN_*` variables at all.
 `make dev` needs `DATABASE_URL` too: `apps/api` opens its connection pool at startup and exits
 naming the variable if it is unset, rather than starting and failing at the first sign-in. Point it
 at the same database you migrated.
+
+**Every connection the service opens adopts the `rocell_app` database role**, which the audit-log
+migration creates and grants: full read/write on `users`, `sessions` and `login_attempts`, and
+`SELECT, INSERT` — and nothing else — on the audit log. That is why an `UPDATE` or `DELETE`
+against the log is refused by PostgreSQL rather than by a code review (AD-4). Two things follow
+for anyone working on the schema. The role is **cluster-scoped**, shared by every database on the
+server, so no migration drops it. And a table added by a later migration needs its own `GRANT` in
+that migration — there is no `ALTER DEFAULT PRIVILEGES` to fall back on, deliberately, and
+`apps/api/tests/test_audit_immutability.py` fails the build for a table the role cannot use rather
+than letting it surface as a permission error in production. The role has no password and needs
+none: it is adopted over the connection `DATABASE_URL` already made.
+
+**`TRUSTED_PROXY_HEADER` is optional and unset by default.** It names the header a trusted reverse
+proxy sets with the real client address — `x-forwarded-for`, `x-real-ip`, whatever your edge layer
+uses — and it is the *only* source of `source_ip` on an audit entry when it is set. Left unset,
+`source_ip` is the connection's peer address, which the caller cannot forge; a client that sends
+its own `X-Forwarded-For` is ignored outright. That is the safe default, and it has one
+consequence worth knowing: **deploy behind a proxy without setting this and every audit entry
+records the proxy's address rather than the user's.** Set it in the same breath as `DATABASE_URL`
+when an edge layer goes in front. A value that does not parse as an IP address, and a configured
+header the request does not carry, both record nothing — never the proxy's address as a fallback.
 
 Signing in sets an HTTP-only, `Secure`, `SameSite=Strict` session cookie. Browsers treat
 `http://localhost` and `http://127.0.0.1` as trustworthy origins, so a `Secure` cookie is stored
@@ -108,11 +135,12 @@ else has it — while the browser that made the change stays signed in on a fres
 shows the account's name and email as well, read-only; changing either is an Administrator's job,
 from **Users → Edit**.
 
-One thing that change does **not** do yet is leave a record. Nothing is written down about who
-changed a password, when, or how many other devices it signed out: the only trace is the account's
-`updated_at`, and the next sign-in overwrites that column too. So if somebody asks later whether a
-password was changed on a given day, the honest answer today is that the system cannot say. The
-audit log that answers it is Story 1.12.
+That change is written down. Two entries land with it in the append-only audit log — the change
+itself, and the revocation, carrying how many devices it signed out — each naming the account, the
+time and the address the request came from. So "was this password changed on Tuesday, and how many
+sessions did it end?" is a question the system can now answer. What it cannot yet do is *show* you:
+there is no screen over the log, and reading it means reading the database. That screen is Story
+1.13.
 
 An Administrator provisions everybody else, from **Users** on the home panel and then **+ Add
 user** on the list — the entry is rendered only for an Administrator, and a Staff user never sees
@@ -150,9 +178,10 @@ you later demote is refused on the request after the change.
 
 Two limits worth knowing. The address must be unique, case and surrounding spaces ignored —
 `Nadeesha@Rocell.LK` and `nadeesha@rocell.lk` are the same login — and a second attempt at one
-already in use is refused without writing anything. And **nothing is written down about who
-provisioned whom**: as with a password change, the only trace today is the row's own timestamps,
-and the audit log that answers "who was given access, by whom, and when" is Story 1.12.
+already in use is refused without writing anything. And **who provisioned whom is written down**:
+every successful provisioning appends an audit entry naming the Administrator who did it, the
+account they created and the time — a refused one appends nothing, because nothing happened. The
+screen that displays the log is Story 1.13.
 
 **Users** is the list of everyone who has access, and it is Administrators only — a Staff user has
 no entry to it anywhere, and the server refuses them even if they find the address. It shows every
@@ -177,9 +206,9 @@ is the demotion that would leave the product with **no active Administrator at a
 answered with the rule and the way out of it. Changing an address changes the login — the old one
 stops working at the very next sign-in and the new one starts — and **it takes the account's
 lockout counter with it**: a locked account is still locked at its new address, so an edit is not a
-way around a lockout. And, as with everything else in Epic 1 so far, **nothing is written down
-about who changed what**: the only trace is the row's own `updated_at`, which says neither. The
-audit log that answers it is Story 1.12.
+way around a lockout. And **who changed what is written down**: an edit appends an audit entry
+naming the Administrator, the account and the fields that actually moved, each with its old and new
+value. An edit that changes nothing says so rather than claiming a change.
 
 **Deactivate** takes an account's access away **immediately**. Not at their next sign-in — on their
 very next request: somebody using the app at that moment is signed out where they stand, on every
@@ -209,9 +238,10 @@ as it already refuses the demotion that would do the same thing by a different v
 this to **your own** account is allowed while another active Administrator exists; the app drops to
 the login screen on its next request.
 
-As with everything else in Epic 1, **nothing is written down about who did any of it**. A
-deactivation and an activation leave the row's `updated_at` and nothing more; a delete leaves no
-trace at all. The audit log that answers it is Story 1.12.
+**All three are written down.** Each appends an audit entry naming the Administrator who acted,
+the account they acted on and the address the request came from; a deactivation also records how
+many sessions it revoked, and a delete records the row it removed — which is why a deleted account
+still has a history even though its row is gone. A refused operation appends nothing.
 
 **A forgotten password has no self-service path at all.** There is no reset link, no reset email and
 no mail transport anywhere in the product — the app sends no email, by design, and a test fails the

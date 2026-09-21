@@ -36,6 +36,7 @@ CREATE_USERS_VERSION = "20260917T1200_create_users"
 CREATE_SESSIONS_VERSION = "20260917T1300_create_sessions"
 TRACK_ACTIVITY_VERSION = "20260917T1400_track_session_activity"
 LOGIN_THROTTLING_VERSION = "20260918T1000_add_login_throttling"
+AUDIT_LOG_VERSION = "20260921T1000_create_audit_log"
 
 #: Every migration in `infra/migrations`, in the order the runner applies
 #: them. Listed once so adding a migration is one edit here rather than a
@@ -46,6 +47,7 @@ ALL_VERSIONS = [
     CREATE_SESSIONS_VERSION,
     TRACK_ACTIVITY_VERSION,
     LOGIN_THROTTLING_VERSION,
+    AUDIT_LOG_VERSION,
 ]
 
 SEED_EMAIL = "ruwan@rocell.lk"
@@ -406,6 +408,93 @@ def test_the_session_indexes_the_login_path_relies_on_exist(
     assert {"sessions_token_hash_key", "sessions_user_id_idx", "sessions_expires_at_idx"} <= indexes
 
 
+def test_the_audit_index_story_1_13_will_page_on_exists(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # `(created_at DESC, id DESC)` is the audit log's only index, and it is
+    # there for a read surface that does not exist yet — so nothing in the
+    # suite would notice it missing. Delete the `CREATE INDEX` and both
+    # `DROP INDEX IF EXISTS` in the down and `DROP TABLE IF EXISTS` stay
+    # silent, every audit test still passes, and Story 1.13's chronological
+    # page quietly becomes a sequential scan over a table nothing may prune.
+    up(conn)
+
+    indexes = {
+        row[0]
+        for row in conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE tablename = %s", ("audit_log",)
+        ).fetchall()
+    }
+
+    assert "audit_log_created_at_idx" in indexes
+
+
+def _holds(conn: psycopg.Connection, table: str, privilege: str) -> bool:
+    """Whether `rocell_app` holds `privilege` on `table` in this database."""
+    row = conn.execute(
+        "SELECT has_table_privilege('rocell_app', %s, %s) AS held", (table, privilege)
+    ).fetchone()
+    assert row is not None
+    return bool(row[0])
+
+
+def _is_a_member(conn: psycopg.Connection) -> bool:
+    """Whether the migrating role is a member of `rocell_app`, per the catalog."""
+    row = conn.execute(
+        """
+        SELECT EXISTS (
+                 SELECT 1
+                   FROM pg_auth_members AS membership
+                   JOIN pg_roles AS granted ON granted.oid = membership.roleid
+                   JOIN pg_roles AS grantee ON grantee.oid = membership.member
+                  WHERE granted.rolname = 'rocell_app'
+                    AND grantee.rolname = current_user
+               ) AS is_member
+        """
+    ).fetchone()
+    assert row is not None
+    return bool(row[0])
+
+
+def test_the_audit_down_takes_back_the_grants_and_the_membership(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # **Two thirds of the down migration is observed by nothing else.** Its
+    # `DROP INDEX`/`DROP TABLE` are covered by the column-set assertions the
+    # other down tests make; its `REVOKE` block is not, because no test in
+    # either suite looks at a privilege *after* a revert —
+    # `test_audit_immutability.py`'s whole matrix runs against a database that
+    # has just been migrated up. Delete the entire `DO $$ ... REVOKE ... $$`
+    # block and every existing test stays green while a reverted database is
+    # left with `rocell_app` holding full DML on `users`, `sessions` and
+    # `login_attempts` and the owner still a member of a cluster-scoped role —
+    # which is the opposite of what this file's header and `infra/README.md`
+    # tell an operator the revert restores.
+    up(conn)
+
+    assert _holds(conn, "users", "SELECT")
+    assert _holds(conn, "sessions", "DELETE")
+    assert _holds(conn, "login_attempts", "UPDATE")
+    assert _is_a_member(conn)
+
+    assert down(conn) == AUDIT_LOG_VERSION
+
+    for table in ("users", "sessions", "login_attempts"):
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+            assert not _holds(conn, table, privilege), (
+                f"after the revert rocell_app still holds {privilege} on {table}"
+            )
+    assert not _is_a_member(conn), (
+        "after the revert the migrating role is still a member of rocell_app"
+    )
+
+    # And the pair round-trips: re-applying restores both, so a revert is not
+    # a one-way door for the deployment that has to go forward again.
+    assert up(conn) == [AUDIT_LOG_VERSION]
+    assert _holds(conn, "users", "SELECT")
+    assert _is_a_member(conn)
+
+
 def test_the_table_refuses_an_address_that_is_not_lowercased(
     conn: psycopg.Connection, seed_password: str
 ) -> None:
@@ -611,12 +700,18 @@ def test_the_throttling_pair_round_trips(conn: psycopg.Connection, seed_password
     up(conn)
     assert "locked_until" in table_columns(conn, "users")
 
+    # The audit pair sits on top of the throttling pair now, so it comes off
+    # first. Asserted rather than skipped past: a `down` that reverted more
+    # than its own file would show up right here.
+    assert down(conn) == AUDIT_LOG_VERSION
+    assert table_columns(conn, "login_attempts") != set()
+
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert table_columns(conn, "login_attempts") == set()
     assert "locked_until" not in table_columns(conn, "users")
-    assert ledger_versions(conn) == ALL_VERSIONS[:-1]
+    assert ledger_versions(conn) == ALL_VERSIONS[:-2]
 
-    assert up(conn) == [LOGIN_THROTTLING_VERSION]
+    assert up(conn) == [LOGIN_THROTTLING_VERSION, AUDIT_LOG_VERSION]
     assert "locked_until" in table_columns(conn, "users")
     assert table_columns(conn, "login_attempts") != set()
     assert ledger_versions(conn) == ALL_VERSIONS
@@ -629,9 +724,13 @@ def test_down_reverts_one_step(conn: psycopg.Connection, seed_password: str) -> 
     up(conn)
 
     # One step is one migration: the most recently applied, and nothing behind
-    # it. The throttling pair goes first — both objects, and neither anything
-    # under them — proof the step really is one file and not "everything on
-    # top".
+    # it. The audit pair goes first, and the throttling objects below it are
+    # untouched by that step — proof the step really is one file and not
+    # "everything on top".
+    assert down(conn) == AUDIT_LOG_VERSION
+    assert table_columns(conn, "audit_log") == set()
+    assert table_columns(conn, "login_attempts") != set()
+
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert table_columns(conn, "login_attempts") == set()
     assert "locked_until" not in table_columns(conn, "users")
@@ -667,6 +766,7 @@ def test_stepping_all_the_way_down_restores_the_previous_shape(
     assert table_columns(conn, "users") == set()
     assert table_columns(conn, "sessions") == set()
     assert table_columns(conn, "login_attempts") == set()
+    assert table_columns(conn, "audit_log") == set()
 
 
 def test_down_refuses_a_ledger_version_whose_files_are_gone(
@@ -713,6 +813,7 @@ def test_down_leaves_a_claimed_administrator_alone(
         ("admin",),
     )
 
+    assert down(conn) == AUDIT_LOG_VERSION
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
@@ -731,6 +832,7 @@ def test_down_leaves_an_administrator_who_has_signed_in_alone(
     up(conn)
     conn.execute("UPDATE users SET last_login_at = now() WHERE role = %s", ("admin",))
 
+    assert down(conn) == AUDIT_LOG_VERSION
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
@@ -748,6 +850,7 @@ def test_down_leaves_an_administrator_who_set_their_own_password_alone(
         ("admin",),
     )
 
+    assert down(conn) == AUDIT_LOG_VERSION
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
@@ -765,6 +868,7 @@ def test_down_leaves_staff_accounts_alone(conn: psycopg.Connection, seed_passwor
         ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
     )
 
+    assert down(conn) == AUDIT_LOG_VERSION
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
@@ -783,6 +887,7 @@ def test_down_leaves_a_second_administrator_alone(
         ("Second Admin", "second@rocell.lk", "$argon2id$placeholder", "admin"),
     )
 
+    assert down(conn) == AUDIT_LOG_VERSION
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
     assert down(conn) == CREATE_SESSIONS_VERSION
@@ -1340,6 +1445,9 @@ def test_main_steps_down_with_the_confirmation_flag(
 ) -> None:
     assert migrate.main(["up"]) == 0
     capsys.readouterr()
+
+    assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
+    assert AUDIT_LOG_VERSION in capsys.readouterr().out
 
     assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
     assert LOGIN_THROTTLING_VERSION in capsys.readouterr().out

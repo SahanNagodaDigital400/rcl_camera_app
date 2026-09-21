@@ -198,7 +198,21 @@ UPDATE sessions
    AND last_seen_at > now() - %s
 """
 
-_DELETE_SESSION = "DELETE FROM sessions WHERE token_hash = %s"
+#: Revoke one session, and say whose it was.
+#:
+#: `RETURNING user_id` is Story 1.12's addition and it carries two facts the
+#: bare `DELETE` could not. Whether a row went at all — `POST /auth/logout` is
+#: idempotent and answers `204` to a cookie that names nothing, and an audit
+#: entry for a request that revoked nothing would be the log recording an event
+#: that did not happen. And *who* it belonged to, so the entry can name an
+#: actor: `logout` deliberately declares no `current_user` dependency (the
+#: route must stay reachable with a dead cookie), so the deleted row is the only
+#: thing in that request that knows.
+_DELETE_SESSION = """
+DELETE FROM sessions
+ WHERE token_hash = %s
+RETURNING user_id
+"""
 
 #: Every session a user holds, on any device. Two callers, and only two — the
 #: forced password change and Story 1.11's deactivation. See
@@ -356,17 +370,33 @@ def _touch_session(conn: psycopg.Connection, session_id: UUID) -> None:
         logger.warning("session renewal failed; the request itself stands", exc_info=True)
 
 
-def delete_session(conn: psycopg.Connection, raw_token: str | None) -> None:
-    """Revoke one session. Deleting a token that is not there is not an error."""
+def delete_session(conn: psycopg.Connection, raw_token: str | None) -> UUID | None:
+    """Revoke one session. Deleting a token that is not there is not an error.
+
+    Returns the id of the user whose session went, or `None` when nothing was
+    deleted — no cookie, or a cookie naming a row that is already gone. That
+    return is what lets `api.auth.logout` write an audit entry for a revocation
+    that happened and stay silent about one that did not, without a second
+    query and without declaring a dependency the route must not declare. Its
+    other caller — `api.auth`'s sign-in, spending the cookie the browser
+    arrived with — ignores it.
+    """
     if not raw_token:
-        return
-    conn.execute(_DELETE_SESSION, (hash_token(raw_token),))
+        return None
+    row = conn.execute(_DELETE_SESSION, (hash_token(raw_token),)).fetchone()
+    return None if row is None else row["user_id"]
 
 
 def delete_sessions_for_user(conn: psycopg.Connection, user_id: UUID) -> int:
     """Revoke every session this user holds, anywhere. Returns how many went.
 
-    Revocation, not session management, and it has exactly two callers.
+    **The count is not bookkeeping.** Since Story 1.12 it is `details.count` on
+    the `sessions_revoked` audit entry every caller writes beside its own
+    change — the number of devices an action actually signed out, which is the
+    part of a password change or a deactivation that leaves no other trace.
+
+    Revocation, not session management, and it is reached from exactly two
+    places in the product — both of them below, across four call sites.
 
     **The forced password change** (`api.auth`), where the temporary credential
     the sessions were issued on has just stopped being trusted. A temporary

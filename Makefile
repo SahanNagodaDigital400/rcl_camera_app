@@ -25,7 +25,9 @@ help:
 	@echo "  make format      apply ruff's formatting and import fixes"
 	@echo ""
 	@echo "  database (needs DATABASE_URL; see infra/README.md):"
-	@echo "  make migrate     apply every unapplied migration (also SEED_ADMIN_*)"
+	@echo "  make migrate     apply every unapplied migration"
+	@echo "                   -- also SEED_ADMIN_* on the first run, and the role"
+	@echo "                      needs CREATEROLE (see infra/README.md)"
 	@echo "  make reseed-admin"
 	@echo "                   reissue the seeded Administrator's temporary credential"
 	@echo ""
@@ -84,6 +86,12 @@ build:
 # runner that guesses a connection string can migrate the wrong database.
 # Seeding the first Administrator additionally needs SEED_ADMIN_EMAIL and
 # SEED_ADMIN_PASSWORD (and optionally SEED_ADMIN_NAME) — see infra/README.md.
+#
+# Since 20260921T1000_create_audit_log the migrating role additionally needs
+# CREATEROLE (or superuser): that migration creates `rocell_app`, the role
+# apps/api runs as, and grants it. Write access to the database is no longer
+# enough, and the failure is a permission error from the CREATE ROLE rather
+# than anything this Makefile can explain.
 
 migrate:
 	$(UV) run python -m rocell_infra.migrate up

@@ -14,6 +14,9 @@ Nothing is deployed yet. The migration runner and the `users` table are here
   verb phrase (`20260917T1030_create_tile.up.sql`, and its `.down.sql`).
 - The audit log table is **append-only**: no migration may add an `UPDATE` or
   `DELETE` path to it, and neither may application code (AGENTS.md Policy).
+  Since `20260921T1000_create_audit_log` that is enforced by PostgreSQL as
+  well as by review — the role `apps/api` runs as holds `SELECT, INSERT` on
+  that table and nothing else (AD-4). See "The application role" below.
 - pgvector's floor is **≥ 0.8.2** — load-bearing, not cosmetic: CVE-2026-3172
   (buffer overflow in parallel HNSW index builds) affects 0.6.0–0.8.1 and AD-5
   mandates HNSW.
@@ -53,6 +56,12 @@ every sign-in* on an undefined column for the length of the gap.
 application back first, then step the schema down, or the running code loses a
 table and a column it is still selecting.
 
+`20260921T1000_create_audit_log` is the sharpest version of that rule so far,
+because the gap is not a failing endpoint but a service that cannot start:
+`apps/api` asks for `role=rocell_app` at connection startup, so ahead of this
+migration it cannot open a single connection. Stepping it back with the code
+running is the same thing in reverse.
+
 ### What is in `migrations/` today
 
 | Version | What it creates |
@@ -62,6 +71,73 @@ table and a column it is still selecting.
 | `20260917T1300_create_sessions` | the `sessions` table — the architecture spine's `SESSION` ERD block, with `ON DELETE CASCADE` from `users` so deleting an account ends its sessions rather than orphaning them (`DELETE /admin/users/{id}` relies on exactly this and deletes no session row itself), a unique index on `token_hash` and an index on `user_id` |
 | `20260917T1400_track_session_activity` | `sessions.last_seen_at` — the idle half of a session's two deadlines (see below). No index on it, on purpose |
 | `20260918T1000_add_login_throttling` | the `login_attempts` table — FR-4's failed-sign-in counter, keyed on the **submitted address** and never on `users.id` — plus `users.locked_until`, which mirrors a lock onto the account's status and is never read to decide anything. No index on either, on purpose (see below) |
+| `20260921T1000_create_audit_log` | the `audit_log` table — FR-20's append-only record, with no foreign key to `users` (AD-10) and one index for the chronological read — **and** the `rocell_app` role the application runs as, with the grants that make the table append-only at the database level (AD-4) |
+
+### The application role, and the append-only log
+
+`20260921T1000_create_audit_log` creates two things that only make sense
+together: the `audit_log` table, and `rocell_app` — the first database role in
+this product that is not the owner.
+
+`apps/api` adopts that role on every connection it opens (libpq's
+`options=-c role=rocell_app`, in `apps/api/api/db.py`). The grants are:
+
+| Object | `rocell_app` holds |
+|---|---|
+| `users`, `sessions`, `login_attempts` | `SELECT, INSERT, UPDATE, DELETE` |
+| `audit_log` | `SELECT, INSERT` — **and nothing else** |
+| `schema_migrations` | nothing; the runner owns the ledger and connects as the owner |
+
+So an `UPDATE`, `DELETE` or `TRUNCATE` against the log is refused by
+PostgreSQL with `InsufficientPrivilege`, whatever the application code says.
+That is AD-4: the append-only rule survives a bug, a route added in a later
+epic, or a migration that forgets the policy — none of which a reviewed pull
+request can guarantee against. A wrong entry is corrected by inserting a
+corrective entry, never by mutating the original.
+
+Four consequences for anyone editing this directory:
+
+1. **A new table needs its own `GRANT` in its own migration.** There is no
+   `ALTER DEFAULT PRIVILEGES` here on purpose — default privileges apply only
+   to objects created afterwards by the role that set them, which quietly
+   makes "can the application read this" depend on who ran the migration.
+   Spell it out and a forgotten grant is loud.
+   `apps/api/tests/test_audit_immutability.py` asserts that every table in
+   `public` except `audit_log` and `schema_migrations` is fully granted, so a
+   missing one fails at `make test` rather than at the first request that
+   touches it.
+2. **The role is cluster-scoped; the grants are database-scoped.**
+   `CREATE ROLE` writes to `pg_authid`, which every database on the server
+   shares. The `up` is written so a second database replays it cleanly, and
+   the `down` deliberately does **not** `DROP ROLE` — that would revoke it out
+   from under every other database, and PostgreSQL would refuse while any of
+   them still held a grant.
+3. **The role has no password.** It is adopted over the owner's existing
+   `DATABASE_URL`, so there is no second credential to store — which is the
+   only honest shape while hosting and secrets management are both still
+   deferred decisions. A separate login role with its own secret is the
+   stronger form and is deployment-time hardening, not something a migration
+   can decide.
+4. **The owner must be a member of the role**, or it cannot adopt it. The
+   migration grants `rocell_app` to whoever runs it. Migrate as the same role
+   the application connects as, or grant it by hand.
+
+The table itself carries `id`, `created_at`, `action`, `actor_user_id`,
+`actor_email`, `target_user_id`, `target_email`, `source_ip` and a `details`
+`jsonb`, with **no foreign key to `users`** (AD-10). That is not laziness: the
+application role holds no `DELETE` on the log, so an FK would force a choice
+between blocking every `DELETE /admin/users/{id}` and cascading into a table
+nothing may delete from. The actor and target are denormalized snapshots —
+the id joins while the row lives, the address is what the entry still means
+after it does not. One index, `(created_at DESC, id DESC)`, for the
+chronological read; `id` is the tiebreaker because `created_at` defaults to
+`now()`, the transaction timestamp, so two entries written by one request
+share it exactly.
+
+`source_ip` comes from `TRUSTED_PROXY_HEADER` when that names a header and
+from the connection's TCP peer when it does not — never from a raw
+client-supplied header. See the root `README.md` for what to set and what
+happens if you deploy behind a proxy and forget.
 
 ### The login throttle
 
@@ -173,6 +249,16 @@ saying so — a mistyped or copy-pasted `down` does nothing.
 Every command needs `DATABASE_URL` and will exit non-zero naming it if it is
 unset. Nothing is defaulted: a runner that guesses a connection string can
 migrate the wrong database.
+
+**The migrating role needs `CREATEROLE`** (or superuser). That is new with
+`20260921T1000_create_audit_log`, which creates `rocell_app` and grants it:
+until then every migration needed only write access to one database, and this
+one needs a cluster-level privilege. Without it the run fails on the
+`CREATE ROLE` with a plain `permission denied to create role` and applies
+nothing — the migration and its ledger row commit together, so a half-created
+role model is not a state you can reach. The same operator should run every
+migration: `GRANT rocell_app TO current_user` needs ADMIN OPTION on the role,
+which its creator holds and a second operator may not.
 
 ```bash
 export DATABASE_URL=postgresql://rocell@localhost:5432/rocell
@@ -304,7 +390,9 @@ must_change_password` is not decoration: on an account that *did* claim itself
 this statement must change nothing, because there `last_login_at` is history
 rather than a lock, and blanking it would hand out a temporary credential for a
 working account. Two people should watch this run. It is a database write with
-no audit trail behind it (Story 1.12), and it is the one operation in this file
+no audit trail behind it — it is a `psql` write, outside the application
+entirely, and the audit log only records what the application does — and it is
+the one operation in this file
 that can turn a claimed account back into a claimable one.
 
 ### Stepping the seed migration back
@@ -315,13 +403,27 @@ is still unclaimed *and* still the only one. On a live system it therefore
 deletes nothing: a `down` must restore the previous shape, not take the
 product's last way in with it.
 
-### Not audited yet
+### Not audited, and not an oversight
 
-Seeding and reissuing are user changes made outside the application, and
-AGENTS.md Policy requires the append-only audit log to cover user changes. That
-log arrives with Story 1.12, which owes these two paths their entries. Until
-then the only record of either is the console output and `created_at` /
-`updated_at` on the row.
+The append-only audit log exists (`20260921T1000_create_audit_log`), and
+`make migrate` and `make reseed-admin` still write nothing to it. That is
+deliberate rather than pending.
+
+Both run **outside the application**, at a console, under the owner's own
+database credentials. An audit entry names an actor and a source address, and
+neither exists here: there is no session, no request and no signed-in
+Administrator — the whole point of the seed is that it is the one account no
+Administrator created. An entry for it would have to invent the actor, and a
+log that invents one is worse than a log with a gap, because nothing
+downstream can tell an invented actor from a real one.
+
+So the record of a seed or a reissue remains what it always was: the console
+output, and `created_at` / `updated_at` on the row. The operational control is
+that both commands are narrow — the seed refuses once any Administrator
+exists, the reissue refuses once the account has been claimed or a second
+Administrator exists — and that running either needs database credentials
+somebody had to be given. The same reasoning covers `scripts/ingest`, which
+the architecture spine puts outside the audit trail by design.
 
 ## Testing
 

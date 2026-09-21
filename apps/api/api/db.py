@@ -14,7 +14,14 @@ Two rules this module exists to keep:
   uses. The alternative — an implicit transaction opened by the driver and
   committed somewhere in FastAPI's dependency teardown — makes "did this
   commit?" depend on where an exception was raised, which is not a question a
-  login endpoint should have.
+  login endpoint should have. Since Story 1.12 a third rule rides on the
+  second: an audit entry is written inside the *same* transaction as the change
+  it records, so the two land together or neither does. A `with
+  conn.transaction():` block in `api.auth` or `api.users` is therefore a unit of
+  work in the full sense — the row and its record of who wrote it.
+* **Every connection adopts `APPLICATION_ROLE` before it runs a statement.**
+  AD-4 wants the audit log's immutability enforced by PostgreSQL rather than by
+  code discipline, and a grant can only bind a role. See that constant.
 """
 
 from __future__ import annotations
@@ -37,6 +44,46 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 #: The connection string. Required, never defaulted — see the module docstring.
 DATABASE_URL = "DATABASE_URL"
+
+#: The database role every pooled connection runs as — the product's only
+#: non-owner role, created by
+#: `infra/migrations/20260921T1000_create_audit_log.up.sql`.
+#:
+#: The filename is spelled in full on purpose — it is the canonical reference
+#: for everything below and has to be greppable. It does not trip
+#: `tests/test_source_guards.py`'s "only `api/audit.py` names the table" guard,
+#: which matches `\baudit_log\b`: `create_audit_log` has no word boundary
+#: before `audit`.
+#:
+#: **This is AD-4's enforcement, and it is the whole of it.** The role is
+#: granted `SELECT, INSERT` on the audit table and full DML on every other one,
+#: so an `UPDATE`, `DELETE` or `TRUNCATE` against the log is refused by
+#: PostgreSQL itself. The append-only rule therefore survives a bug in
+#: application code, a route added in a later epic, or a migration that forgets
+#: the policy — none of which a reviewed pull request can guarantee against.
+#:
+#: **Adopted over the owner's existing `DATABASE_URL`, not through a second
+#: connection string.** The literal reading of AD-4 is a second login role with
+#: its own credential in its own DSN — but hosting, CI/CD and secrets
+#: management are all still-deferred decisions in the architecture spine, and
+#: AGENTS.md Policy forbids a committed credential, so shipping a second DSN
+#: today would mean inventing a deployment contract this codebase has no
+#: authority to invent. Adopting the role gives the same grant model with no
+#: operator change. The stronger form is deployment-time hardening (DW-111).
+#:
+#: **`-c role=` at connection startup rather than a `SET ROLE` in the pool's
+#: `configure` hook**, and the difference is not stylistic: `-c` sets the
+#: *startup* value for the session, so a later `RESET ROLE` lands back on
+#: `rocell_app` rather than climbing back to the table owner. A role set after
+#: connect leaves exactly that escape open.
+APPLICATION_ROLE = "rocell_app"
+
+#: `options` as libpq wants it. Assembled by concatenating two module
+#: constants, never from a value: nothing a request can influence reaches this
+#: string. It carries no SQL — `role` is a GUC, not a statement — so the
+#: `tests/test_source_guards.py` interpolation guard is silent on it, and this
+#: comment is the argument that guard cannot make.
+CONNECTION_OPTIONS = "-c role=" + APPLICATION_ROLE
 
 #: Nothing is pre-opened. A pool that insisted on a live connection at import
 #: or startup would turn a momentarily unreachable database into a service that
@@ -77,7 +124,9 @@ def create_pool(url: str | None = None) -> ConnectionPool:
         # make a `SELECT` and its unpacking two places that have to agree about
         # column order, and the ten-column `User` read below is exactly the
         # shape where that goes wrong silently.
-        kwargs={"autocommit": True, "row_factory": dict_row},
+        # `options` adopts `APPLICATION_ROLE` before the first statement runs,
+        # which is what makes AD-4's grant model bind to this service at all.
+        kwargs={"autocommit": True, "row_factory": dict_row, "options": CONNECTION_OPTIONS},
         open=False,
     )
     pool.open(wait=False)

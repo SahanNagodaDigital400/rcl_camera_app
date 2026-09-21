@@ -70,8 +70,10 @@ import type { Role, User } from '@rocell/schema/user';
  *   mis-click from the routine one. `edit-user.test.tsx` asserts
  *   `queryByRole('dialog')` is null here, which is the assertion that the
  *   dialog did not leak across.
- * - **No audit entry.** Story 1.12 owns the append-only log and is owed one by
- *   the endpoint behind this screen; no private log path is built meanwhile.
+ * - **No view of the audit log.** The endpoint behind this screen now writes an
+ *   append-only entry naming the Administrator who made the edit and the three
+ *   fields that moved (Story 1.12); nothing on this screen shows it, and the
+ *   log's own surface is Story 1.13.
  *
  * The rejection text is always the API's own sentence, which names the rule that
  * failed (EXPERIENCE.md:87). Copy follows EXPERIENCE.md's tone rules: short,

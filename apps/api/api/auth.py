@@ -61,22 +61,34 @@ There is no unlock surface either, and no story in Epic 1 owns one: the lock
 expires on its own and FR-5 sends a locked-out user to an Administrator who has
 nothing to press. Story 1.10 was where one was predicted; it shipped with the
 edit it was scoped to — name, email and role — and no unlock, so DW-64's
-recovery half stays open with no owner left. And none of this is audited yet — AGENTS.md
-Policy requires the append-only audit log to cover logins, and that log arrives
-with Story 1.12, which owes the login and *both* password writes their entries.
-Until then a sign-in leaves `last_login_at` behind, and a password change leaves
-**nothing durable at all**: it moves `updated_at`, and `_RECORD_LOGIN` sets that
-same column on the very next sign-in, so the one trace a change leaves is
-overwritten by the user's next visit — and by anyone else's, if the password
-went where it should not have. There is no record of the change, and none of the
-sessions it silently revoked, until that log exists.
+recovery half stays open with no owner left.
+
+**Every outcome of every route here is recorded, and the record is part of the
+write.** Story 1.12 closed the gap this docstring used to describe: a sign-in,
+each of the seven ways a sign-in is refused, a lockout refusal, a sign-out, both
+password writes and the sessions they revoke all append an entry through
+`api.audit` — the product's one write path, and the only file that names the
+table. Each entry goes inside the same `with conn.transaction():` as the change
+it records, so the two land together or neither does, and an entry that cannot
+be written **fails the request** rather than being logged and stepped over.
+That is the opposite of how this module treats its other secondary writes (the
+swallowed session sweep, the swallowed counter clear, `throttle`'s mirror), and
+deliberately: those are tidy-up, and this is what makes an action attributable
+at all. `source_ip` reaches each entry through `api.audit.source_ip`, a
+dependency that reads a header only when `TRUSTED_PROXY_HEADER` names one and
+otherwise records the TCP peer — never a raw client-supplied header (AD-4).
+What still leaves no durable trace is the *application* log's silence about the
+address a failed sign-in submitted: that is recorded in the audit log, which has
+AD-4's protections, and nowhere else (`api.throttle`).
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from typing import Annotated
+from uuid import UUID
 
 # Imported for real, not under TYPE_CHECKING: FastAPI resolves a handler's
 # annotations at runtime to build its dependency graph, so a name that exists
@@ -96,6 +108,8 @@ from shared_schema.passwords import (
 )
 from shared_schema.user import User
 
+from api import audit
+from api.audit import AuditAction
 from api.db import get_connection, get_pool
 from api.dependencies import (
     AUTH_CHALLENGE,
@@ -116,7 +130,7 @@ from api.sessions import (
     issue_session,
     set_session_cookie,
 )
-from api.throttle import attempt_state, clear_failures, record_failure
+from api.throttle import AttemptState, attempt_state, clear_failures, record_failure
 
 logger = logging.getLogger("rocell.api.auth")
 
@@ -127,6 +141,39 @@ router = APIRouter(tags=["auth"])
 #: Patterns make that explicit for a deactivated account, and the same silence
 #: covers the other three states.
 INVALID_CREDENTIALS = "Email or password is incorrect."
+
+#: `details.reason` on a `login_failed` entry — the seven ways this endpoint
+#: refuses a sign-in, each of which answers the caller identically.
+#:
+#: Six of them go through `_count_and_refuse`, which is the single funnel that
+#: makes "a failure is counted and recorded" a property of one function rather
+#: than of six `raise` statements agreeing with each other. `MALFORMED_ADDRESS`
+#: is the seventh and is written outside it, for the reason below.
+#:
+#: **They exist because the response cannot tell them apart and an operator
+#: must be able to.** "Ten failures against an address that is not an account"
+#: and "ten failures against a real one" are the same `401` to the caller and
+#: entirely different events to whoever reads the log, and no other trace in
+#: the product distinguishes them.
+#:
+#: `MALFORMED_ADDRESS` is the one that never reaches the counter: its key *is*
+#: the string Postgres cannot hold, so nothing is counted and only the entry
+#: records the attempt (with a `NULL` `target_email`, for the same reason).
+REASON_UNKNOWN_ACCOUNT = "unknown_account"
+REASON_WRONG_PASSWORD = "wrong_password"
+REASON_CORRUPT_DIGEST = "corrupt_digest"
+REASON_DEACTIVATED = "deactivated"
+REASON_CREDENTIAL_EXPIRED = "credential_expired"
+REASON_ACCOUNT_VANISHED = "account_vanished"
+REASON_MALFORMED_ADDRESS = "malformed_address"
+
+#: Why every session of a user went, on a `sessions_revoked` entry. Two causes
+#: today: the routine rotation that rides with a password write, and the
+#: silent revocation `set_password` performs when it discovers the temporary
+#: credential lapsed — which is a security event in its own right and left no
+#: trace at all before Story 1.12.
+CAUSE_PASSWORD_WRITTEN = "password_written"
+CAUSE_CREDENTIAL_EXPIRED = "credential_expired"
 
 #: The longest address the endpoint will look at. Longer than RFC 5321's 254,
 #: so it refuses only what is certainly not an address, and short enough that
@@ -341,26 +388,57 @@ def _locked(retry_after: int) -> ApiError:
     )
 
 
-def _count_and_refuse(conn: psycopg.Connection, email_key: str) -> ApiError:
+def _locked_until_iso(state: AttemptState) -> str | None:
+    """When the lock this refusal cites lapses, as ISO 8601, for `details`.
+
+    A separate function rather than an expression at each of the two lockout
+    gates: `locked_until` is `None`-able on the dataclass even though both
+    call sites have already checked `state.locked`, and a type-checker-pleasing
+    conditional written twice is a conditional that can be written differently
+    twice.
+    """
+    return None if state.locked_until is None else state.locked_until.isoformat()
+
+
+def _count_and_refuse(
+    conn: psycopg.Connection,
+    email_key: str,
+    *,
+    reason: str,
+    source_ip: str | None,
+    user_id: UUID | None = None,
+) -> ApiError:
     """Record this failed attempt and build the refusal it has earned.
 
     Every rejection path in `login` below goes through here, so "a failure is
-    counted" is a property of the one place the refusal is constructed rather
-    than of six `raise` statements agreeing with each other — the same argument
-    `_rejected()` itself is built on.
+    counted" and "a failure is *recorded*" are both properties of the one place
+    the refusal is constructed rather than of six `raise` statements agreeing
+    with each other — the same argument `_rejected()` itself is built on.
 
     Returns rather than raises, so every call site still reads `raise ...` and
     a path that forgot to raise is a visible mistake rather than a silently
     continued handler.
 
-    **A counter write that fails does not fail the sign-in.** The credential was
-    already wrong; answering `500` for it would make a database fault into a
-    different response for one attempt than for every other, which is exactly
-    the signal this endpoint is built to remove. It fails in the safe direction
-    — the attempt goes uncounted, the rejection stands — and it is logged,
-    because a counter that never records anything is FR-4 silently absent. The
-    precedent is `login`'s own swallowed session sweep.
+    **The six causes that reach here are indistinguishable to the caller and
+    distinct in the log** — `malformed_address` is the seventh refusal and is
+    recorded by `login` itself, because its key is the one string Postgres
+    cannot hold. `reason` is the whole difference: the response is
+    byte-identical across all of them (that is the module's first rule), and
+    the audit entry says which one it was. That asymmetry is the point — the refusal leaks
+    nothing about whether the address is an account, and the record explains
+    everything to somebody who is allowed to read it.
+
+    **A counter write that fails does not fail the sign-in; an audit write that
+    fails does.** The two are not the same kind of write. The counter is FR-4's
+    rate limit and a fault in it fails in the safe direction — the attempt goes
+    uncounted, the rejection stands, and it is logged. The audit entry is the
+    record of record (FR-20, NFR4): an attempt that happened with nothing
+    written down is the state Story 1.12 exists to prevent, so
+    `psycopg.Error` propagates out of `audit.record` and `api.main` answers
+    500. Ordered counter-then-entry so that `details.locked_until` can carry
+    the lock this very attempt wrote.
     """
+    locked_until: datetime | None = None
     try:
         state = record_failure(conn, email_key)
     except psycopg.Error:
@@ -368,9 +446,30 @@ def _count_and_refuse(conn: psycopg.Connection, email_key: str) -> ApiError:
             "the failed-attempt counter could not be written; the rejection itself stands",
             exc_info=True,
         )
-        return _rejected()
+        state = None
+    else:
+        locked_until = state.locked_until
 
-    if state.locked:
+    details: dict[str, object] = {"reason": reason}
+    if locked_until is not None:
+        # The attempt that crossed the threshold carries the lock it wrote.
+        # One event, one row: a second `login_refused_locked` entry here would
+        # claim a refusal that has not happened yet — this attempt was refused
+        # for `reason`, and the *next* one is the one the lock turns away.
+        details["locked_until"] = locked_until.isoformat()
+
+    audit.record(
+        conn,
+        action=AuditAction.LOGIN_FAILED,
+        actor_id=user_id,
+        actor_email=None if user_id is None else email_key,
+        target_id=user_id,
+        target_email=email_key,
+        source_ip=source_ip,
+        details=details,
+    )
+
+    if state is not None and state.locked:
         return _locked(state.retry_after())
     return _rejected()
 
@@ -409,6 +508,7 @@ def login(
     payload: LoginRequest,
     response: Response,
     pool: Annotated[ConnectionPool, Depends(get_pool)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
     rocell_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
 ) -> User:
     """Verify a credential, issue a session, and return the signed-in `User`.
@@ -453,7 +553,22 @@ def login(
         # lost by it — an attacker who appends a NUL to every guess never reaches
         # the credential check either, so the attempts this skips are attempts
         # that could not have succeeded.
+        #
+        # **Recorded, though**, on a connection taken for this one statement.
+        # The counter cannot hold this string and neither can `target_email`
+        # (a `text` column cannot carry a NUL byte either), so the entry names
+        # the reason and nothing else — which is still the difference between
+        # "somebody is probing with malformed input" and silence. It is also
+        # the one path that now does *more* database work than it used to
+        # rather than less, so the timing discipline above is unharmed.
         verify_dummy_password(payload.password)
+        with pool.connection() as conn:
+            audit.record(
+                conn,
+                action=AuditAction.LOGIN_FAILED,
+                source_ip=source_ip,
+                details={"reason": REASON_MALFORMED_ADDRESS},
+            )
         raise _rejected()
 
     # FR-4, before anything is spent on the credential. Read from the counter
@@ -473,6 +588,19 @@ def login(
             # server one indexed lookup however many times it is tried, which is
             # the point of locking it — and a correct password gets this same
             # answer, because the lock wins over the credential.
+            #
+            # One entry, and it is its own action rather than a seventh
+            # `login_failed` reason: nothing was verified and nothing was
+            # counted, so calling it a failed sign-in would inflate the very
+            # number an operator reads this log to judge. Autocommit, like the
+            # counter write it deliberately does not make.
+            audit.record(
+                conn,
+                action=AuditAction.LOGIN_REFUSED_LOCKED,
+                target_email=email,
+                source_ip=source_ip,
+                details={"locked_until": _locked_until_iso(state)},
+            )
             raise _locked(state.retry_after())
 
     # The progressive delay, paid *before* the credential is read or hashed, so
@@ -517,9 +645,18 @@ def login(
             # lookup on every ordinary sign-in to close it would buy nothing.
             state = attempt_state(conn, email)
             if state.locked:
+                # The same refusal as the gate above, reached after the sleep,
+                # and recorded the same way.
+                audit.record(
+                    conn,
+                    action=AuditAction.LOGIN_REFUSED_LOCKED,
+                    target_email=email,
+                    source_ip=source_ip,
+                    details={"locked_until": _locked_until_iso(state)},
+                )
                 raise _locked(state.retry_after())
 
-        return _authenticate(conn, response, payload, email, rocell_session)
+        return _authenticate(conn, response, payload, email, source_ip, rocell_session)
 
 
 def _authenticate(
@@ -527,6 +664,7 @@ def _authenticate(
     response: Response,
     payload: LoginRequest,
     email: str,
+    source_ip: str | None,
     rocell_session: str | None,
 ) -> User:
     """The credential half of `login`, on a connection taken after the delay.
@@ -545,7 +683,7 @@ def _authenticate(
         # No account: spend the same Argon2id work a real verify would, so the
         # response time does not tell the caller the address is unknown (DW-24).
         verify_dummy_password(payload.password)
-        raise _count_and_refuse(conn, email)
+        raise _count_and_refuse(conn, email, reason=REASON_UNKNOWN_ACCOUNT, source_ip=source_ip)
 
     try:
         verified = verify_password(row["password_hash"], payload.password)
@@ -565,15 +703,33 @@ def _authenticate(
         # thing the identical-rejection rule is for. The decoy pays the
         # difference.
         verify_dummy_password(payload.password)
-        raise _count_and_refuse(conn, email) from None
+        raise _count_and_refuse(
+            conn,
+            email,
+            reason=REASON_CORRUPT_DIGEST,
+            source_ip=source_ip,
+            user_id=row["id"],
+        ) from None
 
     if not verified:
-        raise _count_and_refuse(conn, email)
+        raise _count_and_refuse(
+            conn,
+            email,
+            reason=REASON_WRONG_PASSWORD,
+            source_ip=source_ip,
+            user_id=row["id"],
+        )
 
     # Both checks below come *after* a real verify, so they cost the same as a
     # wrong password by construction — no decoy is needed on these two paths.
     if not row["active"]:
-        raise _count_and_refuse(conn, email)
+        raise _count_and_refuse(
+            conn,
+            email,
+            reason=REASON_DEACTIVATED,
+            source_ip=source_ip,
+            user_id=row["id"],
+        )
 
     # AGENTS.md Policy gives an admin-issued temporary credential 72 hours,
     # without exception, and this endpoint is the only place a credential is
@@ -581,7 +737,13 @@ def _authenticate(
     # forced-change *screen* — would ship a window in which an expired
     # credential authenticates.
     if row["must_change_password"] and row["credential_expired"]:
-        raise _count_and_refuse(conn, email)
+        raise _count_and_refuse(
+            conn,
+            email,
+            reason=REASON_CREDENTIAL_EXPIRED,
+            source_ip=source_ip,
+            user_id=row["id"],
+        )
 
     try:
         with conn.transaction():
@@ -604,6 +766,29 @@ def _authenticate(
             # holding, and no other device is touched.
             delete_session(conn, rocell_session)
             raw_token = issue_session(conn, row["id"])
+            # FR-20's entry, inside the sign-in's own transaction — not beside
+            # it. A session issued with no record of who signed in is the one
+            # state the log exists to prevent, and a write that can be rolled
+            # back independently of the thing it records is a log that
+            # disagrees with the table it describes. Actor and target are the
+            # same person here: a sign-in is somebody acting on their own
+            # account, and writing both columns rather than leaving `target`
+            # null keeps "every entry names who it was about" true for the
+            # read Story 1.13 builds.
+            #
+            # Not on a savepoint, unlike `clear_failures` below. That one is
+            # guarded because a fault in a *counter* must not fail a correct
+            # password; this one is guarded by nothing on purpose — see the
+            # module docstring.
+            audit.record(
+                conn,
+                action=AuditAction.LOGIN_SUCCEEDED,
+                actor_id=user_row["id"],
+                actor_email=user_row["email"],
+                target_id=user_row["id"],
+                target_email=user_row["email"],
+                source_ip=source_ip,
+            )
             # The run of failures ends here, in the same transaction as the
             # sign-in that ended it: a session issued while the counter still
             # held nine failures would leave the next mistyped password locking
@@ -634,8 +819,16 @@ def _authenticate(
     except _SignInVanished:
         # The transaction has already rolled back, so the counter write below is
         # the first statement of a fresh autocommit sequence and will not be
-        # undone with it.
-        raise _count_and_refuse(conn, email) from None
+        # undone with it. The audit entry rides on that same property: written
+        # here rather than inside the block that has just unwound, so the one
+        # refusal discovered mid-transaction is recorded like the other five.
+        raise _count_and_refuse(
+            conn,
+            email,
+            reason=REASON_ACCOUNT_VANISHED,
+            source_ip=source_ip,
+            user_id=row["id"],
+        ) from None
 
     # The token leaves in the cookie and nowhere else — never in this body,
     # never anywhere page script can read it (AGENTS.md Policy, AD-3). Set
@@ -678,9 +871,31 @@ def read_session(user: Annotated[User, Depends(current_user)]) -> User:
     return user
 
 
+#: Who the session that has just been revoked belonged to, for the entry's
+#: actor snapshot (AD-10 wants an address beside every id).
+#:
+#: A second statement rather than a join inside `sessions._DELETE_SESSION`,
+#: because that module owns statements against `sessions` and this one is a
+#: read of `users` — and because the delete has to report *whether* it deleted
+#: whatever the user turns out to be. It runs only on the path that actually
+#: revoked something, so an idempotent second `POST /auth/logout` costs nothing
+#: extra.
+#:
+#: A `None` here is a user deleted between the delete and this read, which
+#: `ON DELETE CASCADE` makes vanishingly unlikely; the entry is still written,
+#: with the id and no address, because "somebody signed out" is true either
+#: way.
+_SELECT_ACTOR = """
+SELECT email
+  FROM users
+ WHERE id = %s
+"""
+
+
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
     rocell_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
 ) -> Response:
     """End this session. Idempotent — a second call is still `204`.
@@ -694,8 +909,33 @@ def logout(
     session with no revocation path leaves clearing browser cookies as the only
     way out, `delete_session` is the counterpart of `issue_session` in the same
     module, and no later epic story delivers it.
+
+    **An entry is written only when a session actually went.** A `204` for a
+    cookie that names nothing revoked nothing, and a row saying otherwise would
+    be the log recording an event that did not happen — which is a worse defect
+    in an audit log than a missing one, because it cannot be told from a real
+    one. `delete_session` reports what it removed, which is also how this route
+    learns who to name without declaring `current_user`: it deliberately does
+    not, because it must stay reachable with a dead cookie.
     """
-    delete_session(conn, rocell_session)
+    # One unit of work on an otherwise autocommit connection: the revocation
+    # and the record of it commit together or neither does. An audit failure
+    # therefore takes the sign-out with it and answers 500 — the caller
+    # retrying an idempotent `204` costs nothing, and a session ended with
+    # nothing written down is the gap this story closes.
+    with conn.transaction():
+        revoked_user_id = delete_session(conn, rocell_session)
+        if revoked_user_id is not None:
+            actor = conn.execute(_SELECT_ACTOR, (revoked_user_id,)).fetchone()
+            audit.record(
+                conn,
+                action=AuditAction.LOGGED_OUT,
+                actor_id=revoked_user_id,
+                actor_email=None if actor is None else actor["email"],
+                target_id=revoked_user_id,
+                target_email=None if actor is None else actor["email"],
+                source_ip=source_ip,
+            )
 
     response = Response(status_code=status.HTTP_204_NO_CONTENT, headers=dict(NO_STORE))
     clear_session_cookie(response)
@@ -809,6 +1049,7 @@ def set_password(
     response: Response,
     user: Annotated[User, Depends(current_user)],
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
 ) -> User:
     """Exchange an admin-issued temporary credential for a real password.
 
@@ -824,14 +1065,17 @@ def set_password(
     threadpool; an `async def` around the same calls would block every other
     request in the process.
 
-    Story 1.12 owes this endpoint **two** audit entries — AGENTS.md Policy
-    requires the append-only log to cover user changes, and this endpoint makes
-    two of them in one request: the password change itself, and the silent
-    revocation of every session the user holds on every device. The second is a
-    security event in its own right and currently leaves no trace at all —
-    `updated_at` records that the row changed and says nothing about the
-    sessions that disappeared with it. No private log path is built here in the
-    meantime.
+    **This endpoint writes two audit entries, and the second is not a
+    formality.** `password_claimed` records the change; `sessions_revoked`
+    records what the change did to every other device, carrying
+    `details.count`. They are two rows because they are two events an operator
+    asks different questions about, and both go inside the write's own
+    transaction, so a claim with no record of the revocation it performed
+    cannot exist. There is a **third** entry on a path that is not a success at
+    all: a temporary credential discovered lapsed here revokes every session
+    silently before answering `401`, and that revocation is a security event in
+    its own right — it now carries `details.cause = credential_expired` rather
+    than leaving no trace whatsoever.
     """
     response.headers.update(NO_STORE)
 
@@ -864,7 +1108,22 @@ def set_password(
         # a reissue — `make reseed-admin` for the seeded Administrator — which
         # is also what the 401 tells any client that reads only the status.
         with conn.transaction():
-            delete_sessions_for_user(conn, user.id)
+            revoked = delete_sessions_for_user(conn, user.id)
+            # The silent revocation, made loud where it belongs. Nothing about
+            # this is visible to the user — they get the same `401` a dead
+            # cookie gets — and before Story 1.12 nothing about it was visible
+            # to anybody: no row changed, so not even `updated_at` moved. In
+            # the same transaction as the delete it describes.
+            audit.record(
+                conn,
+                action=AuditAction.SESSIONS_REVOKED,
+                actor_id=user.id,
+                actor_email=user.email,
+                target_id=user.id,
+                target_email=user.email,
+                source_ip=source_ip,
+                details={"cause": CAUSE_CREDENTIAL_EXPIRED, "count": revoked},
+            )
         raise not_signed_in()
 
     # The length rules, in their one statement (`shared_schema.passwords`), and
@@ -908,11 +1167,37 @@ def set_password(
         # whoever saw the note it was written on — goes with it. Not a
         # session-management surface; this is one user acting on their own
         # account.
-        delete_sessions_for_user(conn, user.id)
+        revoked = delete_sessions_for_user(conn, user.id)
         # Issued inside the same transaction, so the caller is never left
         # holding a revoked cookie: either the whole change lands or none of it
         # does.
         raw_token = issue_session(conn, user.id)
+        # Two entries, in the order the two events happened, in the
+        # transaction that performed them. `user_row` rather than `user` for
+        # the snapshot: the address is read back from the write, so an entry
+        # cannot describe a row the statement did not actually touch.
+        audit.record(
+            conn,
+            action=AuditAction.PASSWORD_CLAIMED,
+            actor_id=user_row["id"],
+            actor_email=user_row["email"],
+            target_id=user_row["id"],
+            target_email=user_row["email"],
+            source_ip=source_ip,
+        )
+        # `count` is the number of devices this signed out, including the
+        # caller's own cookie — which is why the fresh token above exists.
+        # It is the only record of that, anywhere.
+        audit.record(
+            conn,
+            action=AuditAction.SESSIONS_REVOKED,
+            actor_id=user_row["id"],
+            actor_email=user_row["email"],
+            target_id=user_row["id"],
+            target_email=user_row["email"],
+            source_ip=source_ip,
+            details={"cause": CAUSE_PASSWORD_WRITTEN, "count": revoked},
+        )
 
     # The token leaves in the cookie and nowhere else (AGENTS.md Policy, AD-3).
     set_session_cookie(response, raw_token)
@@ -1064,6 +1349,7 @@ def change_password(
     response: Response,
     user: Annotated[User, Depends(require_claimed_user)],
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
 ) -> User:
     """FR-5 — a signed-in user replaces the password they already chose.
 
@@ -1106,10 +1392,18 @@ def change_password(
     synchronous driver and the verify and hash below are CPU-bound for ~100ms
     each. FastAPI runs a sync endpoint in its threadpool.
 
-    Story 1.12 owes this endpoint **two** audit entries, exactly as it owes
-    `POST /auth/password` two: the password change itself, and the silent
-    revocation of every session the user holds on every device. No private log
-    path is built here in the meantime. And DW-40 — "a second Argon2id-backed
+    **Two audit entries on success, exactly as `POST /auth/password` writes
+    two** — `password_changed`, then `sessions_revoked` with `details.count` —
+    both inside the write's own transaction. And **one on the refusal**: a
+    wrong `current_password` appends `password_change_refused`, naming the
+    signed-in caller as the actor. That entry is deliberately not shaped like a
+    `login_failed`: nothing about the *session* is in question, the caller is
+    already known, and DW-72 is the reason it exists at all — this endpoint
+    admits unlimited `current_password` guessing (it is not throttled, DW-40)
+    and before Story 1.12 a run of guesses left no record anywhere. It is now
+    the one place such a run is visible.
+
+    DW-40 — "a second Argon2id-backed
     endpoint the gate cannot close" — becomes a third with this route: it costs
     one verify plus one hash per call, it is deliberately not throttled (Story
     1.6 is scoped to login by epics.md), and closing it is still a decision about
@@ -1129,6 +1423,25 @@ def change_password(
     # account cannot sign in at all so it cannot reach this line, and swallowing
     # it would let a corrupt digest be silently overwritten.
     if not verify_password(row["password_hash"], payload.current_password):
+        # DW-72: unlimited guessing at this field, and until now no record of
+        # it anywhere. Written on the autocommit connection — nothing was
+        # changed, so there is no transaction for it to belong to — and it
+        # still fails the request if it cannot be written, because a guess
+        # that left no trace is the whole defect.
+        #
+        # The submitted password is **not** recorded, in any form. The address
+        # a failed *sign-in* submits is, because there nothing else identifies
+        # the attempt; here the actor is already named by their session.
+        audit.record(
+            conn,
+            action=AuditAction.PASSWORD_CHANGE_REFUSED,
+            actor_id=user.id,
+            actor_email=user.email,
+            target_id=user.id,
+            target_email=user.email,
+            source_ip=source_ip,
+            details={"reason": REASON_WRONG_PASSWORD},
+        )
         raise _invalid_current_password()
 
     # The length rules, in their one statement (`shared_schema.passwords`). This
@@ -1172,10 +1485,31 @@ def change_password(
         # The password may be being changed *because* somebody else has it. Every
         # session of this user goes with it, in the same transaction as the digest
         # — a device left signed in is exactly what the user is trying to close.
-        delete_sessions_for_user(conn, user.id)
+        revoked = delete_sessions_for_user(conn, user.id)
         # Issued inside the same transaction, so the caller is never left holding
         # a revoked cookie: either the whole change lands or none of it does.
         raw_token = issue_session(conn, user.id)
+        # `set_password`'s two entries, for the same two events. `user_row`
+        # rather than `user`, so the snapshot is read back from the write.
+        audit.record(
+            conn,
+            action=AuditAction.PASSWORD_CHANGED,
+            actor_id=user_row["id"],
+            actor_email=user_row["email"],
+            target_id=user_row["id"],
+            target_email=user_row["email"],
+            source_ip=source_ip,
+        )
+        audit.record(
+            conn,
+            action=AuditAction.SESSIONS_REVOKED,
+            actor_id=user_row["id"],
+            actor_email=user_row["email"],
+            target_id=user_row["id"],
+            target_email=user_row["email"],
+            source_ip=source_ip,
+            details={"cause": CAUSE_PASSWORD_WRITTEN, "count": revoked},
+        )
 
     # The token leaves in the cookie and nowhere else (AGENTS.md Policy, AD-3).
     set_session_cookie(response, raw_token)

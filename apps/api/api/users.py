@@ -102,15 +102,29 @@ distribution in the Administrator's hands, and
 `tests/test_no_password_reset.py` asserts the absence over the source tree and
 the dependency manifests.
 
-**No audit entry** — Story 1.12 owns the append-only log and owes every route
-in this module one, and no private log path is built in the meantime, so until
-then the only trace of a provisioning is the row's own `created_at`, and of an
-edit, a deactivation or a reactivation, its own `updated_at`, which does not
-say by whom or what changed. A **delete** leaves no trace at all, which makes
-1.12's problem the harder one it now inherits: AD-4 denies the application role
-`DELETE` on the audit table and the spine draws `USER ||--o{ AUDIT_LOG_ENTRY`,
-so a hard user delete means the actor reference has to be AD-10's denormalised
-snapshot rather than a foreign key. That is 1.12's decision to make.
+**Every write here appends an audit entry, inside its own transaction.** Story
+1.12 built the log and this module is its largest caller: `user_provisioned`,
+`user_edited`, `user_deactivated`, `user_activated`, `user_deleted`, one per
+successful write and none at all for a refusal — a `403`, a `404` or a `409`
+changed nothing, so there is nothing to record. The entry goes in the same
+`with conn.transaction():` as the change, so a row that exists always has a
+record of who wrote it, and an entry that cannot be written takes the change
+down with it rather than being swallowed. `api.audit` owns the statement; this
+module names no table it does not already own.
+
+**That is also where the `administrator` parameter stops being decoration.**
+Every handler below used to say it was "unread on purpose" — declaring the
+dependency was the whole of its job. It is now read by all five: the caller is
+the entry's actor, and there is nowhere else that fact can come from.
+
+**The actor and target are snapshots, not foreign keys (AD-10), and the delete
+is why.** `DELETE /admin/users/{id}` is a hard delete while AD-4 denies the
+application role any `DELETE` on the audit table — so a foreign key would
+force a choice between blocking every user delete and cascading into a table
+nothing may delete from. Each side is therefore stored as an id *and* an
+address: the id joins while the row lives, and the address is what the entry
+still means after it does not. This is the decision the docstring here used to
+hand forward to Story 1.12.
 
 **And no throttle on the one route that spends a hash.** `POST /admin/users` is
 the fourth Argon2id-backed endpoint in the product and a direct extension of
@@ -149,7 +163,13 @@ from shared_schema.user import TEMP_CREDENTIAL_LIFETIME_HOURS, Role, User
 # `tests/test_source_guards.py` forbids the second copy outright (AD-3: one
 # module owns that table), and the rule is right — a revocation written twice
 # is a revocation that drifts.
-from api import sessions, throttle
+#
+# `api.audit` is the third, and the same argument again in its strongest form:
+# it owns the only `INSERT` against the audit table in the repository, and
+# `tests/test_source_guards.py` forbids a second file from so much as naming
+# it (AD-4).
+from api import audit, sessions, throttle
+from api.audit import AuditAction
 from api.auth import MAX_EMAIL_LENGTH, MAX_PASSWORD_FIELD_LENGTH, _weak_password
 from api.db import get_connection
 from api.dependencies import NO_STORE, require_administrator
@@ -478,15 +498,17 @@ def create_user(
     response: Response,
     administrator: Annotated[User, Depends(require_administrator)],
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
 ) -> User:
     """FR-11 — write a `Staff` or `Administrator` row an Administrator can hand over.
 
-    **The `administrator` parameter is the authorization, not a value.** It is
-    the caller, resolved from the session cookie and re-read from Postgres on
-    this request (AD-3) — nothing in the body names who is acting, and nothing
-    in the body can. It is unread in the lines below on purpose: declaring the
-    dependency is the whole of its job, and the refusal it raises happens before
-    this function is entered.
+    **The `administrator` parameter is the authorization *and* the actor.** It
+    is the caller, resolved from the session cookie and re-read from Postgres
+    on this request (AD-3) — nothing in the body names who is acting, and
+    nothing in the body can. Declaring the dependency is what refuses a Staff
+    caller before this function is entered; reading it below is what lets the
+    audit entry say who granted whose access, which is the question FR-20 asks
+    of this route and the one `created_at` could never answer.
 
     Sync, not `async def`: psycopg is a synchronous driver and the Argon2id hash
     below is CPU-bound for ~100ms. FastAPI runs a sync endpoint in its
@@ -505,12 +527,14 @@ def create_user(
     whatever wrote the response down. `NO_STORE` for the same reason every other
     authenticated response carries it.
 
-    Story 1.12 owes this endpoint an audit entry — AGENTS.md Policy requires the
-    append-only log to cover user changes, and provisioning somebody else's
-    access is the clearest one there is. Until that log exists the only record
-    of who was given access, by whom, is the row's own `created_at`, which does
-    not say by whom. No private log path is built in the meantime. DW-40/DW-69:
-    this is the fourth Argon2id-backed endpoint and nothing counts its calls.
+    **The `INSERT` now sits inside an explicit transaction**, which it did not
+    need when it was one statement on an autocommit connection. It needs one
+    now: the row and the `user_provisioned` entry that says who wrote it must
+    land together, and an entry that could be rolled back on its own would be
+    a log that disagrees with the table it describes (DW-77, closed here).
+
+    DW-40/DW-69: this is the fourth Argon2id-backed endpoint and nothing
+    counts its calls.
     """
     response.headers.update(NO_STORE)
 
@@ -528,22 +552,47 @@ def create_user(
     if violation is not None:
         raise _weak_password(violation)
 
-    # Hashed outside any transaction: ~100ms of CPU inside an open one is ~100ms
-    # of held locks on `users` for no benefit. The connection is autocommit
-    # (`api.db`), and a single INSERT needs no explicit transaction of its own.
+    # Hashed outside the transaction: ~100ms of CPU inside an open one is
+    # ~100ms of held locks on `users` for no benefit.
     password_hash = hash_password(payload.temporary_password)
 
+    # One unit of work for two statements. `api.db` hands out autocommit
+    # connections, so this is what makes the row and its audit entry atomic —
+    # see the docstring. The `UniqueViolation` below is raised by the `INSERT`
+    # and unwinds the block having written nothing, which is the same outcome
+    # the single-statement version had.
     try:
-        row = conn.execute(
-            _INSERT_USER,
-            (
-                payload.name,
-                email,
-                password_hash,
-                payload.role.value,
-                TEMP_CREDENTIAL_LIFETIME_HOURS,
-            ),
-        ).fetchone()
+        with conn.transaction():
+            row = conn.execute(
+                _INSERT_USER,
+                (
+                    payload.name,
+                    email,
+                    password_hash,
+                    payload.role.value,
+                    TEMP_CREDENTIAL_LIFETIME_HOURS,
+                ),
+            ).fetchone()
+            # `INSERT ... RETURNING` yields exactly one row when it writes one,
+            # and every way it writes none raises above rather than returning
+            # empty — which is why the two reads below are unguarded, exactly
+            # as the `User.model_validate(row)` at the end of this handler
+            # always has been.
+            #
+            # FR-20's answer to "who was given access, by whom, and when". The
+            # target is the row that was just written, read back from the
+            # statement rather than from the submitted body: an entry must
+            # describe what landed, not what was asked for.
+            audit.record(
+                conn,
+                action=AuditAction.USER_PROVISIONED,
+                actor_id=administrator.id,
+                actor_email=administrator.email,
+                target_id=row["id"],
+                target_email=row["email"],
+                source_ip=source_ip,
+                details={"role": row["role"]},
+            )
     except pg_errors.UniqueViolation as clash:
         # Caught rather than pre-empted by a `SELECT`: a read-then-write is a
         # race that hands two people the same login, and the database is the only
@@ -745,17 +794,22 @@ class EditUserRequest(BaseModel):
 #: statements — in particular, it cannot find zero rows because somebody else
 #: deleted the row in between and have that reported as the Administrator floor.
 #:
-#: Four columns and not eleven. `email` is the *old* address, which
+#: Five columns and not eleven. `email` is the *old* address, which
 #: `throttle.carry_failures` needs and which the `UPDATE`'s `RETURNING` (the new
-#: one) can no longer supply; `role` and `active` are for the reader. The row the
-#: caller gets back is the `UPDATE`'s, never this one.
+#: one) can no longer supply; `role` and `active` are for the reader. `name`
+#: joins them for Story 1.12: with `email` and `role` it is the before-half of
+#: `user_edited`'s `details.changed`, and the after-half comes from the
+#: `UPDATE`'s own `RETURNING` — so the diff is between two values the database
+#: gave back rather than between a column and a request body. It is also the
+#: target snapshot `delete_user` records, taken while the row still exists. The
+#: row the caller gets back is the `UPDATE`'s, never this one.
 #:
 #: PostgreSQL 18's `RETURNING OLD.*` would replace this statement outright and is
 #: deliberately not used: `infra/migrations` states in as many words that this
 #: repo's SQL stays inside what a 16.x cluster also has, and the test suite's own
 #: ephemeral cluster is whatever `initdb` is on PATH.
 _SELECT_USER_FOR_UPDATE = """
-SELECT id, email, role, active
+SELECT id, name, email, role, active
   FROM users
  WHERE id = %s
    FOR UPDATE
@@ -858,6 +912,42 @@ def _user_not_found() -> ApiError:
     )
 
 
+#: The three columns `PATCH /admin/users/{id}` may write, and the only ones an
+#: edit's `details.changed` describes.
+#:
+#: Named here rather than derived from `EditUserRequest.model_fields` on
+#: purpose: the request model is what a caller may *send*, and the day those
+#: two stop being the same set — a body field that maps to two columns, a
+#: column written by something other than the body — a diff built off the
+#: request would silently describe the wrong thing. The eight columns absent
+#: from this tuple are absent for two different reasons, both in `edit_user`'s
+#: docstring.
+_EDITABLE_COLUMNS = ("name", "email", "role")
+
+
+def _changed_fields(
+    before: dict[str, object], after: dict[str, object]
+) -> dict[str, dict[str, object]]:
+    """`{field: {from, to}}` over the three columns an edit may move.
+
+    Compared value by value rather than trusting the request body: `PATCH`
+    takes partial updates and `_UPDATE_USER` uses `COALESCE`, so a field the
+    caller *sent* may be identical to what was already stored — an entry
+    claiming a change that did not happen is worse than a terse one, because
+    nothing downstream can tell it from a real one.
+
+    An edit that moved nothing therefore produces `{}`, which is the honest
+    record of a `PATCH` that was accepted and changed no value. Both sides are
+    the raw column values, so `role` is the stored string rather than the
+    `Role` member.
+    """
+    return {
+        column: {"from": before[column], "to": after[column]}
+        for column in _EDITABLE_COLUMNS
+        if before[column] != after[column]
+    }
+
+
 def _last_administrator() -> ApiError:
     """The demotion would leave the product with nobody in charge. See the code."""
     return ApiError(
@@ -875,15 +965,17 @@ def edit_user(
     response: Response,
     administrator: Annotated[User, Depends(require_administrator)],
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
 ) -> User:
     """FR-12 — change a user's name, email or role, and nothing else.
 
-    **The `administrator` parameter is the authorization, not a value.** As on
-    the other two routes: it is the caller, resolved from the session cookie and
-    re-read from Postgres on this request (AD-3), and declaring the dependency is
-    the whole of its job. It is unread below on purpose — nothing in the body
-    names who is acting, and nothing in the body can. A Staff caller is refused
-    before this function is entered, and an Administrator still holding a
+    **The `administrator` parameter is the authorization and the actor.** As on
+    every other route in this module: it is the caller, resolved from the
+    session cookie and re-read from Postgres on this request (AD-3) — nothing
+    in the body names who is acting, and nothing in the body can. Declaring the
+    dependency refuses a Staff caller before this function is entered; reading
+    it below is what puts a name on the `user_edited` entry. An Administrator
+    still holding a
     temporary credential is refused before that by `require_claimed_user`.
 
     **AD-3 is what makes a role change land on the live session, so this handler
@@ -926,11 +1018,16 @@ def edit_user(
     `NO_STORE` for the reason every authenticated response carries it. The
     response is a `User`, which has no `password_hash` field to leave out.
 
-    Story 1.12 owes this endpoint an audit entry — AGENTS.md Policy requires the
-    append-only log to cover user changes, and changing somebody's role is one.
-    Until that log exists the only trace of an edit is the row's `updated_at`,
-    which says neither who changed it nor what changed. No private log path is
-    built in the meantime.
+    **The `user_edited` entry carries what changed, not just that something
+    did.** `details.changed` is `{field: {from, to}}` over `name`, `email` and
+    `role` — the three columns this route may write, compared between the
+    locked read (`current`) and the `UPDATE`'s own `RETURNING` (`row`), so it
+    describes what landed rather than what was asked for. The other eight
+    columns are deliberately absent: `updated_at` moves on every edit and
+    would be noise in every entry, and `locked_until` can move here through
+    the counter carry without anybody having *edited* it. This is the answer
+    to DW-61 — `updated_at` stopped meaning "an Administrator changed this"
+    long ago, and it is no longer the only trace.
     """
     response.headers.update(NO_STORE)
 
@@ -1020,6 +1117,21 @@ def edit_user(
                     # `now()` is the transaction timestamp, so the mirror wrote
                     # the instant the rename already returned.
                     row["locked_until"] = carried
+
+        # Last inside the transaction, after the carry, so the entry is
+        # written only on the path where everything else committed — and so
+        # `details.changed` describes the row as it finally stands rather than
+        # as it stood mid-block.
+        audit.record(
+            conn,
+            action=AuditAction.USER_EDITED,
+            actor_id=administrator.id,
+            actor_email=administrator.email,
+            target_id=row["id"],
+            target_email=row["email"],
+            source_ip=source_ip,
+            details={"changed": _changed_fields(current, row)},
+        )
 
     return User.model_validate(row)
 
@@ -1148,16 +1260,17 @@ def deactivate_user(
     response: Response,
     administrator: Annotated[User, Depends(require_administrator)],
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
 ) -> User:
     """FR-13 — take an account's access away, on the target's very next request.
 
-    **The `administrator` parameter is the authorization, not a value.** As on
+    **The `administrator` parameter is the authorization and the actor.** As on
     every other route in this module: it is the caller, resolved from the
-    session cookie and re-read from Postgres on this request (AD-3), and
-    declaring the dependency is the whole of its job. It is unread below on
-    purpose. A Staff caller is refused before this function is entered, and an
-    Administrator still holding a temporary credential is refused before that by
-    `require_claimed_user`, which `require_administrator` chains on.
+    session cookie and re-read from Postgres on this request (AD-3). Declaring
+    the dependency refuses a Staff caller before this function is entered, and
+    an Administrator still holding a temporary credential is refused before
+    that by `require_claimed_user`, which `require_administrator` chains on;
+    reading it below is what names the actor on the `user_deactivated` entry.
 
     **No request body at all**, so there is no shape of request to this route
     that says anything but "this id, off". The id is in the path and the verb is
@@ -1201,10 +1314,13 @@ def deactivate_user(
     `NO_STORE` for the reason every authenticated response carries it. The
     response is a `User`, which has no `password_hash` field to leave out.
 
-    Story 1.12 owes this endpoint an audit entry: removing somebody's access is
-    the clearest "user change" AGENTS.md Policy's log is for. No private log
-    path is built in the meantime, so the only trace today is the row's own
-    `updated_at`, which says neither who nor what.
+    **The entry carries `details.sessions_revoked`**, which is why it is
+    written after the sweep rather than after the flag: the number of devices
+    this actually signed out is the destructive half of the operation, and it
+    is the half nothing else in the product records. A second press on an
+    already-deactivated account is still a `200`, still writes an entry, and
+    that entry honestly says `0` — "somebody pressed it again and nothing was
+    open" is a fact worth having.
     """
     response.headers.update(NO_STORE)
 
@@ -1236,7 +1352,22 @@ def deactivate_user(
         # bearing for correctness — nothing between them can be observed — but
         # it reads the way the rule does: the account is closed, then what it
         # had open is closed with it.
-        sessions.delete_sessions_for_user(conn, user_id)
+        revoked = sessions.delete_sessions_for_user(conn, user_id)
+
+        # Last, so the count above is known and so the entry exists only on
+        # the path where the flag and the sweep both committed. A floor
+        # refusal raises before this line and unwinds the block, which is
+        # exactly the "no row for a refused write" rule.
+        audit.record(
+            conn,
+            action=AuditAction.USER_DEACTIVATED,
+            actor_id=administrator.id,
+            actor_email=administrator.email,
+            target_id=row["id"],
+            target_email=row["email"],
+            source_ip=source_ip,
+            details={"sessions_revoked": revoked},
+        )
 
     return User.model_validate(row)
 
@@ -1247,6 +1378,7 @@ def activate_user(
     response: Response,
     administrator: Annotated[User, Depends(require_administrator)],
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
 ) -> User:
     """FR-13's inverse — give a deactivated account its access back.
 
@@ -1279,8 +1411,10 @@ def activate_user(
 
     Idempotent on an already-active account: `200`, same row, nothing to say.
 
-    The `administrator` parameter, the sync `def`, `NO_STORE` and Story 1.12's
-    owed audit entry are all as on `deactivate_user` above.
+    The `administrator` parameter, the sync `def`, `NO_STORE` and the
+    `user_activated` audit entry are all as on `deactivate_user` above — the
+    entry carries no `details`, because giving access back restores a flag and
+    nothing else, and there is no count of anything for it to report.
     """
     response.headers.update(NO_STORE)
 
@@ -1300,6 +1434,16 @@ def activate_user(
             # route has no floor to refuse from.
             raise _user_not_found()
 
+        audit.record(
+            conn,
+            action=AuditAction.USER_ACTIVATED,
+            actor_id=administrator.id,
+            actor_email=administrator.email,
+            target_id=row["id"],
+            target_email=row["email"],
+            source_ip=source_ip,
+        )
+
     return User.model_validate(row)
 
 
@@ -1309,6 +1453,7 @@ def delete_user(
     response: Response,
     administrator: Annotated[User, Depends(require_administrator)],
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
 ) -> None:
     """FR-13 — remove the account outright. A hard delete, not a marker column.
 
@@ -1351,10 +1496,16 @@ def delete_user(
     next request is a `401` and `apps/web` drops to Login.
 
     The `administrator` parameter, the sync `def` and `NO_STORE` are as on the
-    two routes above. Story 1.12 owes this one an audit entry and inherits a
-    harder problem with it: a deleted user cannot be a foreign key from an audit
-    row (AD-4 grants the application role no `DELETE` on that table), so the
-    actor and target references have to be AD-10's denormalised snapshot.
+    two routes above.
+
+    **This route is why the audit log has no foreign key to `users`.** The
+    entry it writes outlives the row it names — that is the entire point of
+    recording a delete — and AD-4 grants the application role no `DELETE` on
+    the audit table, so an FK would leave a choice between blocking every
+    delete and cascading into a table nothing may delete from. `target_user_id`
+    and `target_email` are therefore AD-10 snapshots taken from `current`, the
+    row read under `FOR UPDATE` a moment before it was removed: the id points
+    at nothing afterwards, and the address is what the entry still means.
     """
     response.headers.update(NO_STORE)
 
@@ -1372,3 +1523,18 @@ def delete_user(
             # its own floor predicate. The raise rolls back, leaving the row and
             # every session it holds exactly as they were.
             raise _last_administrator()
+
+        # After the delete and inside its transaction. The snapshot comes from
+        # `current` because there is no row left to read it from — and writing
+        # it here rather than before the delete is what makes "the entry
+        # exists only if the delete committed" true.
+        audit.record(
+            conn,
+            action=AuditAction.USER_DELETED,
+            actor_id=administrator.id,
+            actor_email=administrator.email,
+            target_id=current["id"],
+            target_email=current["email"],
+            source_ip=source_ip,
+            details={"role": current["role"], "active": current["active"]},
+        )
