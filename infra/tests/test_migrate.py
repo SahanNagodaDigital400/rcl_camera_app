@@ -37,6 +37,7 @@ CREATE_SESSIONS_VERSION = "20260917T1300_create_sessions"
 TRACK_ACTIVITY_VERSION = "20260917T1400_track_session_activity"
 LOGIN_THROTTLING_VERSION = "20260918T1000_add_login_throttling"
 AUDIT_LOG_VERSION = "20260921T1000_create_audit_log"
+CATALOGUE_VERSION = "20260921T1500_create_catalogue"
 
 #: Every migration in `infra/migrations`, in the order the runner applies
 #: them. Listed once so adding a migration is one edit here rather than a
@@ -48,6 +49,7 @@ ALL_VERSIONS = [
     TRACK_ACTIVITY_VERSION,
     LOGIN_THROTTLING_VERSION,
     AUDIT_LOG_VERSION,
+    CATALOGUE_VERSION,
 ]
 
 SEED_EMAIL = "ruwan@rocell.lk"
@@ -429,6 +431,38 @@ def test_the_audit_index_story_1_13_will_page_on_exists(
     assert "audit_log_created_at_idx" in indexes
 
 
+def test_the_catalogue_vector_index_is_hnsw_over_the_inner_product_operator(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    """AD-5's index, its access method and its operator class.
+
+    Nothing else in the suite can see this. `find_candidates` is a grouped scan
+    that returns identical rows with no index at all, and would return them
+    silently mis-ranked under `vector_l2_ops` — the embeddings are unit-norm,
+    so L2 and inner product agree on order today and would stop agreeing the
+    day anything stores a vector that is not. Delete the `CREATE INDEX`, or
+    swap its operator class, and every catalogue, searchable and audit test
+    stays green.
+    """
+    up(conn)
+
+    row = conn.execute(
+        """
+        SELECT am.amname AS method, opc.opcname AS operator_class
+          FROM pg_class i
+          JOIN pg_index ix ON ix.indexrelid = i.oid
+          JOIN pg_am am ON am.oid = i.relam
+          JOIN pg_opclass opc ON opc.oid = ix.indclass[0]
+         WHERE i.relname = %s
+        """,
+        ("reference_embedding_hnsw_idx",),
+    ).fetchone()
+
+    assert row is not None, "the HNSW index AD-5 requires is not there"
+    assert row[0] == "hnsw"
+    assert row[1] == "vector_ip_ops"
+
+
 def _holds(conn: psycopg.Connection, table: str, privilege: str) -> bool:
     """Whether `rocell_app` holds `privilege` on `table` in this database."""
     row = conn.execute(
@@ -477,6 +511,7 @@ def test_the_audit_down_takes_back_the_grants_and_the_membership(
     assert _holds(conn, "login_attempts", "UPDATE")
     assert _is_a_member(conn)
 
+    assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
 
     for table in ("users", "sessions", "login_attempts"):
@@ -490,7 +525,7 @@ def test_the_audit_down_takes_back_the_grants_and_the_membership(
 
     # And the pair round-trips: re-applying restores both, so a revert is not
     # a one-way door for the deployment that has to go forward again.
-    assert up(conn) == [AUDIT_LOG_VERSION]
+    assert up(conn) == [AUDIT_LOG_VERSION, CATALOGUE_VERSION]
     assert _holds(conn, "users", "SELECT")
     assert _is_a_member(conn)
 
@@ -700,18 +735,20 @@ def test_the_throttling_pair_round_trips(conn: psycopg.Connection, seed_password
     up(conn)
     assert "locked_until" in table_columns(conn, "users")
 
-    # The audit pair sits on top of the throttling pair now, so it comes off
-    # first. Asserted rather than skipped past: a `down` that reverted more
-    # than its own file would show up right here.
+    # The catalogue pair sits on top of the audit pair, which sits on top of
+    # the throttling pair, so two steps come off before this one. Asserted
+    # rather than skipped past: a `down` that reverted more than its own file
+    # would show up right here.
+    assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
     assert table_columns(conn, "login_attempts") != set()
 
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert table_columns(conn, "login_attempts") == set()
     assert "locked_until" not in table_columns(conn, "users")
-    assert ledger_versions(conn) == ALL_VERSIONS[:-2]
+    assert ledger_versions(conn) == ALL_VERSIONS[:-3]
 
-    assert up(conn) == [LOGIN_THROTTLING_VERSION, AUDIT_LOG_VERSION]
+    assert up(conn) == [LOGIN_THROTTLING_VERSION, AUDIT_LOG_VERSION, CATALOGUE_VERSION]
     assert "locked_until" in table_columns(conn, "users")
     assert table_columns(conn, "login_attempts") != set()
     assert ledger_versions(conn) == ALL_VERSIONS
@@ -724,9 +761,13 @@ def test_down_reverts_one_step(conn: psycopg.Connection, seed_password: str) -> 
     up(conn)
 
     # One step is one migration: the most recently applied, and nothing behind
-    # it. The audit pair goes first, and the throttling objects below it are
-    # untouched by that step — proof the step really is one file and not
-    # "everything on top".
+    # it. The catalogue pair goes first and the audit pair next, and the
+    # throttling objects below them are untouched by either step — proof the
+    # step really is one file and not "everything on top".
+    assert down(conn) == CATALOGUE_VERSION
+    assert table_columns(conn, "tile") == set()
+    assert table_columns(conn, "audit_log") != set()
+
     assert down(conn) == AUDIT_LOG_VERSION
     assert table_columns(conn, "audit_log") == set()
     assert table_columns(conn, "login_attempts") != set()
@@ -767,6 +808,8 @@ def test_stepping_all_the_way_down_restores_the_previous_shape(
     assert table_columns(conn, "sessions") == set()
     assert table_columns(conn, "login_attempts") == set()
     assert table_columns(conn, "audit_log") == set()
+    assert table_columns(conn, "tile") == set()
+    assert table_columns(conn, "reference_embedding") == set()
 
 
 def test_down_refuses_a_ledger_version_whose_files_are_gone(
@@ -813,6 +856,7 @@ def test_down_leaves_a_claimed_administrator_alone(
         ("admin",),
     )
 
+    assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
@@ -832,6 +876,7 @@ def test_down_leaves_an_administrator_who_has_signed_in_alone(
     up(conn)
     conn.execute("UPDATE users SET last_login_at = now() WHERE role = %s", ("admin",))
 
+    assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
@@ -850,6 +895,7 @@ def test_down_leaves_an_administrator_who_set_their_own_password_alone(
         ("admin",),
     )
 
+    assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
@@ -868,6 +914,7 @@ def test_down_leaves_staff_accounts_alone(conn: psycopg.Connection, seed_passwor
         ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
     )
 
+    assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
@@ -887,6 +934,7 @@ def test_down_leaves_a_second_administrator_alone(
         ("Second Admin", "second@rocell.lk", "$argon2id$placeholder", "admin"),
     )
 
+    assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert down(conn) == TRACK_ACTIVITY_VERSION
@@ -1445,6 +1493,9 @@ def test_main_steps_down_with_the_confirmation_flag(
 ) -> None:
     assert migrate.main(["up"]) == 0
     capsys.readouterr()
+
+    assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
+    assert CATALOGUE_VERSION in capsys.readouterr().out
 
     assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
     assert AUDIT_LOG_VERSION in capsys.readouterr().out

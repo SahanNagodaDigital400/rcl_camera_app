@@ -19,7 +19,47 @@ Nothing is deployed yet. The migration runner and the `users` table are here
   that table and nothing else (AD-4). See "The application role" below.
 - pgvector's floor is **≥ 0.8.2** — load-bearing, not cosmetic: CVE-2026-3172
   (buffer overflow in parallel HNSW index builds) affects 0.6.0–0.8.1 and AD-5
-  mandates HNSW.
+  mandates HNSW. Since `20260921T1500_create_catalogue` this is a hard
+  prerequisite rather than a note: that migration runs
+  `CREATE EXTENSION IF NOT EXISTS vector` and builds an HNSW index, so a
+  cluster without it cannot be migrated at all. See "pgvector" below.
+
+### pgvector
+
+`20260921T1500_create_catalogue` is the first migration that needs a PostgreSQL
+extension, and `vector` is not a trusted extension — so **the migrating role
+needs superuser** (or whatever the cluster grants `CREATE EXTENSION` to) on top
+of the `CREATEROLE` the audit-log migration introduced.
+
+Install it against the cluster you migrate, matching the server's major
+version:
+
+```bash
+# macOS, Homebrew PostgreSQL
+git clone --branch v0.8.6 https://github.com/pgvector/pgvector.git
+cd pgvector && make && make install    # uses whatever pg_config is on PATH
+psql -c "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+```
+
+Verified here against PostgreSQL 16 with pgvector 0.8.6. The architecture spine
+still flags PostgreSQL 18 as unconfirmed for pgvector — check it before pinning
+the deployment.
+
+**The test suites need it too.** `apps/api/tests/conftest.py` and
+`infra/tests/conftest.py` build a throwaway cluster with `initdb`, which
+inherits the extensions installed against that PostgreSQL build — so an
+`initdb` from a binary without pgvector makes every database test fail on
+`CREATE EXTENSION`, not skip.
+
+### Object storage
+
+`apps/api` writes reference images through `api.storage`, configured by
+`OBJECT_STORAGE_ROOT`. The S3-compatible provider is still open (below), so the
+driver that ships is filesystem-backed behind an `ObjectStore` protocol;
+swapping it is one class and one branch in `create_object_store`, with no call
+site to change. Nothing in a migration touches it — which is why stepping
+`20260921T1500_create_catalogue` down leaves every stored object behind,
+orphaned but intact, and clearing them is an operator decision.
 
 ### File names
 
@@ -439,6 +479,9 @@ every one is generated at runtime.
 ## Open infrastructure decisions (deferred by the architecture spine)
 
 - **Object storage provider** — S3-compatible API is fixed; the provider is not.
+  Story 2.1 ships the seam rather than a guess: `api.storage.ObjectStore` plus a
+  filesystem driver behind `OBJECT_STORAGE_ROOT`. No SDK is in the dependency
+  list, deliberately.
 - **PostgreSQL 18.x + pgvector compatibility** — verified pgvector testing as of
   the spine's writing covers PostgreSQL 16 and 17. Confirm 18 at build time
   before pinning the deployment.

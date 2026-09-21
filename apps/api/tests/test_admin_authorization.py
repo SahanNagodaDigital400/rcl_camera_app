@@ -82,6 +82,17 @@ ACTIVATE_USER = "/admin/users/{user_id}/activate"
 #: verb.
 AUDIT_LOG = "/admin/audit"
 
+#: Story 2.1's two (FR-14). The first route under this prefix that takes a
+#: multipart body and the first that answers with something other than JSON —
+#: neither of which changes anything about the guards below, because the
+#: boundary is read off the path and not off the content type. The image read
+#: is nested under its Tile rather than living at `/admin/images/{id}`: a
+#: Reference Image has no identity apart from the Tile it belongs to (AD-18),
+#: and the pair is what the handler matches on, so an id borrowed from another
+#: Tile names nothing.
+ADD_TILE = "/admin/tiles"
+TILE_IMAGE = "/admin/tiles/{tile_id}/images/{image_id}"
+
 LOGIN = "/auth/login"
 
 #: The throwaway route. Declared here and mounted on an app built here, so
@@ -515,19 +526,24 @@ def test_the_admin_route_table_is_not_empty() -> None:
     assert _admin_routes(create_app()) != []
 
 
-def test_the_admin_route_table_is_the_seven_routes_the_product_serves() -> None:
+def test_the_admin_route_table_is_the_nine_routes_the_product_serves() -> None:
     # The stricter half, separated from the vacuity guard above because it is a
     # different claim with a different lifetime: this one is *meant* to fail the
     # moment a story adds a route under `/admin/` — Story 1.9 added
     # `GET /admin/users`, Story 1.10 added `PATCH /admin/users/{user_id}`, and
     # Story 1.11 added the three FR-13 verbs, and Story 1.13 added
-    # `GET /admin/audit` — and its failure means "update this list", not "the
-    # guards above stopped guarding".
+    # `GET /admin/audit`, and Story 2.1 added `POST /admin/tiles` and
+    # `GET /admin/tiles/{tile_id}/images/{image_id}` — and its failure means
+    # "update this list", not "the guards above stopped guarding".
+    #
+    # The count is in the name on purpose, the same way `test_audit.py` names
+    # its vocabulary size: a story that adds a route has to change the name as
+    # well as the list, so the number in the name can never drift from it.
     #
     # Everything else in this section covers a new route without being touched,
     # which is the property these guards were written for: both direction
     # guards, the two negative controls and the gate-chaining test are statements
-    # about the route *table*, so a seventh route joins them by existing.
+    # about the route *table*, so a further route joins them by existing.
     #
     # Compared **sorted** on both sides, so the assertion states which routes are
     # served and not the order FastAPI happens to have registered them in: with
@@ -544,6 +560,8 @@ def test_the_admin_route_table_is_the_seven_routes_the_product_serves() -> None:
             f"POST {DEACTIVATE_USER}",
             f"POST {ACTIVATE_USER}",
             f"GET {AUDIT_LOG}",
+            f"POST {ADD_TILE}",
+            f"GET {TILE_IMAGE}",
         ]
     )
 

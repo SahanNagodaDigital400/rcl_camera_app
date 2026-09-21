@@ -91,3 +91,31 @@
   line-height: var(--type-label-line);
   cursor: pointer;
 }
+
+/* The door to Add tile, beside Users and the Audit log and on the same terms:
+ * role-conditional, and the same secondary treatment. Written out rather than
+ * composed from `.auditLog` for the reason that rule gives about `.userList` —
+ * a class named for the audit log carried by the catalogue entry is a rule
+ * nobody can read.
+ *
+ * Deliberately not the accent, although this one is the closest call of the
+ * three: "+ Add Tile" *is* the primary action on the Catalogue surface
+ * (EXPERIENCE.md line 36), and it will take the accent when Story 2.5 builds
+ * that surface and this door moves onto it. Here it is a nav entry on a panel
+ * whose job is neither catalogue management nor user management, and a screen
+ * with three orange buttons has no primary action at all.
+ */
+.addTile {
+  align-self: flex-start;
+  justify-content: center;
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}

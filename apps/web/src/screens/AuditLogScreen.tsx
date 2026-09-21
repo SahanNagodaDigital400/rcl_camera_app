@@ -85,6 +85,9 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   user_deactivated: 'User deactivated',
   user_activated: 'User activated',
   user_deleted: 'User deleted',
+  // Epic 2's first entry. "Tile", never "Product" — AD-18 retires that word,
+  // and the label is one of the places it would come back.
+  catalogue_tile_added: 'Tile added to catalogue',
 };
 
 /**

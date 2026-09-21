@@ -113,9 +113,12 @@ def test_an_action_outside_the_vocabulary_is_served_verbatim() -> None:
     # corrective entry is inserted by hand as the owner — so an entry this
     # build has never heard of is an ordinary state, and a viewer that refused
     # to render it would be a less faithful record than the table.
-    entry = AuditLogEntry.model_validate(an_entry_body(action="catalogue_tile_added"))
+    entry = AuditLogEntry.model_validate(an_entry_body(action="scan_submitted"))
 
-    assert entry.action == "catalogue_tile_added"
+    assert entry.action == "scan_submitted"
+    assert "scan_submitted" not in {member.value for member in AuditAction}, (
+        "this fixture has become a real action; pick one this build has not heard of"
+    )
 
 
 def test_a_password_digest_has_nowhere_to_go() -> None:
@@ -127,7 +130,10 @@ def test_a_password_digest_has_nowhere_to_go() -> None:
         AuditLogEntry.model_validate(an_entry_body(password_hash="$argon2id$..."))
 
 
-def test_the_vocabulary_is_the_thirteen_actions_epic_one_writes() -> None:
+def test_the_vocabulary_is_the_fourteen_actions_the_product_writes() -> None:
+    # Thirteen from Epic 1 and one from Epic 2's catalogue write. The name of
+    # this test carries the count on purpose: an addition has to be a
+    # deliberate edit here, not a set that quietly grew.
     assert {member.value for member in AuditAction} == {
         "login_succeeded",
         "login_failed",
@@ -142,6 +148,7 @@ def test_the_vocabulary_is_the_thirteen_actions_epic_one_writes() -> None:
         "user_deactivated",
         "user_activated",
         "user_deleted",
+        "catalogue_tile_added",
     }
 
 

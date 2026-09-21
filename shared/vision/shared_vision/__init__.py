@@ -1,9 +1,5 @@
 """The shared vision module — preprocessing and embedding for BOTH pipelines.
 
-SKELETON. Nothing here embeds anything yet; the pipeline arrives with Epic 2,
-ported from `poc/tilematch/vision.py`. What this module does carry today is the
-invariant that every later change to it must respect.
-
 AD-1 — the single most important invariant in this codebase
 -----------------------------------------------------------
 Index-time and query-time preprocessing and embedding must be byte-for-byte
@@ -12,79 +8,126 @@ identical. They live here, in one module, and both callers use it unwrapped::
     Index time:  ReferenceImage -> preprocess -> embed -> pgvector
     Scan time:   phone photo    -> preprocess -> embed -> search -> top 3
 
-`apps/api` (scan) and `scripts/ingest` (index) call the *same* functions with no
-wrapping, forking or reimplementation on either side. Any asymmetry silently
-destroys match accuracy: it raises no error, fails no test that does not look
-for it, and shows up only as a quietly worse top-3 number.
+`apps/api` (catalogue write and scan) and `scripts/ingest` (index) call the
+*same* functions with no wrapping, forking or reimplementation on either side.
+Any asymmetry silently destroys match accuracy: it raises no error, fails no
+test that does not look for it, and shows up only as a quietly worse top-3
+number. `tests/test_pipeline.py` holds that as an executable assertion.
 
 Layering, which resolves a tension the planning docs leave open::
 
     view selection / augmentation      (index-time only, ABOVE the boundary)
     ---------------------------- PIL.Image boundary -----------------------
-    load_image -> preprocess -> embed  (this module, symmetric)
+    load_image -> preprocess -> embed  (symmetric, `pipeline.py`)
 
-Augmentation is index-only by definition, so it lives above the boundary and
-hands a plain image down. Everything below the boundary is identical on both
-sides.
+Augmentation is index-only by definition, so it lives above the boundary
+(`views.py`) and hands a plain image down. Everything below the boundary is
+identical on both sides.
 
-Colour management (AD-15) is part of preprocessing and belongs below the
-boundary too: roughly 60% of the reference catalogue is CMYK press files, and a
-naive RGB conversion discards the embedded ICC profile and corrupts the
-embedding.
+Colour management (AD-15) is part of loading and belongs below the boundary
+too: roughly 60% of the reference catalogue is CMYK press files, and a naive
+RGB conversion discards the embedded ICC profile and corrupts the embedding.
+`tests/test_colour_management.py` guards hue *and* brightness, because the
+green cast and the tonal crush were two separate bugs and the first fix did not
+catch the second.
 
-Planned surfaces, not present yet
----------------------------------
-Beyond `preprocess` and `embed`, this module is also the home of the shared
-upload-intake path (AD-7): content-sniff, re-encode, EXIF-strip, applied
-identically to a staff photo arriving at `apps/api` and to a reference image
-arriving through `scripts/ingest`. It is named here so the charter is recorded,
-but nothing implements it yet — see the porting rule below. Crop (AD-11) and
-view generation (AD-13) arrive the same way.
+The surfaces
+------------
+* `pipeline` — `load_image`, `preprocess`, `embed`, `embed_images`,
+  `config_hash`, `PIPELINE_VERSION`. The symmetric half.
+* `views` — `generate_views`, AD-13's 4 clean rotations plus 12 randomized
+  augmented crops. Index-time only.
+* `intake` — AD-7's single upload path (`intake_image`) and AD-17's capped
+  display derivative (`display_derivative`). Every writer calls this and
+  nothing else.
 
 Porting rule
 ------------
-`poc/tilematch/vision.py` was written to be lifted into this module *unchanged*,
-not read as a reference and reimplemented. When Epic 2 ports it, copy it; do not
-paraphrase it. Its preprocessing constants come verbatim from the model's own
+`poc/tilematch/vision.py` was written to be lifted into this module
+*unchanged*, not read as a reference and reimplemented. `pipeline.py` is that
+copy. Its preprocessing constants come verbatim from the model's own
 `preprocessor_config.json` (`Xenova/dinov2-base`) and changing any of them
 invalidates every stored vector.
 
 Re-index rule (AD-14)
 ---------------------
-`PIPELINE_VERSION` stamps every stored embedding. Search refuses a mismatch
-rather than comparing vectors from two different pipelines. Any change to this
-module's pixel path bumps the version and requires a full re-index, and the PR
-must say so.
+`PIPELINE_VERSION` and `config_hash()` stamp the active `embedding_generation`
+row, not each embedding — the check is global. Any change to this module's
+pixel path changes the stamp, requires a complete new generation cut over by
+the single active pointer, and the PR must say so.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-#: Stamped onto every stored embedding (AD-14). The skeleton deliberately does
-#: not claim the POC's version string ("dinov2b-224-cls+meanpatch-icc-v3") —
-#: nothing here produces vectors, so nothing here may look like it does. The
-#: port in Epic 2 replaces this with the ported pipeline's own value.
-PIPELINE_VERSION = "unimplemented-skeleton-0"
-
-#: The file this module is ported from, unchanged (AD-1).
-PORT_SOURCE = "poc/tilematch/vision.py"
-
-_NOT_YET = (
-    "shared_vision is a skeleton: the pixel path is not implemented yet. "
-    f"It arrives in Epic 2, ported unchanged from {PORT_SOURCE}. "
-    "Do not implement it here piecemeal, and never on one side only — AD-1 "
-    "requires index-time and query-time preprocessing to be identical."
+from shared_vision.intake import (
+    DERIVATIVE_MAX_BYTES,
+    DERIVATIVE_MAX_EDGE,
+    FEATURELESS_STD,
+    ImageTooLarge,
+    IntakeRefused,
+    IntakeResult,
+    UnreadableImage,
+    display_derivative,
+    intake_image,
+)
+from shared_vision.pipeline import (
+    CROP_SIZE,
+    DECODE_MAX_EDGE,
+    EMBED_DIM,
+    MODEL_MISSING,
+    MODEL_PATH,
+    PIPELINE_VERSION,
+    REFERENCE_MAX_PIXELS,
+    RESIZE_SHORTEST_EDGE,
+    UPLOAD_MAX_PIXELS,
+    config_hash,
+    embed,
+    embed_images,
+    load_image,
+    preprocess,
+)
+from shared_vision.views import (
+    CANONICAL_VIEWS,
+    VIEW_CROP,
+    VIEW_ROTATION,
+    VIEWS_PER_IMAGE,
+    generate_views,
+    view_kind,
 )
 
-__all__ = ["PIPELINE_VERSION", "PORT_SOURCE", "embed", "preprocess"]
+#: The file `pipeline.py` is a copy of, unchanged (AD-1). Read by this
+#: package's own tests, which assert the docstring above still names it.
+PORT_SOURCE = "poc/tilematch/vision.py"
 
-
-def preprocess(image: Any) -> Any:
-    """Normalise an image for embedding. Not implemented yet — see AD-1 above."""
-    raise NotImplementedError(_NOT_YET)
-
-
-def embed(tensor: Any) -> Any:
-    """Embed a preprocessed image. Not implemented yet — see AD-1 above."""
-    raise NotImplementedError(_NOT_YET)
+__all__ = [
+    "CANONICAL_VIEWS",
+    "CROP_SIZE",
+    "DECODE_MAX_EDGE",
+    "DERIVATIVE_MAX_BYTES",
+    "DERIVATIVE_MAX_EDGE",
+    "EMBED_DIM",
+    "FEATURELESS_STD",
+    "MODEL_MISSING",
+    "MODEL_PATH",
+    "PIPELINE_VERSION",
+    "PORT_SOURCE",
+    "REFERENCE_MAX_PIXELS",
+    "RESIZE_SHORTEST_EDGE",
+    "UPLOAD_MAX_PIXELS",
+    "VIEWS_PER_IMAGE",
+    "VIEW_CROP",
+    "VIEW_ROTATION",
+    "ImageTooLarge",
+    "IntakeRefused",
+    "IntakeResult",
+    "UnreadableImage",
+    "config_hash",
+    "display_derivative",
+    "embed",
+    "embed_images",
+    "generate_views",
+    "intake_image",
+    "load_image",
+    "preprocess",
+    "view_kind",
+]

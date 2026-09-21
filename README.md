@@ -39,10 +39,41 @@ make dev      # apps/api on :8000, apps/web on :5173
 make lint     # ruff check + ruff format --check, oxlint, tsc --noEmit
 make test     # pytest workspace suite + apps/web vitest suite
 make build    # production build of apps/web
+make model    # download the ONNX backbone shared/vision embeds with (~346 MB)
 ```
 
 `make ingest` and `make eval` exist but are not implemented; each names the epic that delivers it
 and exits non-zero. Run `make` with no target for the full list.
+
+### The embedding model
+
+`shared/vision` cannot turn a pixel into a vector without the `Xenova/dinov2-base` ONNX export,
+and 346 MB of weights never enter git. Fetch it once per machine:
+
+```bash
+make model                            # pinned revision, sha256-checked
+make model FROM=poc/models/model.onnx # adopt the copy the POC already pulled
+```
+
+It lands in `shared/vision/shared_vision/models/model.onnx` (gitignored). Set `ROCELL_MODEL_PATH`
+if it has to live somewhere else. The revision is pinned and the digest checked on purpose: the
+model is part of AD-1's pixel path, so a silently different set of weights is a silently
+invalidated index. Without it, `shared/vision`'s tests **skip** rather than fail and
+`POST /admin/tiles` answers `503 matching_unavailable` naming this step.
+
+### Object storage
+
+`apps/api` keeps reference images outside the database and needs somewhere to put them:
+
+```bash
+export OBJECT_STORAGE_ROOT=/var/lib/rocell/objects
+```
+
+Never defaulted, for the reason `DATABASE_URL` is not: a service that guesses where to put files
+can write a catalogue into a temporary directory and report success. The S3-compatible provider is
+still an open decision (`infra/README.md`), so what ships behind `api.storage.ObjectStore` today is
+a filesystem driver. `apps/web` never receives a storage URL either way — every image byte is
+proxied through an authenticated endpoint (AD-9).
 
 ### The database
 
@@ -76,6 +107,10 @@ it needs no `SEED_ADMIN_*` variables at all.
 `make dev` needs `DATABASE_URL` too: `apps/api` opens its connection pool at startup and exits
 naming the variable if it is unset, rather than starting and failing at the first sign-in. Point it
 at the same database you migrated.
+
+It needs `OBJECT_STORAGE_ROOT` as well, and that one behaves differently: it is read at the first
+catalogue write rather than at startup, so a service without it boots, signs people in and then
+fails on the first Add tile. `make dev` prints a note when it is unset, for exactly that reason.
 
 **Every connection the service opens adopts the `rocell_app` database role**, which the audit-log
 migration creates and grants: full read/write on `users`, `sessions` and `login_attempts`, and
@@ -349,7 +384,17 @@ reimplement it, never optimise one side only — an asymmetry raises no error an
 is not looking for it; it just quietly destroys match accuracy.
 
 Any change to `shared/vision` invalidates the stored index: bump `PIPELINE_VERSION`, re-index, and
-say so in the pull request.
+say so in the pull request. This is not a convention anyone has to remember — the active
+`embedding_generation` row carries the pipeline version and a hash of the preprocessing config
+(AD-14), and a catalogue write or a search whose running pipeline does not match that stamp is
+refused outright with `503 pipeline_stamp_mismatch` rather than quietly comparing vectors from two
+different pipelines. A re-index is a **complete new generation**, cut over by flipping the single
+active pointer, never a per-row patch.
+
+Since Story 2.1 the module is the port of `poc/tilematch/vision.py` it was always meant to be:
+copied, not paraphrased. Its constants come verbatim from the model's own
+`preprocessor_config.json`, and `shared/vision/tests/test_pipeline.py` asserts index-time and
+query-time vectors are bit-identical.
 
 ## Further reading
 

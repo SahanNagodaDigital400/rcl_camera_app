@@ -1,0 +1,237 @@
+/* Add tile — where an Administrator puts a Tile into the Catalogue (FR-14).
+ *
+ * Rendered *inside* the shell, like Create user: the app bar is above it and
+ * `AppShell`'s `<main>` is around it, so there is no full-height centring and
+ * no chrome-less panel here. The form rhythm is deliberately
+ * `CreateUserScreen.module.css`'s — a single narrow column, label above input,
+ * `--space-5` between fields — because an Administrator moving between the two
+ * admin forms should not read them as two different applications.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target
+ * floor and the accent focus ring are already on `button` and `input` in
+ * global.css and are deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: var(--measure-form);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  color: var(--color-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+.input {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* The Code field, in the monospace role DESIGN.md reserves for a value read
+ * character by character. It is transcribed off a physical tile and it is the
+ * tile's identity (AD-18), so 0/O and 1/I must not be confusable while it is
+ * being typed — not only once it is rendered. */
+.code {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--type-code-size);
+  font-weight: var(--type-code-weight);
+  line-height: var(--type-code-line);
+}
+
+/* The file input. Left as the platform control rather than hidden behind a
+ * styled button: the native one is keyboard-reachable, announces the chosen
+ * file count by itself, and is the one control on this screen whose behaviour
+ * a custom replacement would have to reimplement from nothing. Padded so it
+ * sits on the same rhythm as the text inputs beside it. */
+.file {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The line under a field that says what belongs in it. Muted, because it is
+ * guidance rather than a state — the Size field's example and the Category
+ * field's "left empty, this is UNKNOWN" (AD-18) both live here. */
+.hint {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* The rejection, carrying the API's own sentence — which names the rule that
+ * failed, or the field that was wrong (EXPERIENCE.md:87). Red is
+ * destructive-or-failed in this system and nothing else, and it is never the
+ * only signal: the text says what happened and `aria-invalid` marks the field. */
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* Save, Back and the indicator on one row, so the indicator sits beside the
+ * thing that triggered it rather than in a corner (EXPERIENCE.md's Save
+ * indicator row). Wraps rather than shrinks: at the narrowest phone width
+ * three items on one line would push the buttons below the touch-target
+ * floor. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* The single primary action on this screen: accent fill, navy foreground.
+ * Never white on orange — 2.63:1, the one contrast pair DESIGN.md bans. */
+.submit {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.submit:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* Back: DESIGN.md's secondary button — navy outline, navy text, transparent
+ * fill. The default for every non-primary action, and the reason this screen
+ * still has exactly one accent control. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.back:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* Muted while the request is in flight, and empty at rest (DESIGN.md's
+ * `save-indicator`). */
+.indicator {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* And navy once it has saved — deliberately not orange, which stays reserved
+ * for the action that has not fired yet rather than for reporting on it. */
+.saved {
+  color: var(--color-primary);
+}
+
+/* The result panel: DESIGN.md's Card — white surface, hairline border, `md`
+ * radius, navy-tinted shadow. A card rather than more prose in the column,
+ * because an Administrator adding a range needs to see at a glance that the
+ * last one landed before typing the next. */
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-card);
+}
+
+.subtitle {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: var(--color-text);
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2) var(--space-4);
+}
+
+.term {
+  color: var(--color-muted-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+.value {
+  color: var(--color-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  overflow-wrap: anywhere;
+}
+
+/* The Code again, in the monospace role — this is the value a member of staff
+ * will read back against a physical tile. */
+.codeValue {
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--type-code-size);
+  font-weight: var(--type-code-weight);
+  line-height: var(--type-code-line);
+  overflow-wrap: anywhere;
+}
+
+/* FR-19's quality flag. Muted rather than red: a low-texture reference is a
+ * real property of a plain tile, not a failure of the add — the tile is in the
+ * catalogue and this is something to follow up. Red here would mean the save
+ * had failed, which is the one thing it did not do. */
+.flag {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}

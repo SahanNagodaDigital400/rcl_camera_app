@@ -46,8 +46,11 @@ function anEntry(overrides: Record<string, unknown> = {}): Record<string, unknow
 }
 
 describe('the shared AuditAction', () => {
-  it('is the thirteen actions Epic 1 writes', () => {
-    expect(AUDIT_ACTIONS).toHaveLength(13);
+  it('is the fourteen actions the product writes', () => {
+    // Thirteen from Epic 1 and one from Epic 2's catalogue write. The count
+    // is in the name on purpose: an addition has to be a deliberate edit
+    // here and in the Python twin, not a set that quietly grew.
+    expect(AUDIT_ACTIONS).toHaveLength(14);
     expect(new Set(AUDIT_ACTIONS)).toEqual(
       new Set<AuditAction>([
         'login_succeeded',
@@ -63,6 +66,7 @@ describe('the shared AuditAction', () => {
         'user_deactivated',
         'user_activated',
         'user_deleted',
+        'catalogue_tile_added',
       ]),
     );
   });
@@ -70,7 +74,11 @@ describe('the shared AuditAction', () => {
   it.each([
     ['login_succeeded', true],
     ['user_deleted', true],
-    ['catalogue_tile_added', false],
+    ['catalogue_tile_added', true],
+    // An action from an epic this build predates. The narrower answers
+    // false and the *screen* still renders it, which is the asymmetry the
+    // fallback label exists for.
+    ['scan_submitted', false],
     ['LOGIN_SUCCEEDED', false],
     ['', false],
     [7, false],
@@ -129,7 +137,7 @@ describe('the shared AuditLogEntry', () => {
     // string. The column has no CHECK, the vocabulary grows with Epics 2 and
     // 3, and a narrower that refused an entry it did not recognise would make
     // the append-only record less faithful on screen than in the table.
-    expect(isAuditLogEntry(anEntry({ action: 'catalogue_tile_added' }))).toBe(true);
+    expect(isAuditLogEntry(anEntry({ action: 'scan_submitted' }))).toBe(true);
     expect(isAuditLogEntry(anEntry({ action: 'toString' }))).toBe(true);
   });
 

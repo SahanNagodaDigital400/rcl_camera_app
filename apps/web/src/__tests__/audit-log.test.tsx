@@ -105,7 +105,7 @@ const UNKNOWN_ACTION: AuditLogEntry = {
   ...SIGNED_IN,
   id: '4d5e6f70-8192-43a4-b5c6-d7e8f9012345',
   created_at: '2026-09-21T09:15:00Z',
-  action: 'catalogue_tile_added',
+  action: 'scan_submitted',
   details: {},
 };
 
@@ -435,7 +435,7 @@ describe('the entries', () => {
 
     await screen.findByRole('table');
 
-    expect(screen.getByText('catalogue_tile_added')).toBeTruthy();
+    expect(screen.getByText('scan_submitted')).toBeTruthy();
   });
 
   it('says there was no actor rather than leaving the cell blank', async () => {
@@ -631,7 +631,7 @@ describe('a stale answer', () => {
     await waitFor(() => {
       expect(screen.getByText('Signed in')).toBeTruthy();
     });
-    expect(screen.queryByText('catalogue_tile_added')).toBeNull();
+    expect(screen.queryByText('scan_submitted')).toBeNull();
   });
 
   it('is dropped rather than written to a screen that has gone', async () => {

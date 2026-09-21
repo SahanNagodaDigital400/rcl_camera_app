@@ -35,9 +35,10 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
-from api import db
+from api import db, storage
 from api.db import DATABASE_URL
 from api.main import create_app
+from api.storage import OBJECT_STORAGE_ROOT, ObjectStore
 from fastapi.testclient import TestClient
 from psycopg import sql
 from psycopg.rows import dict_row
@@ -313,7 +314,37 @@ def make_user(conn: psycopg.Connection) -> Callable[..., Account]:
 
 
 @pytest.fixture
-def client(migrated_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+def storage_root(tmp_path: Path) -> Path:
+    """This test's object-storage root — a directory nobody else can see.
+
+    `api.storage` never defaults `OBJECT_STORAGE_ROOT`, for the reason
+    `api.db` never defaults `DATABASE_URL`: a service that guesses where to
+    put files can write a catalogue into a temporary directory and report
+    success. Every test that reaches a route writing an image therefore has to
+    supply one, and a per-test directory is what keeps one test's stored
+    objects out of another's assertions.
+    """
+    root = tmp_path / "objects"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def object_store(storage_root: Path) -> ObjectStore:
+    """The store the app under test writes through, for reading back what landed.
+
+    Built through `api.storage.create_object_store` rather than by constructing
+    the driver directly, so a test that asserts "the bytes are in the store" is
+    asserting it about the store the product would build — the same argument
+    `app_role_conn` makes for the connection pool.
+    """
+    return storage.create_object_store(str(storage_root))
+
+
+@pytest.fixture
+def client(
+    migrated_url: str, storage_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[TestClient]:
     """A `TestClient` whose app is pointed at this test's migrated database.
 
     `base_url` is https so the `Secure` session cookie is stored by the test
@@ -322,6 +353,7 @@ def client(migrated_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestC
     fail for a reason that has nothing to do with the code under test.
     """
     monkeypatch.setenv(DATABASE_URL, migrated_url)
+    monkeypatch.setenv(OBJECT_STORAGE_ROOT, str(storage_root))
 
     with TestClient(
         create_app(),

@@ -123,6 +123,11 @@ class AuditAction(StrEnum):
     USER_DEACTIVATED = "user_deactivated"
     USER_ACTIVATED = "user_activated"
     USER_DELETED = "user_deleted"
+    # Epic 2's first entry, and the first that names something other than
+    # an account. `details` carries the Code — the Tile's identity (AD-18)
+    # — as a snapshot, never a foreign key: removal (Story 2.3) is a hard
+    # delete and the log may neither block it nor be cascaded into (AD-10).
+    CATALOGUE_TILE_ADDED = "catalogue_tile_added"
 
 
 class AuditLogEntry(BaseModel):

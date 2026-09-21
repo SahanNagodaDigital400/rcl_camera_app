@@ -52,7 +52,7 @@ development_status:
   epic-1-retrospective: optional
 
   epic-2: backlog
-  2-1-add-product: backlog
+  2-1-add-product: done
   2-2-edit-product: backlog
   2-3-remove-product: backlog
   2-4-bulk-upload: backlog

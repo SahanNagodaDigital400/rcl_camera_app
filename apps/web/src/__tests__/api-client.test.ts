@@ -18,6 +18,7 @@ import {
   MALFORMED_RESPONSE,
   NETWORK_ERROR,
   REQUEST_TIMEOUT_MS,
+  UPLOAD_TIMEOUT_MS,
   TIMEOUT,
   apiRequest,
   onUnauthorized,
@@ -66,6 +67,42 @@ describe('the API client', () => {
     await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
 
     expect(await code).toBe(TIMEOUT);
+  });
+
+  it('waits as long as the caller asked rather than the default', async () => {
+    // The catalogue upload makes the server embed every image — 16 forward
+    // passes each (AD-13) — so the 15-second default would abort a request
+    // the server then commits anyway: a network error on screen for a tile
+    // that exists, and a retry that answers `code_already_exists`.
+    vi.useFakeTimers();
+    stubHangingFetch();
+
+    const code = apiRequest('/admin/tiles', {
+      method: 'POST',
+      body: 'anything',
+      timeoutMs: UPLOAD_TIMEOUT_MS,
+    }).then(
+      () => 'resolved',
+      (failure: unknown) => (failure instanceof ApiRequestError ? failure.code : 'other'),
+    );
+
+    // Well past the default, and still waiting.
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS * 2);
+    expect(vi.getTimerCount()).toBe(1);
+
+    // Bounded all the same: a request with no timeout at all would hang for
+    // ever behind a stalled proxy, which is the failure the default exists
+    // for and which a longer bound must not reintroduce.
+    await vi.advanceTimersByTimeAsync(UPLOAD_TIMEOUT_MS);
+    expect(await code).toBe(TIMEOUT);
+  });
+
+  it('bounds the upload generously enough for the worst request the API accepts', () => {
+    // Eight images at 16 forward passes each. The number is a judgement, so
+    // the guard is on its shape: comfortably longer than the default, and
+    // still a bound.
+    expect(UPLOAD_TIMEOUT_MS).toBeGreaterThan(REQUEST_TIMEOUT_MS * 10);
+    expect(Number.isFinite(UPLOAD_TIMEOUT_MS)).toBe(true);
   });
 
   it('does not abort a request that answers in time', async () => {

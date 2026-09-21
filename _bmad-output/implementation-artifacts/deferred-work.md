@@ -1264,3 +1264,195 @@ source_spec: `spec-1-13-view-audit-log.md`
 severity: low
 reason: `apps/api/api/auth.py:777` reads "keeps 'every entry names who it was about' true for the read Story 1.13 builds". Every other forecast of this story - in `audit.py`, `test_source_guards.py`, `UserListScreen.tsx`, `EditUserScreen.tsx` and `README.md` - was corrected to the past tense by this story, and this one was not, because `auth.py` is on the intent contract's Never-touch list and a comment-only edit is still an edit to it. Cosmetic, and safe to fold into the next change that opens the file.
 status: open
+
+### DW-159: The whole multipart body is spooled to disk before `require_administrator` runs, so an unauthenticated caller can consume disk with an oversized upload.
+origin: spec-deferred 9ead5876cf5f
+location: apps/api/api/catalogue.py add_tile
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: FastAPI awaits `request.form()` before solving dependencies, so up to MAX_IMAGES_PER_REQUEST x MAX_IMAGE_BYTES is written to the spool file before any authz check. Fixing it needs a body-size limit at the reverse proxy or a Starlette middleware, and this spec's Never list forbids middleware.
+status: open
+
+### DW-160: `make test` is green on a machine that has never run `make model`, so AD-1's symmetry assertion and the entire catalogue write path can silently never execute.
+origin: spec-deferred 289c9770041d
+location: Makefile test target
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: 34 tests are gated on `pipeline.MODEL_PATH.exists()`, including test_the_write_path_and_the_query_path_produce_identical_vectors. Nothing in `make test` depends on the model target or asserts the gated tests ran. There is no CI workflow in the repository (see DW-2), so a developer's `make test` is the only gate.
+status: open
+
+### DW-161: The HNSW index is built and maintained on every insert but no statement in the codebase queries through it.
+origin: spec-deferred dc1a20866928
+location: apps/api/api/catalogue.py _SELECT_CANDIDATES
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: `_SELECT_CANDIDATES` is a grouped min() scan over reference_embedding, chosen for exact max-over-views semantics. At catalogue scale that is correct and fast, but every insert pays HNSW graph maintenance for an index nothing uses, and nothing asserts a query plan. An index-friendly two-stage probe is the measurable follow-up.
+status: open
+
+### DW-162: AD-16's inference serialization and startup warm-up are absent, so concurrent catalogue adds oversubscribe the CPU exactly as the POC measured.
+origin: spec-deferred cb5fde05f8e2
+location: shared/vision/shared_vision/pipeline.py
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: The ported session lock prevents a double model load but not concurrent forward passes. An add holds a threadpool worker for 16 passes per image; the POC measured 8 concurrent scans collapsing to 2.6s each. AD-16 binds the scan endpoint (Epic 3), which is where the shared serialization slot and the ~900ms cold start belong.
+status: open
+
+### DW-163: `pixel_std` is measured on the 2048px-capped image over the whole RGB array, so the featureless flag differs from the POC and never fires on a flat coloured tile.
+origin: spec-deferred 9779b6b50bfc
+location: shared/vision/shared_vision/intake.py
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: The POC computes the deviation on a thumbnail; the port computes it on the full capped image, and FEATURELESS_STD = 3.0 carried over unchanged. Because the deviation is taken across all three channels, a flat coloured reference measures around 6 and is not flagged while a flat neutral one measures 0 and is. MONO COLOUR ranges are exactly the case FR-19 names, and the POC found MONO COLOUR GLOSSY 11B embedding to cosine 1.0 with RUANDA 7CM.
+status: open
+
+### DW-164: `find_candidates` takes an already-decoded PIL image, so a caller can reach the embedder without passing through AD-7 intake and AD-15 colour management.
+origin: spec-deferred 32180d65aec7
+location: apps/api/api/catalogue.py find_candidates
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: The signature mirrors the POC's Matcher.embed_query and AD-1 still holds (both paths call the same preprocess/embed pair), but the load_image step is the caller's responsibility. Epic 3's scan endpoint is the caller that must not get this wrong; taking bytes instead would make the invariant unskippable.
+status: open
+
+### DW-165: The endpoint-level AD-15 assertion hardcodes a macOS ColorSync profile path, so it never runs on Linux.
+origin: spec-deferred 145e1fe0db4b
+location: apps/api/tests/test_add_tile.py
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: test_a_cmyk_press_file_is_stored_and_embedded_in_srgb skips unless /System/Library/ColorSync/Profiles/Generic CMYK Profile.icc exists, while shared/vision/tests/test_colour_management.py solves the same problem with a candidate list that includes Linux paths. On Linux only the library-level test remains.
+status: open
+
+### DW-166: A reference image whose short edge is under 64px produces twelve black-padded crop views rather than crops.
+origin: spec-deferred 075b0ac8f010
+location: shared/vision/shared_vision/views.py
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: `side = max(64, min(side, short))` in the ported view generator exceeds the frame on a tiny reference, so img.crop pads. Inherited verbatim from the POC, and no real catalogue image is that small, but nothing in the intake path refuses one either.
+status: open
+
+### DW-167: There is a per-file byte ceiling but no aggregate bound on a request, and every source and derivative is held in memory at once.
+origin: spec-deferred 19ea7289eeaa
+location: apps/api/api/catalogue.py add_tile
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: MAX_IMAGE_BYTES is per file and MAX_IMAGES_PER_REQUEST is 8, so one accepted request is up to ~1GB of spooled body, and _Prepared retains every source and derivative byte string plus every decoded image for the duration of the add.
+status: open
+
+### DW-168: `add_tile` holds a pooled Postgres connection for the whole embedding run, so a handful of concurrent adds can starve every other request in the product of a connection.
+origin: spec-deferred e6a48ddf69e2
+location: apps/api/api/catalogue.py add_tile
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: `conn` is a `Depends(get_connection)` parameter, so the connection is checked out before the handler body and returned after it — across `_prepare`, which the module's own docstring calls "tens of seconds per image". `api/db.py` sets POOL_MAX_SIZE = 10 and POOL_TIMEOUT_SECONDS = 10.0 while FastAPI's threadpool admits more concurrent sync handlers than that, so ten simultaneous adds park the pool and `/auth/login` starts failing on a pool timeout. The connection is only needed for the cheap pre-flights and the final transaction. Distinct from the AD-16 entry above: that one is about CPU oversubscription, this one is about connection starvation in unrelated requests.
+status: open
+
+### DW-169: A failed ICC transform silently falls back to the naive RGB conversion AD-15 exists to prevent, with nothing logged, recorded or surfaced.
+origin: spec-deferred 62accec03103
+location: shared/vision/shared_vision/pipeline.py _to_srgb
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: `_to_srgb` catches `(PyCMSError, OSError, ValueError)` and falls through to `img.convert("RGB")`. On the CMYK press files that are ~60% of the catalogue that is the ink inversion the POC measured at an 84-level channel shift — the tile is indexed and displayed with corrupt colour and the add still answers 201. The module has no logger, the `reference_image` row has no column for it, and `test_a_broken_profile_does_not_refuse_the_image` builds its fixture from an RGB image, so the dangerous combination (unreadable profile on a CMYK source) is untested. Inherited verbatim from `poc/tilematch/vision.py`, which the spec requires be copied unchanged, so this is a decision about the port rather than a defect in the porting.
+status: open
+
+### DW-170: EXIF orientation is silently not applied to any image carrying an ICC profile, because the colour transform runs first and returns an image with no EXIF.
+origin: spec-deferred 597a6b30f5a5
+location: shared/vision/shared_vision/pipeline.py load_image
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: `load_image` calls `_to_srgb(img)` and then `ImageOps.exif_transpose(img)`. Verified empirically with Pillow in this workspace: `ImageCms.profileToProfile` returns a fresh image whose `info` holds only `icc_profile`, so `exif_transpose` is a no-op afterwards and a rotated phone photo or press file is indexed sideways. The I/O matrix row promises "Orientation applied, then all metadata dropped"; the metadata half holds, the orientation half holds only for profile-less images, and both orientation tests (`shared/vision/tests/test_pipeline.py`, `apps/api/tests/test_add_tile.py`) use fixtures with EXIF and no profile. Inherited verbatim from the POC, and the four clean rotations of AD-13 partly mask it at index time. Not patched here because the fix is a change to `shared/vision`, which CLAUDE.md binds to an eval run and a re-index, and because the spec's Always list requires the file be copied unchanged — that tension is a decision, not an edit.
+status: open
+
+### DW-171: `config_hash()` does not cover the identity of the ONNX artifact, so two deployments running different weights carry an identical AD-14 stamp.
+origin: spec-deferred 79f363048709
+location: shared/vision/shared_vision/pipeline.py config_hash
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: The hash is over the preprocessing constants. `_verify_stamp` therefore passes while vectors from two different models are compared against each other — the silent accuracy failure the stamp exists to prevent. The only guard today is the pinned revision and sha256 in `scripts/fetch_model.py`, which a developer can bypass by placing a file at `ROCELL_MODEL_PATH` directly. Hashing the artifact once at session build would close it.
+status: open
+
+### DW-172: Nothing in the product can cut a new generation over, so the first `shared/vision` change refuses every add and every search with no documented recovery.
+origin: spec-deferred 852ea69e7a2a
+location: apps/api/api/catalogue.py ensure_active_generation
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: `ensure_active_generation` only inserts when no active row exists; no code anywhere issues an `UPDATE ... SET is_active` or opens a second generation. `_verify_stamp` then answers `503 pipeline_stamp_mismatch` on both the write and the read path, and the only way out is hand-written SQL. AD-14's "cut over by a single pointer" has no operator surface and `infra/README.md` has no runbook for it. `make ingest` (Epic 2) is the natural home for the rebuild half.
+status: open
+
+### DW-173: AD-15's rendering intent is only distinguishable by tests that skip on any checkout without the gitignored `poc/Tiles` reference tree.
+origin: spec-deferred 29f4d064b306
+location: shared/vision/tests/test_colour_management.py
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: `test_the_rendering_intent_matches_colorsync` and its two siblings are gated on `poc/Tiles/45X90/POLISH/Copy of RP.RSS.0062ST.PL.0T.jpg`, which `.gitignore` excludes. The portable half of the file states in its own comment that a generic CMYK profile carries identical tables for the two intents and would pass either way, and the remaining assertion reads the constant and the source text rather than the transform. So deleting `renderingIntent=RENDERING_INTENT` from `_to_srgb` is green on a fresh clone while every CMYK reference indexes near-black. A committed synthetic profile whose perceptual and relative-colorimetric tables differ would make the Block-If condition checkable anywhere.
+status: open
+
+### DW-174: A present-but-unloadable `model.onnx` surfaces as an opaque 500, while only an absent one gets the named 503 that says how to fix it.
+origin: spec-deferred 8714c86d96af
+location: apps/api/api/catalogue.py _prepare
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: `_prepare` catches `FileNotFoundError`. ONNX Runtime's own failures for a truncated or incompatible export (`Fail`, `InvalidProtobuf`, `NoSuchFile`) derive from `Exception` directly, so they pass straight through after the request has already spent its CPU. Naming them needs either an exception contract in `shared/vision` — which the spec requires be a verbatim copy — or an `onnxruntime` import in `apps/api`, which is a new declared dependency. Both are decisions rather than edits.
+status: open
+
+### DW-175: An unset `OBJECT_STORAGE_ROOT` fails during dependency resolution, so it reaches the caller as an unhandled 500 rather than as a named refusal.
+origin: spec-deferred e69638010b65
+location: apps/api/api/storage.py get_object_store
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: `get_object_store()` raises `ObjectStorageNotConfigured(RuntimeError)`, which no handler converts. `api.db` validates `DATABASE_URL` at startup and this could do the same; the Makefile's advisory `echo` and its comment ("a missing value is a 500 on the first `POST /admin/tiles`") acknowledge the gap instead of closing it. `test_object_storage.py` asserts the exception, never what a caller sees.
+status: open
+
+### DW-176: A client timeout after the server has already committed leaves the Administrator with no remedy but a `code_already_exists` on retry.
+origin: spec-deferred a8365652bf9f
+location: apps/web/src/api/client.ts
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: `client.ts` documents the failure precisely and answers it by widening the bound to `UPLOAD_TIMEOUT_MS`. An aborted browser request still runs to completion on the server, and there is no idempotency key, no server-side deadline matching the client's, and no way for the screen to tell "timed out, tile exists" from "timed out, nothing written". An idempotency key on the add is the shape of the fix and is a contract decision.
+status: open
+
+### DW-177: The only route serving a reference image is Administrator-only, but Epic 3 must show one beside every Candidate to a Staff caller.
+origin: spec-deferred 5733725a69c9
+location: apps/api/api/catalogue.py read_tile_image
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: `GET /admin/tiles/{tile_id}/images/{image_id}` sits under `require_administrator` and `test_a_staff_caller_is_refused_the_image_read` pins that. CLAUDE.md's product rules require the reference image beside each candidate for the staff who scan. Epic 3 will either add a second image route — the asymmetry this module's docstring warns about — or move this one out from under `/admin/`, which `test_every_route_declaring_the_role_check_is_under_admin` will then contest. Worth deciding before Epic 3 writes the scan endpoint rather than after.
+status: open
+
+### DW-178: `session-expiry.test.tsx` failed once under a full `make test` run and passed on every run since, including in isolation.
+origin: spec-deferred c93f3c9963f5
+location: apps/web/src/__tests__/session-expiry.test.tsx:321
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: One `make test` invocation during this review pass failed at `src/__tests__/session-expiry.test.tsx:321` waiting for the signed-out notice; the file is untouched by Story 2.1 and the same suite passed on the next two full runs and on a targeted run. A test that fails under load and passes alone is a real defect in the test, not noise, and is worth pinning before it is dismissed as a fluke.
+status: open
+
+### DW-179: `config_hash()` covers the preprocessing constants but not the augmentation constants, so changing how views are generated produces a different index under an identical AD-14 stamp.
+origin: spec-deferred 561a6488bc65
+location: shared/vision/shared_vision/pipeline.py config_hash
+source_spec: `spec-2-1-add-product.md`
+severity: medium
+reason: The hash is built from `RESIZE_SHORTEST_EDGE`, `CROP_SIZE`, the normalization constants and `PIPELINE_VERSION`. Every stored vector also depends on `views.py` — `VIEWS_PER_IMAGE`, `CANONICAL_VIEWS`, `CROP_SCALE_MIN/MAX` and the five augmentation ranges — and none of those reach the stamp. Edit a crop range and `_verify_stamp` passes while the generation holds vectors from two different view recipes, which is precisely the silent mixing AD-14 exists to prevent. Distinct from the ONNX-artifact gap already recorded: that one is about the weights, this one is about the views. Not fixed here because widening the hash changes every stamp, which CLAUDE.md binds to an eval run and a full re-index.
+status: open
+
+### DW-180: `_get_session` publishes the ONNX session before the input and output names, so a second thread can take the fast path and embed with an empty feed name.
+origin: spec-deferred b68c8dcff7cc
+location: shared/vision/shared_vision/pipeline.py _get_session
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: `_build_session` assigns `_session` first and `_input_name`/`_output_name` after. The fast path in `_get_session` reads `_session` without the lock, by design, so a thread arriving in that window returns a usable session while `embed` reads `_output_name` as `""` and ONNX Runtime raises `Invalid Feed Input Name`. It needs two concurrent first-embeds in one process, so it is rare and non-deterministic — an intermittent 500 on the first concurrent add after a restart. Carried verbatim from `poc/tilematch/vision.py`, which the spec's Always list requires be copied unchanged, so the fix is a decision about the port rather than an edit to it.
+status: open
+
+### DW-181: An accepted image with an extreme aspect ratio expands rather than shrinks in `preprocess`, so a few-KB upload can cost hundreds of megabytes per view.
+origin: spec-deferred f8f666f7b767
+location: shared/vision/shared_vision/pipeline.py preprocess
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: `DECODE_MAX_EDGE` caps the long edge at 2048 but nothing bounds the ratio. A 2048x8 image passes every gate — small file, few pixels — and `preprocess` resizes the *shortest* edge to 256, scaling it back up to 65536x256, about 17 megapixels of float32 per view and sixteen views per image. The pixel gate reads header dimensions, which for this shape are honest and small. Inherited from the POC's `preprocess`, where the inputs were a curated catalogue rather than an upload.
+status: open
+
+### DW-182: The Code, Size and Category hints are bound to no input, and no control sets `aria-busy` while a minute-long save is in flight.
+origin: spec-deferred 2ddbe8813f13
+location: apps/web/src/screens/AddTileScreen.tsx
+source_spec: `spec-2-1-add-product.md`
+severity: low
+reason: The Reference images hint is now bound through `aria-describedby` because it carries the count and byte limits, which are stated nowhere else. The other three `.hint` paragraphs — including the one explaining that a blank Category files the tile under `UNKNOWN` — are still visual-only. Separately, `disabled={submitting}` removes the just pressed Save from the tab order for the length of the request; `aria-busy` on the form would say why. Both are DESIGN.md/EXPERIENCE.md questions about the screen's pattern rather than defects in this endpoint, and the same pattern is about to be copied by Stories 2.2 and 2.4.
+status: open

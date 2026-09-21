@@ -141,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_five_auth_routes_health_and_the_five_admin_paths() -> None:
+def test_the_route_table_is_the_five_auth_routes_health_and_the_seven_admin_paths() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -203,6 +203,22 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_five_admin_paths
     # authenticated and Administrator-only through the same
     # `require_administrator` every route under `/admin/` declares.
     #
+    # `/admin/tiles` and `/admin/tiles/{tile_id}/images/{image_id}` (Story 2.1,
+    # FR-14) are the sixth and seventh admin paths, and the first in the
+    # product that are not about accounts at all: one adds a Tile to the
+    # Catalogue and one serves that Tile's reference image. Neither can bring a
+    # user into existence — no field on either names a person, an address or a
+    # password, and the only rows they write are catalogue rows. They are
+    # authenticated and Administrator-only through the same
+    # `require_administrator` every route under `/admin/` declares.
+    #
+    # The image route is worth one further line, because it is the first route
+    # in the product that answers with bytes rather than with the shared JSON
+    # envelope. That changes nothing here — this guard is about which paths
+    # exist — and it is what AD-9 requires in place of a storage URL: the bytes
+    # are proxied through an endpoint that re-checks the role, rather than
+    # handed to the browser as a link it could follow without one.
+    #
     # The seeded Administrator (`infra/rocell_infra/seed.py`) is still the only
     # row written with no Administrator behind it, and it is written by the
     # migration runner outside the application entirely.
@@ -218,6 +234,8 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_five_admin_paths
         "/admin/users/{user_id}/deactivate",
         "/admin/users/{user_id}/activate",
         "/admin/audit",
+        "/admin/tiles",
+        "/admin/tiles/{tile_id}/images/{image_id}",
     }
 
 

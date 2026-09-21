@@ -9,7 +9,16 @@ dependencies = [
     # driver for the whole product: two would mean two sets of type
     # adaptation rules over the same columns.
     "psycopg[binary,pool]>=3.2",
+    # Multipart form parsing. FastAPI's `UploadFile` is inert without it —
+    # the framework refuses to build a route that declares one — and Story
+    # 2.1's `POST /admin/tiles` carries files beside its text fields.
+    "python-multipart>=0.0.20",
     "shared-schema",
+    # AD-1: the one module that turns pixels into a vector. `apps/api` and
+    # `scripts/ingest` depend on the same build of it and call it
+    # unwrapped; a second implementation on either side is the asymmetry
+    # that silently destroys match accuracy.
+    "shared-vision",
     "uvicorn>=0.38",
 ]
 
@@ -22,3 +31,4 @@ packages = ["api"]
 
 [tool.uv.sources]
 shared-schema = { workspace = true }
+shared-vision = { workspace = true }

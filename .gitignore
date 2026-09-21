@@ -14,6 +14,11 @@ poc/queries/
 poc/certs/
 poc/.venv/
 
+# The ONNX backbone: 346 MB of weights, fetched once per machine by
+# `make model` and never committed. `shared/vision` looks for it here by
+# default and honours ROCELL_MODEL_PATH when it lives somewhere else.
+shared/vision/shared_vision/models/
+
 # Python
 __pycache__/
 .pytest_cache/

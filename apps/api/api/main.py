@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from shared_schema.errors import ApiError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api import audit, auth, users
+from api import audit, auth, catalogue, users
 from api.db import lifespan
 
 #: Stable, machine-readable codes for the HTTP statuses routing produces. A
@@ -179,6 +179,14 @@ def create_app() -> FastAPI:
     # table has exactly one owning module (AD-4) and its read lives there.
     app.include_router(users.router)
     app.include_router(audit.router)
+    # Story 2.1's catalogue write and the reference-image proxy, under the
+    # same `/admin/` boundary and therefore under the same guard — a fourth
+    # router rather than a widening of `users`, because a Tile is not an
+    # account and the two collections share nothing but their authorization.
+    # It is also the first router whose routes serve something other than
+    # JSON: `GET /admin/tiles/{tile_id}/images/{image_id}` proxies image
+    # bytes, which is what AD-9 requires in place of a storage URL.
+    app.include_router(catalogue.router)
 
     return app
 

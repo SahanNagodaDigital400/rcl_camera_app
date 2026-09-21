@@ -22,6 +22,17 @@ export const API_PREFIX = '/api';
 export const UNAUTHORIZED = 'unauthorized';
 
 /**
+ * The envelope code for "signed in, but not an Administrator".
+ *
+ * A `403` from any `/admin/` route. No screen branches on it — an admin-only
+ * door is not rendered for a Staff session — but an account demoted between
+ * two requests receives it, and every such screen renders the API's sentence
+ * unchanged. Named here so that the code the server can emit is accounted for
+ * on this side rather than living only as a literal in test fixtures.
+ */
+export const ADMINISTRATOR_REQUIRED = 'administrator_required';
+
+/**
  * The status that means the session is gone, whatever body came with it.
  *
  * Read alongside `UNAUTHORIZED` rather than instead of it: the *code* is what a
@@ -158,6 +169,103 @@ export const USER_NOT_FOUND = 'user_not_found';
  */
 export const LAST_ADMINISTRATOR = 'last_administrator';
 
+/**
+ * The envelope code for a Code `POST /admin/tiles` will not store.
+ *
+ * Blank, over the length bound, or carrying a control character. The **code**
+ * field is what it marks: the API's own sentence names the rule that failed
+ * (EXPERIENCE.md:87), and the screen renders it rather than restating a rule
+ * it does not own.
+ *
+ * A `422` with a code of its own rather than the generic `validation_error`,
+ * precisely so that decision is possible: the generic one carries one sentence
+ * for every malformed body in the product and names no field at all.
+ */
+export const INVALID_CODE = 'invalid_code';
+
+/** The envelope code for a blank or missing Size. Marks the **size** field. */
+export const INVALID_SIZE = 'invalid_size';
+
+/**
+ * The envelope code for a Category the endpoint will not store.
+ *
+ * Only ever a length or a control character: an *absent* Category is not an
+ * error at all — it resolves to the `UNKNOWN` sentinel (AD-18) — so this
+ * cannot fire on an empty field.
+ */
+export const INVALID_CATEGORY = 'invalid_category';
+
+/**
+ * The envelope code for a request that carried no reference image.
+ *
+ * Marks the **images** control. A Tile with no reference image is a catalogue
+ * row no Scan can return and no member of staff can verify, which is why this
+ * is a refusal rather than a Tile saved without one.
+ */
+export const INVALID_IMAGE = 'invalid_image';
+
+/**
+ * The envelope code for bytes that are not a readable image.
+ *
+ * Zero bytes, a truncated file, or something that was never an image — decided
+ * by **content**, never by the file name or by the type the browser declared
+ * (AGENTS.md Policy). The real catalogue genuinely holds `.tif` files behind
+ * `.jpg` names, so a screen must not pre-judge either.
+ */
+export const UNREADABLE_IMAGE = 'unreadable_image';
+
+/**
+ * The envelope code for a file above the byte or pixel ceiling.
+ *
+ * A `413`. One code for both ceilings because the Administrator's answer is
+ * the same either way, and the API's sentence carries both numbers.
+ */
+export const IMAGE_TOO_LARGE = 'image_too_large';
+
+/** The envelope code for more files in one request than the endpoint accepts. */
+export const TOO_MANY_IMAGES = 'too_many_images';
+
+/**
+ * The envelope code for a Code that is already a tile's.
+ *
+ * Marks the **code** field. A `409`: nothing is wrong with the caller's
+ * authority and nothing about the session changes, so no observer watches it.
+ * The Code *is* the tile's identity (AD-18), so this is a real conflict and
+ * not a near-miss to be resolved by adding a suffix.
+ */
+export const CODE_ALREADY_EXISTS = 'code_already_exists';
+
+/**
+ * The envelope code for "the image pipeline is not available on this server".
+ *
+ * A `503`, and it marks **no field**: nothing the Administrator typed or chose
+ * is at fault, and the fix is an operator's. The API's sentence names the
+ * setup step, so the screen renders it and offers no retry of its own — a
+ * retry against a server missing its model artifact fails identically.
+ */
+export const MATCHING_UNAVAILABLE = 'matching_unavailable';
+
+/**
+ * The envelope code for "this server's pixel pipeline is not the one the index
+ * was built with" (AD-14).
+ *
+ * A `503` from either catalogue route, and like `MATCHING_UNAVAILABLE` it
+ * marks no field: an embedding written by one pipeline and one read by another
+ * are not comparable, and the answer is a re-index, not a retry. Exported so
+ * that the code the API can emit has a name here rather than reaching the
+ * screen as a string nothing accounts for.
+ */
+export const PIPELINE_STAMP_MISMATCH = 'pipeline_stamp_mismatch';
+
+/**
+ * The envelope code for "no such reference image under that tile".
+ *
+ * A `404` from `GET /admin/tiles/{tileId}/images/{imageId}`, which is also the
+ * answer to a mismatched-but-existing pair — the route never confirms that an
+ * id exists under a tile the caller did not name correctly.
+ */
+export const IMAGE_NOT_FOUND = 'image_not_found';
+
 /** The code this module invents when the request never reached the API. */
 export const NETWORK_ERROR = 'network_error';
 
@@ -176,6 +284,25 @@ export const MALFORMED_RESPONSE = 'malformed_response';
  * on a shop-floor connection finishes an Argon2id-backed login inside it.
  */
 export const REQUEST_TIMEOUT_MS = 15000;
+
+/**
+ * How long to wait on a request that has to embed images before it can answer.
+ *
+ * **15 seconds is wrong for `POST /admin/tiles` by an order of magnitude, and
+ * the failure it produces is the worst kind.** One reference image is 16
+ * forward passes (AD-13) at roughly half a second each on a CPU; eight of them
+ * is minutes. The default abort fires while the server is still working, the
+ * request completes anyway and commits, and the Administrator is shown a
+ * network error for a tile that now exists — so the obvious response, pressing
+ * Save again, answers `code_already_exists` and reads as the app contradicting
+ * itself.
+ *
+ * Sized for the worst request the endpoint accepts — eight images — with room
+ * for a slower machine than this one. A bound this long is only tolerable
+ * because the screen shows `Saving…` throughout and disables both its
+ * controls: nothing here is a silent wait.
+ */
+export const UPLOAD_TIMEOUT_MS = 600000;
 
 /**
  * A failed request, carrying the API's own error code.
@@ -198,7 +325,27 @@ export class ApiRequestError extends Error {
 
 interface RequestOptions {
   method?: string;
+  /**
+   * The request body. A `FormData` is sent as it is; anything else is JSON.
+   *
+   * The distinction is not a convenience. A multipart body's `content-type`
+   * carries the boundary token that delimits its parts, and only the runtime
+   * that built the `FormData` knows what that token is — so setting the header
+   * by hand produces a body the server cannot parse, and the failure is a
+   * `422` about a shape rather than anything that points at the header.
+   * `fetch` sets it correctly when, and only when, the header is absent.
+   */
   body?: unknown;
+  /**
+   * How long to wait before aborting, in milliseconds.
+   *
+   * Defaults to `REQUEST_TIMEOUT_MS`, which is right for every request that
+   * reads or writes a row. A request that makes the server *compute* — today
+   * only the catalogue upload, tomorrow the scan — passes its own, because a
+   * timeout shorter than the work is an abort in the middle of a write and
+   * not a diagnosis.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -293,9 +440,13 @@ function notifyUnauthorized(): void {
 export async function apiRequest(path: string, options: RequestOptions = {}): Promise<unknown> {
   const method = options.method ?? 'GET';
   const hasBody = options.body !== undefined;
+  // `typeof` guarded because this module is also read in a node test
+  // environment, where `FormData` may not be defined at all — an unguarded
+  // `instanceof` against a missing global is a `ReferenceError`, not `false`.
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
 
   const controller = new AbortController();
-  const expiry = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const expiry = setTimeout(() => controller.abort(), options.timeoutMs ?? REQUEST_TIMEOUT_MS);
 
   // The timer is cleared once the *body* has been read, not once the headers
   // have arrived. A response that opens and then stalls mid-stream is exactly
@@ -309,8 +460,18 @@ export async function apiRequest(path: string, options: RequestOptions = {}): Pr
         // Same-origin only. The API is served from this origin in production and
         // through the dev proxy in development; nothing else is ever contacted.
         credentials: 'same-origin',
-        headers: hasBody ? { 'content-type': 'application/json' } : undefined,
-        body: hasBody ? JSON.stringify(options.body) : undefined,
+        // Deliberately absent for a `FormData`: see `RequestOptions.body`.
+        // `fetch` then writes `multipart/form-data` with the boundary it
+        // generated, which is the only value that can be right.
+        headers: hasBody && !isFormData ? { 'content-type': 'application/json' } : undefined,
+        // Passed through unstringified. `JSON.stringify(formData)` is `'{}'` —
+        // not an error, just an empty object — so a body of files would arrive
+        // as nothing at all with every type check satisfied.
+        body: hasBody
+          ? isFormData
+            ? (options.body as FormData)
+            : JSON.stringify(options.body)
+          : undefined,
         signal: controller.signal,
       });
     } catch {

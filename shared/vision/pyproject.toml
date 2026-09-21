@@ -3,7 +3,17 @@ name = "shared-vision"
 version = "0.1.0"
 description = "Preprocessing and embedding — called identically by apps/api and scripts/ingest"
 requires-python = ">=3.12"
-dependencies = []
+# Three, and each is load-bearing rather than convenient (AGENTS.md: flag any
+# new dependency). `pillow` is the decoder *and* `ImageCms`, which is AD-15's
+# ICC transform — there is no colour management without it. `numpy` is the
+# tensor the ONNX session takes and the L2 normalisation AD-5's unit-norm
+# vectors depend on. `onnxruntime` is the model server itself, pinned to CPU by
+# the architecture spine's Stack table.
+dependencies = [
+    "numpy>=2.0",
+    "onnxruntime>=1.23",
+    "pillow>=11.0",
+]
 
 [build-system]
 requires = ["hatchling"]

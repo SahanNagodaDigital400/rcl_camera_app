@@ -33,13 +33,25 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACCOUNT_LOCKED,
+  ADMINISTRATOR_REQUIRED,
+  CODE_ALREADY_EXISTS,
   EMAIL_ALREADY_EXISTS,
+  IMAGE_NOT_FOUND,
+  IMAGE_TOO_LARGE,
+  INVALID_CATEGORY,
+  INVALID_CODE,
   INVALID_CURRENT_PASSWORD,
   INVALID_EMAIL,
+  INVALID_IMAGE,
+  INVALID_SIZE,
   LAST_ADMINISTRATOR,
+  MATCHING_UNAVAILABLE,
   PASSWORD_CHANGE_NOT_REQUIRED,
   PASSWORD_CHANGE_REQUIRED,
+  PIPELINE_STAMP_MISMATCH,
+  TOO_MANY_IMAGES,
   UNAUTHORIZED,
+  UNREADABLE_IMAGE,
   USER_NOT_FOUND,
   WEAK_PASSWORD,
 } from '../api/client';
@@ -105,6 +117,7 @@ function typescriptSentence(source: string, name: string): string | null {
 
 const PYTHON: Record<string, { file: string; name: string }> = {
   unauthorized: { file: 'dependencies.py', name: 'UNAUTHORIZED' },
+  administrator_required: { file: 'dependencies.py', name: 'ADMINISTRATOR_REQUIRED' },
   password_change_required: { file: 'dependencies.py', name: 'PASSWORD_CHANGE_REQUIRED' },
   weak_password: { file: 'auth.py', name: 'WEAK_PASSWORD' },
   password_change_not_required: { file: 'auth.py', name: 'PASSWORD_CHANGE_NOT_REQUIRED' },
@@ -114,10 +127,25 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   email_already_exists: { file: 'users.py', name: 'EMAIL_ALREADY_EXISTS' },
   user_not_found: { file: 'users.py', name: 'USER_NOT_FOUND' },
   last_administrator: { file: 'users.py', name: 'LAST_ADMINISTRATOR' },
+  // Story 2.1's catalogue routes. Eleven codes rather than one generic
+  // `validation_error`, because the screen decides which of four controls to
+  // mark from the code alone.
+  invalid_code: { file: 'catalogue.py', name: 'INVALID_CODE' },
+  invalid_size: { file: 'catalogue.py', name: 'INVALID_SIZE' },
+  invalid_category: { file: 'catalogue.py', name: 'INVALID_CATEGORY' },
+  invalid_image: { file: 'catalogue.py', name: 'INVALID_IMAGE' },
+  unreadable_image: { file: 'catalogue.py', name: 'UNREADABLE_IMAGE' },
+  image_too_large: { file: 'catalogue.py', name: 'IMAGE_TOO_LARGE' },
+  too_many_images: { file: 'catalogue.py', name: 'TOO_MANY_IMAGES' },
+  code_already_exists: { file: 'catalogue.py', name: 'CODE_ALREADY_EXISTS' },
+  matching_unavailable: { file: 'catalogue.py', name: 'MATCHING_UNAVAILABLE' },
+  pipeline_stamp_mismatch: { file: 'catalogue.py', name: 'PIPELINE_STAMP_MISMATCH' },
+  image_not_found: { file: 'catalogue.py', name: 'IMAGE_NOT_FOUND' },
 };
 
 const TYPESCRIPT: Record<string, string> = {
   unauthorized: UNAUTHORIZED,
+  administrator_required: ADMINISTRATOR_REQUIRED,
   password_change_required: PASSWORD_CHANGE_REQUIRED,
   weak_password: WEAK_PASSWORD,
   password_change_not_required: PASSWORD_CHANGE_NOT_REQUIRED,
@@ -127,6 +155,17 @@ const TYPESCRIPT: Record<string, string> = {
   email_already_exists: EMAIL_ALREADY_EXISTS,
   user_not_found: USER_NOT_FOUND,
   last_administrator: LAST_ADMINISTRATOR,
+  invalid_code: INVALID_CODE,
+  invalid_size: INVALID_SIZE,
+  invalid_category: INVALID_CATEGORY,
+  invalid_image: INVALID_IMAGE,
+  unreadable_image: UNREADABLE_IMAGE,
+  image_too_large: IMAGE_TOO_LARGE,
+  too_many_images: TOO_MANY_IMAGES,
+  code_already_exists: CODE_ALREADY_EXISTS,
+  matching_unavailable: MATCHING_UNAVAILABLE,
+  pipeline_stamp_mismatch: PIPELINE_STAMP_MISMATCH,
+  image_not_found: IMAGE_NOT_FOUND,
 };
 
 describe('the envelope codes are one contract in two languages', () => {
@@ -175,6 +214,29 @@ describe('the envelope codes are one contract in two languages', () => {
     expect(new Set(exported)).toEqual(
       new Set(Object.values(PYTHON).map((where) => where.name)),
     );
+  });
+
+  it('compares every code the API can emit', () => {
+    // The other direction, and the one that was missing: the test above
+    // accounts for every constant `client.ts` exports, so a code added on the
+    // Python side with no TypeScript twin was simply absent from both maps and
+    // therefore unchecked — which is how `pipeline_stamp_mismatch` and
+    // `image_not_found` shipped without a name here.
+    //
+    // An envelope code is recognised by the property every one of them has and
+    // no message constant does: the value is exactly the constant's own name,
+    // lowercased. `CODE_UNIQUE_INDEX = "tile_code_key"` and the refusal
+    // sentences are not codes and do not match.
+    const routers = ['auth.py', 'catalogue.py', 'dependencies.py', 'users.py'];
+    const declared = routers.flatMap((file) =>
+      [...read(join(API, file)).matchAll(/^([A-Z_][A-Z0-9_]*)\s*=\s*"([a-z0-9_]+)"/gm)]
+        .filter((match) => match[1]?.toLowerCase() === match[2])
+        .map((match) => match[2] ?? ''),
+    );
+
+    const unaccounted = declared.filter((code) => !(code in PYTHON));
+
+    expect(unaccounted).toEqual([]);
   });
 });
 
@@ -257,10 +319,22 @@ function screenPath(file: string): string {
 
 const CREATE_USER_SCREEN = 'CreateUserScreen.tsx';
 const EDIT_USER_SCREEN = 'EditUserScreen.tsx';
+const ADD_TILE_SCREEN = 'AddTileScreen.tsx';
+
+/**
+ * Where a bound's Python twin lives, when it is not in `apps/api/api`.
+ *
+ * Story 2.1's bounds are in `shared/schema`, not in the route module: `Tile`
+ * is a contract both `apps/api` and `scripts/ingest` write against, so the
+ * numbers that say what a Code or a Size may be belong with the contract
+ * rather than with one of its two writers. The reader below joins against
+ * this when a row supplies it and against `API` when it does not.
+ */
+const SHARED_SCHEMA = join(REPO_ROOT, 'shared', 'schema', 'shared_schema');
 
 const BOUNDS: {
   screen: string;
-  python: { file: string; name: string };
+  python: { file: string; name: string; root?: string };
   typescript: string;
 }[] = [
   {
@@ -291,13 +365,50 @@ const BOUNDS: {
     python: { file: 'auth.py', name: 'MAX_EMAIL_LENGTH' },
     typescript: 'MAX_EMAIL_LENGTH',
   },
+  // Story 2.1's screen. Five mirrored bounds: three `maxLength` attributes,
+  // a count and a byte ceiling. The last two are also rendered in the hint
+  // under the file input, so a drift there is a sentence telling the
+  // Administrator the wrong limit, not only an attribute that stops bounding.
+  {
+    screen: ADD_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_CODE_LENGTH', root: SHARED_SCHEMA },
+    typescript: 'MAX_CODE_LENGTH',
+  },
+  {
+    screen: ADD_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_SIZE_LENGTH', root: SHARED_SCHEMA },
+    typescript: 'MAX_SIZE_LENGTH',
+  },
+  {
+    screen: ADD_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_CATEGORY_LENGTH', root: SHARED_SCHEMA },
+    typescript: 'MAX_CATEGORY_LENGTH',
+  },
+  {
+    screen: ADD_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_IMAGES_PER_REQUEST', root: SHARED_SCHEMA },
+    typescript: 'MAX_IMAGES_PER_REQUEST',
+  },
+  // The byte ceiling. Mirrored for a stronger reason than the three above:
+  // the screen refuses a file over it *before* uploading, so a drift here is
+  // not a missing convenience — it is the screen refusing a file the server
+  // would have taken, or letting hundreds of megabytes travel to be refused
+  // at the far end.
+  {
+    screen: ADD_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_IMAGE_BYTES', root: SHARED_SCHEMA },
+    typescript: 'MAX_IMAGE_BYTES',
+  },
 ];
 
 describe('the admin form bounds are one contract in two languages', () => {
   it.each(BOUNDS.map((bound) => [`${bound.screen}: ${bound.typescript}`, bound] as const))(
     '%s is the same number on both sides',
     (_name, bound) => {
-      const python = pythonInteger(read(join(API, bound.python.file)), bound.python.name);
+      const python = pythonInteger(
+        read(join(bound.python.root ?? API, bound.python.file)),
+        bound.python.name,
+      );
       const typescript = typescriptInteger(read(screenPath(bound.screen)), bound.typescript);
 
       // Both halves asserted non-null first, for the reason the codes above give:
