@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from shared_schema.errors import ApiError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api import auth, users
+from api import audit, auth, users
 from api.db import lifespan
 
 #: Stable, machine-readable codes for the HTTP statuses routing produces. A
@@ -173,8 +173,12 @@ def create_app() -> FastAPI:
     # `tests/test_admin_authorization.py` reads that requirement off the path
     # for both directions — nothing under the prefix may omit the dependency,
     # and nothing outside it may declare it. That is what lets Stories 1.9–1.11
-    # inherit the rule by choosing a path rather than by remembering a habit.
+    # inherit the rule by choosing a path rather than by remembering a habit —
+    # and what lets Story 1.13's `GET /admin/audit` inherit it from a third
+    # router, registered here rather than folded into `users` because the audit
+    # table has exactly one owning module (AD-4) and its read lives there.
     app.include_router(users.router)
+    app.include_router(audit.router)
 
     return app
 

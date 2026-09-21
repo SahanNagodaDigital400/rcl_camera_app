@@ -7,6 +7,7 @@ import { useSession, SessionProvider } from './auth/SessionProvider';
 import type { SessionStatus } from './auth/SessionProvider';
 import { AppShell, MAIN_REGION_ID } from './components/AppShell';
 import { AccountSettingsScreen } from './screens/AccountSettingsScreen';
+import { AuditLogScreen } from './screens/AuditLogScreen';
 import { CreateUserScreen } from './screens/CreateUserScreen';
 import { EditUserScreen } from './screens/EditUserScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
@@ -20,28 +21,29 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 /**
  * Which surface inside the shell is showing.
  *
- * Five values because five surfaces exist. This is not a router and is not the
- * beginning of one: EXPERIENCE.md's nav is role-conditional, spans six surfaces
- * and changes shape at a breakpoint, and four of those six do not exist yet.
- * `'users'` is one of the six — EXPERIENCE.md line 33's User List, standing on
- * the home panel until there is a nav to hold it. Create user is not: line 34
- * reaches it from the list's "+ Add user", which is where its door now is, and
- * `'edit-user'` is reached from a row's own Edit control on the same line.
- * When the nav arrives this becomes whatever it needs; until then it is one
- * piece of state and a swap.
+ * Six values because six surfaces exist. This is not a router and is not the
+ * beginning of one: EXPERIENCE.md's nav is role-conditional, spans six top-level
+ * surfaces and changes shape at a breakpoint, and four of those six do not exist
+ * yet. Two of them do, and each has its own door on the home panel: `'users'` is
+ * EXPERIENCE.md line 33's User List and `'audit'` is line 38's Audit Log, both
+ * standing on the home panel until there is a nav to hold them. Create user is
+ * neither: line 34 reaches it from the list's "+ Add user", which is where its
+ * door is, and `'edit-user'` is reached from a row's own Edit control on the
+ * same line. When the nav arrives this becomes whatever it needs; until then it
+ * is one piece of state and a swap.
  */
-type Section = 'home' | 'account' | 'create-user' | 'users' | 'edit-user';
+type Section = 'home' | 'account' | 'create-user' | 'users' | 'edit-user' | 'audit';
 
 /**
- * Which of the seven screens the session state selects.
+ * Which of the eight screens the session state selects.
  *
  * Named separately from `SessionStatus` because the two are not the same shape:
  * `'signed-in'` covers the forced-change screen, the shell, Account Settings,
- * Users and Create user, and the moves between them are screen swaps that the
- * status cannot see. Focus management keys off this, not off the status — which is why
- * the section is folded in here rather than handled beside it: swapping the home
- * panel for another surface unmounts whatever had focus exactly as the other
- * swaps do.
+ * Users, Create user, Edit user and the Audit log, and the moves between them
+ * are screen swaps that the status cannot see. Focus management keys off this,
+ * not off the status — which is why the section is folded in here rather than
+ * handled beside it: swapping the home panel for another surface unmounts
+ * whatever had focus exactly as the other swaps do.
  */
 type Screen =
   | 'loading'
@@ -51,7 +53,8 @@ type Screen =
   | 'account'
   | 'create-user'
   | 'users'
-  | 'edit-user';
+  | 'edit-user'
+  | 'audit';
 
 /**
  * Whether `role` can reach `section` at all.
@@ -65,7 +68,12 @@ type Screen =
  * `null` is a signed-out caller, who reaches nothing role-conditional.
  */
 function reachableBy(section: Section, role: Role | null): boolean {
-  if (section === 'create-user' || section === 'users' || section === 'edit-user') {
+  if (
+    section === 'create-user' ||
+    section === 'users' ||
+    section === 'edit-user' ||
+    section === 'audit'
+  ) {
     return role === 'admin';
   }
   return true;
@@ -91,8 +99,11 @@ function currentScreen(
   //
   // It is a convenience, not the control: the cached `User` is a render cache
   // and never an authorization decision (AGENTS.md Policy), and the server
-  // refuses a Staff caller at `GET`/`POST /admin/users` whatever this returns.
+  // refuses a Staff caller at every route under `/admin/` whatever this
+  // returns — the two collection reads these sections open, and the five
+  // writes reached from them (provision, edit, delete, deactivate, activate).
   if (section === 'users') return reachableBy(section, user.role) ? 'users' : 'shell';
+  if (section === 'audit') return reachableBy(section, user.role) ? 'audit' : 'shell';
   if (section === 'create-user') return reachableBy(section, user.role) ? 'create-user' : 'shell';
   if (section === 'edit-user') {
     // The row being edited is part of what makes this section renderable, so it
@@ -364,6 +375,23 @@ function Gate(): JSX.Element {
     );
   }
 
+  if (screen === 'audit') {
+    // Inside the shell, in place of the home panel, exactly as Users is: the
+    // app bar stays, so Sign out stays, and the screen supplies its own way
+    // back. It renders no `<main>` of its own — `AppShell` provides the one the
+    // focus effect above moves focus to.
+    //
+    // Back goes to the home panel rather than to the list: this is a top-level
+    // nav entry of its own (EXPERIENCE.md line 38), not a surface reached from
+    // another one.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <AuditLogScreen onBack={() => showSection('home')} />
+      </AppShell>
+    );
+  }
+
   if (screen === 'edit-user' && editing !== null) {
     // `editing !== null` is unreachable at runtime — `currentScreen` already
     // answers `'users'` for an `'edit-user'` section with no row — and it is here
@@ -442,22 +470,35 @@ function Gate(): JSX.Element {
         Internal staff tool. Photograph a tile and get the three closest matches from the
         catalogue, each with its reference image, Size and Category.
       </p>
-      {/* The door to the admin surface, role-conditional as EXPERIENCE.md line
-          18 requires: a Staff user never sees an entry they cannot use. This is
-          EXPERIENCE.md line 33's own nav entry — User List — standing in for a
-          nav that does not exist yet; the real one spans six surfaces of which
-          four still do not. Create user is reached from the list's "+ Add user",
-          which is where line 34 reaches it from, so there is one admin entry
-          here rather than two.
+      {/* The doors to the admin surfaces, role-conditional as EXPERIENCE.md
+          line 18 requires: a Staff user never sees an entry they cannot use.
+          These are two of EXPERIENCE.md's six nav entries — line 33's User List
+          and line 38's Audit Log — standing in for a nav that does not exist
+          yet; the other four surfaces still do not exist either. Create user is
+          reached from the list's "+ Add user", which is where line 34 reaches it
+          from, and Edit user from a row's own control, so neither is a door
+          here: two collections, two entries.
 
           A convenience only. The server refuses a Staff caller at
-          `GET /admin/users` regardless of what this renders (AGENTS.md Policy:
-          authorization is never gated by what the UI hides), and the cached
-          `user` read here is a render cache and never a decision. */}
+          `GET /admin/users` and `GET /admin/audit` regardless of what this
+          renders (AGENTS.md Policy: authorization is never gated by what the UI
+          hides), and the cached `user` read here is a render cache and never a
+          decision. */}
       {user.role === 'admin' && (
-        <button className={styles.userList} type="button" onClick={() => showSection('users')}>
-          Users
-        </button>
+        // One guard for both entries, not one each: the role rule is a
+        // property of this whole group rather than of either button, and two
+        // copies of it are two places a third entry could be added under the
+        // wrong condition. It is also the seam the real nav replaces — the
+        // fragment becomes that nav's children, and the condition becomes
+        // whether the Admin section is rendered at all.
+        <>
+          <button className={styles.userList} type="button" onClick={() => showSection('users')}>
+            Users
+          </button>
+          <button className={styles.auditLog} type="button" onClick={() => showSection('audit')}>
+            Audit log
+          </button>
+        </>
       )}
     </AppShell>
   );

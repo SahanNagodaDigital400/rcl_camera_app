@@ -48,7 +48,7 @@ development_status:
   1-10-edit-user: done
   1-11-deactivate-or-delete-user: done
   1-12-immutable-audit-log-write-path: done
-  1-13-view-audit-log: backlog
+  1-13-view-audit-log: done
   epic-1-retrospective: optional
 
   epic-2: backlog

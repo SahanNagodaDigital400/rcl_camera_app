@@ -650,18 +650,25 @@ describe('saving is the one action on the edit user screen', () => {
   });
 });
 
-describe('the home panel\'s one admin entry', () => {
-  it('is outlined, never filled', () => {
-    // The door on the home panel is a secondary control: the shell's landing
+describe('the home panel\'s admin entries', () => {
+  it('are outlined, never filled', () => {
+    // A door on the home panel is a secondary control: the shell's landing
     // surface has no primary action, and an accent button there would be the one
-    // orange thing on a screen that is not for user management. Since Story 1.9
-    // the entry is Users — EXPERIENCE.md line 33's nav entry — and Create user is
-    // reached from the list's "+ Add user" (line 34).
+    // orange thing on a screen that is for neither user management nor audit.
+    // Since Story 1.9 the first entry is Users — EXPERIENCE.md line 33's nav
+    // entry, with Create user reached from its "+ Add user" (line 34) — and
+    // since Story 1.13 the second is the Audit log, line 38's.
     const app = read(join(SRC, 'App.module.css'));
-    const entry = rule(app, '.userList');
 
-    expect(declaration(entry, 'background')).toBe('transparent');
-    expect(declaration(entry, 'color')).toBe('var(--color-primary)');
+    for (const name of ['.userList', '.auditLog']) {
+      const entry = rule(app, name);
+
+      expect(declaration(entry, 'background'), name).toBe('transparent');
+      expect(declaration(entry, 'color'), name).toBe('var(--color-primary)');
+      expect(declaration(entry, 'border'), name).toBe(
+        'var(--border-hairline) solid var(--color-primary)',
+      );
+    }
     expect([...app.matchAll(/var\(--color-accent\)/g)]).toHaveLength(0);
   });
 });
@@ -795,6 +802,75 @@ describe('adding a user is the one action on the user list', () => {
     // performs no layout, so with the overflow rule deleted every cell is still
     // in the document and the page scrolls sideways on the phone this product is
     // built for.
+    expect(declaration(rule(css(), '.scroller'), 'overflow-x')).toBe('auto');
+  });
+});
+
+describe('the audit log is a record, not a surface with an action', () => {
+  // DESIGN.md's `audit-log-row`, which is `data-table-row` minus one key — and
+  // that one absence is the whole distinction between the two components. The
+  // render tests read words and roles, so every claim below is invisible to
+  // them: `vite.config.ts` sets `css: false`, and jsdom applies no stylesheet.
+  const css = (): string => read(join(SRC, 'screens', 'AuditLogScreen.module.css'));
+
+  it('gives the rows DESIGN.md\'s audit-log-row treatment', () => {
+    // Surface background, a hairline `{colors.border}` between rows, and
+    // **`{colors.muted-text}`** as the foreground — deliberately not
+    // `{colors.text}`, which is what `data-table-row` uses. DESIGN.md:212: the
+    // audit row is visually identical to a data table row and deliberately
+    // unremarkable.
+    const row = rule(css(), '.row');
+
+    expect(declaration(row, 'background')).toBe('var(--color-surface)');
+    expect(declaration(row, 'border-top')).toBe(
+      'var(--border-hairline) solid var(--color-border)',
+    );
+    expect(declaration(row, 'color')).toBe('var(--color-muted-text)');
+  });
+
+  it('declares no hover rule at all, and no card shadow', () => {
+    // The visual half of EXPERIENCE.md:75. `audit-log-row` has no
+    // `background-hover` key where `data-table-row` does, because nothing on
+    // this row is clickable — a hover tint is an affordance with nothing
+    // behind it. Asserted over the whole stylesheet rather than over `.row`,
+    // so a hover added to any other selector fails here too.
+    expect(css()).not.toContain(':hover');
+    expect(css()).not.toContain('box-shadow');
+  });
+
+  it('paints nothing at all with the accent', () => {
+    // **Zero, not one.** DESIGN.md's rule is one accent-filled primary action
+    // per screen; this screen has no primary action, because it is a record.
+    // Painting Load more orange would make "fetch fifty more rows" the most
+    // important thing on an Administrator's security surface. Counted over the
+    // whole stylesheet, so a new rule cannot introduce one unseen.
+    expect([...css().matchAll(/var\(--color-accent\)/g)]).toHaveLength(0);
+  });
+
+  it('leaves Back, Try again and Load more as the navy outline', () => {
+    for (const name of ['.back', '.retry', '.more']) {
+      const control = rule(css(), name);
+
+      expect(declaration(control, 'background'), name).toBe('transparent');
+      expect(declaration(control, 'color'), name).toBe('var(--color-primary)');
+      expect(declaration(control, 'border'), name).toBe(
+        'var(--border-hairline) solid var(--color-primary)',
+      );
+    }
+  });
+
+  it('keeps the wait muted and the refusal destructive, never the other way round', () => {
+    // Red is destructive-or-failed in this system and nothing else, so a
+    // routine wait painted with it reads as a failure, and a failure painted
+    // muted reads as a note. Both swaps are invisible to the render tests.
+    expect(declaration(rule(css(), '.pending'), 'color')).toBe('var(--color-muted-text)');
+    expect(declaration(rule(css(), '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
+  it('keeps the table itself scrolling instead of the page', () => {
+    // The 375px case, and the one regression a render test cannot see: jsdom
+    // performs no layout, so with the overflow rule deleted every cell is
+    // still in the document and the page scrolls sideways on a phone.
     expect(declaration(rule(css(), '.scroller'), 'overflow-x')).toBe('auto');
   });
 });

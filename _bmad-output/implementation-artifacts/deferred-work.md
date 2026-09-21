@@ -1127,3 +1127,140 @@ source_spec: `spec-1-12-immutable-audit-log-write-path.md`
 severity: low
 reason: The migration pair, `conftest.py`, four test modules and both READMEs all name the table; the guard that is cited as enforcing the claim exempts `tests` and reads no `.sql`. `api/db.py` passes only because `create_audit_log` has no word boundary before `audit` - documented at `db.py`, so rewording that comment to "the audit_log migration" would fail the build for no substantive reason. The claim is true of the application's own modules and should say so; tightening the guard to match the sentence instead is the larger change.
 status: open
+
+### DW-142: The Flagged filter EXPERIENCE.md places on the audit log is not built, because FR-22's anomaly flagging has no column behind it.
+origin: spec-deferred spec-1-13-view-audit-log
+location: apps/web/src/screens/AuditLogScreen.tsx
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: EXPERIENCE.md:38 describes this surface as "chronological account/catalogue history, with a Flagged filter surfacing FR-22 anomaly reviews", and :76 gives `flagged-activity-row` its own treatment (an audit row plus an accent flag glyph, DESIGN.md:117-121). FR-22 is Epic 3, the `audit_log` table has no flag column, and nothing in the product computes one - so the filter would be a control over a field that does not exist and the row variant would be a style nothing can ever carry. Building either now means inventing a data model for anomaly review ahead of the story that owns it. Re-read this entry when FR-22 lands: the filter is a `WHERE` on the read, which is the one thing the statement deliberately has none of today.
+status: open
+
+### DW-143: The audit log offers no search, date range or source-IP filter over a table that only grows.
+origin: spec-deferred spec-1-13-view-audit-log
+location: apps/api/api/audit.py (read_audit_log), apps/web/src/screens/AuditLogScreen.tsx
+source_spec: `spec-1-13-view-audit-log.md`
+severity: medium
+reason: FR-21 asks for visibility and the acceptance clause is chronological order, so the read is the whole log, newest first, paged. That is answerable today because the log is days old. It grows by a row per sign-in, per failed sign-in and per account change, forever, in a table no principal may prune (AD-4 grants no DELETE) - so "who signed in as Nadeesha on Tuesday" becomes a lot of Load more presses within a year. `api.audit.source_ip` already canonicalises the address specifically so that grouping on it is possible. Adding a filter means adding a `WHERE` to a statement whose current tests assert it has none, and choosing which axes are filterable is a product decision rather than an implementation one.
+status: open
+
+### DW-144: The page size is fixed server-side, and the client cannot tell a full last page from the whole log, so Load more costs one empty request.
+origin: spec-deferred spec-1-13-view-audit-log
+location: apps/api/api/audit.py (PAGE_SIZE), apps/web/src/screens/AuditLogScreen.tsx (Listing.pageSize)
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: The response is a bare array, so nothing on the wire says whether more entries exist - the client infers it, taking the first page's length as the page size and stopping when a later page comes back shorter. That is correct and never hides an entry, but it means Load more is offered whenever the newest page was exactly as long as the first: always once for a log smaller than one page, and once at the end of a log whose length is an exact multiple of the page size. The press costs one request that answers `[]`. Closing it means either a shaped success body (`{entries, has_more}`), which would be the only one in the API, or publishing the page size in `shared_schema.audit` so both halves agree on what "short" means. Both are contract changes rather than fixes.
+resolution: `spec-1-13-view-audit-log.md`, amended to authorise the second option. `PAGE_SIZE` moved to `shared_schema/audit.py` as part of the contract, mirrored in the twin as `AUDIT_PAGE_SIZE`, and pinned to one value by `shared/schema/tests/test_audit.py`. `apps/api/api/audit.py` imports it and keeps the name, so the statement's `LIMIT` and the handler read as before. `AuditLogScreen` dropped the inferred `pageSize` from its state and counts each page against the published number, so a first page shorter than it - which is every log smaller than one page - renders no Load more control at all. The bare-array response, the keyset cursor and the refusal to accept a caller-supplied `limit` are all unchanged: the client is told the page size, never asked to choose it. What remains is the log whose length is an exact multiple of the page size, where the last press answers `[]`; that is the deliberate cost of not adding a second success-body shape, and `audit-log.test.tsx` covers it explicitly rather than leaving it as an unlogged surprise.
+status: resolved
+
+### DW-145: `details` is rendered generically as sorted `key: value` text rather than per action.
+origin: spec-deferred spec-1-13-view-audit-log
+location: apps/web/src/screens/AuditLogScreen.tsx (detailsText)
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: Every entry's payload renders the same way - keys sorted, non-string values JSON-encoded - so a `user_edited` row reads `changed: {"role":{"from":"staff","to":"admin"}}` rather than "Role: Staff to Administrator", and a `sessions_revoked` row reads `revoked: 3`. It is honest, deterministic and never blank, which is what a record needs most; it is not what an Administrator scanning for one change would prefer. A per-action renderer is a second vocabulary to keep in step with `AuditAction`, and the unrecognised-action case has to fall through to this rendering anyway - so the generic path stays whatever is built on top of it. Worth revisiting once Epics 2 and 3 have added their own actions and the payload shapes that matter are known.
+status: open
+
+### DW-146: There is no mockup for the audit log, so its render was built from the token rules alone.
+origin: spec-deferred spec-1-13-view-audit-log
+location: _bmad-output/planning-artifacts/ux-designs/ux-rcl_camera_app-2026-09-08/mockups/
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: DESIGN.md ships four rendered mockups - scan, crop, results, user list - and none of them is this screen. `audit-log-row` is specified only as tokens (surface background, hairline border, muted-text foreground, and deliberately no hover key) plus one line of prose calling it "deliberately unremarkable", so the six-column layout, the column order and the width behaviour of the `details` cell were decided here rather than checked against a design. `styling-wiring.test.ts` pins the token-level claims, which is the part that can be pinned; the composition is unreviewed. A second, related question is recorded with it: DESIGN.md:186 scopes the `code` type role to product Codes and flags it as an unconfirmed assumption, so timestamps and IP addresses on this screen use the normal type roles rather than monospace - a design decision this story had no mandate to make either way.
+status: open
+
+### DW-147: Reading the audit log is itself a privileged action, and this story makes it possible without recording it.
+origin: spec-deferred c998da14b31f
+location: apps/api/api/audit.py (read_audit_log)
+source_spec: `spec-1-13-view-audit-log.md`
+severity: medium
+reason: `GET /admin/audit` writes nothing, `AuditAction` has no member for a read, and the module docstring's list of deliberate omissions does not mention it. FR-20 and AGENTS.md:17 enumerate logins, failed logins and account changes, so a read is outside the requirement as written - but "who read the security record, and when" is the one question this surface newly makes askable and cannot answer. Deciding it needs the retention and volume answers that are still deferred in the spine, since an entry per page of every read is a row per press in a table nobody can prune.
+status: open
+
+### DW-148: The only way to find an old event is to press Load more through 50-row pages; there is no search, date range or source-IP lookup.
+origin: spec-deferred a88c329d70db
+location: apps/web/src/screens/AuditLogScreen.tsx, apps/api/api/audit.py
+source_spec: `spec-1-13-view-audit-log.md`
+severity: medium
+reason: The story's own purpose clause is "review access history", and its worked example is a lookup, not a scroll. `source_ip` is already canonicalised in `audit.py` precisely so grouping on it would be possible, and the index is `(created_at DESC, id DESC)`, so a date range is cheap and an address filter is not. Nothing in the acceptance criteria asks for either, so neither was built. Recorded as DW-143.
+status: open
+
+### DW-149: The screen never re-reads once loaded, so entries written after the first page are invisible until it is closed and reopened.
+origin: spec-deferred ab402b41e41a
+location: apps/web/src/screens/AuditLogScreen.tsx
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: `Try again` renders only in the failed state and `exhausted` is sticky, so there is no refresh control. An Administrator who acts in another tab, or who leaves the log open, is reading a snapshot with nothing saying so.
+status: open
+
+### DW-150: DESIGN.md's prose and its own tokens disagree about the audit row, and nothing records that the implementation had to choose.
+origin: spec-deferred a61bc4b23d16
+location: _bmad-output/planning-artifacts/ux-designs/ux-rcl_camera_app-2026-09-08/DESIGN.md:212
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: DESIGN.md:212 calls the audit row "visually identical to a data table row", while the token block at :112-115 gives `audit-log-row` a `{colors.muted-text}` foreground against `data-table-row`'s `{colors.text}` and omits `background-hover` entirely. The screen followed the tokens, which is the right call, but the prose still says otherwise and the next reader of either will not know the other exists.
+status: open
+
+### DW-151: Neither the arrival of the first page nor the appending of a later one is announced to a screen reader.
+origin: spec-deferred 02547c50e700
+location: apps/web/src/screens/AuditLogScreen.tsx, apps/web/src/screens/UserListScreen.tsx
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: The `role="status"` wait line is unmounted and replaced by a freshly mounted table rather than updated in place, and a live region that is replaced is unreliable. Inherited from `UserListScreen`, so it is a shared fix rather than a defect new to this screen - but this screen's whole content is the announcement.
+status: open
+
+### DW-152: A `details` payload has no length cap, so one large entry can dominate the table.
+origin: spec-deferred a4948b377b86
+location: apps/web/src/screens/AuditLogScreen.tsx (detailValue)
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: `detailValue` JSON-encodes arbitrary nested values into one cell. `--measure-prose` caps the width but not the length, and Epic 2 and 3 add actions whose payloads nobody has seen yet. DW-145 records that the rendering is generic; it does not record that it is unbounded.
+status: open
+
+### DW-153: `created_at` is the transaction timestamp, so an entry can commit with a time a paging walk has already passed.
+origin: spec-deferred 03106bb94f4c
+location: infra/migrations/20260921T1000_create_audit_log.up.sql:83-111
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: `now()` is stamped at transaction start. A write that began before a reader's page and commits after it carries a `created_at` inside a range the reader has already walked, so that walk never shows it. The window is the length of a write transaction - milliseconds here - and the entry is present on any fresh load, so nothing is lost. Closing it properly means `clock_timestamp()` or a monotonic key, which is a change to an applied migration and to Story 1.12's table.
+status: open
+
+### DW-154: No mockup exists for this surface, so the column set, their order and the details cell were decided in the implementation and checked against nothing.
+origin: spec-deferred 9a1038d81714
+location: apps/web/src/screens/AuditLogScreen.tsx
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: The UX pair has `mockups/key-user-list.html` and no audit equivalent, and EXPERIENCE.md's state table has no row for this surface at all - no empty, loading or error treatment. `vite.config.ts` sets `css: false` and jsdom performs no layout, so every visual claim is asserted by regex over the stylesheet's text rather than by anything that renders. Recorded as DW-146.
+status: open
+
+### DW-155: A `details` value that is not a JSON object fails validation on the read and answers `500`, taking every page that holds the row with it.
+origin: spec-deferred aa1473a426e0
+location: apps/api/api/audit.py (read_audit_log), infra/migrations/20260921T1000_create_audit_log.up.sql:110
+source_spec: `spec-1-13-view-audit-log.md`
+severity: medium
+reason: The column is `jsonb NOT NULL DEFAULT '{}'` with no CHECK that the value is an object, while `AuditLogEntry.details` is `dict[str, Any]`. The only application writer passes a dict, so this is unreachable through the product - but AD-4's stated way of correcting a wrong entry is an entry inserted by hand as the table owner, which is exactly the path that can store a scalar. One such row then makes a page of the append-only record unreadable with no way to page past it. Whether to coerce on read, add a CHECK in a later migration, or leave the loud failure as the honest answer is a decision this story has no mandate to make.
+status: open
+
+### DW-156: The shared `422` envelope carries no `cache-control: no-store`, unlike every other refusal in the API.
+origin: spec-deferred a15f0ffd465d
+location: apps/api/api/main.py (validation_error_handler)
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: `api/main.py`'s `validation_error_handler` calls `_envelope(422, ...)` with no `headers`, while `ApiError` refusals - including this story's own `404` - pass `NO_STORE` and are tested for it. Pre-existing and API-wide rather than anything this story introduced, and the `422` body carries no data, so it is recorded rather than fixed here: changing the shared handler is a cross-cutting edit no single story owns.
+status: open
+
+### DW-157: `--color-border` gives the audit row separator 1.24:1 against `--color-surface`, and `--disabled-opacity` puts an aria-disabled control's label at 3.74:1.
+origin: spec-deferred 9c12f5042e95
+location: apps/web/src/styles/tokens.css
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: Raised by the `ui-ux-pro-max` pre-delivery checklist run in the 2026-09-21 review pass, which the screen otherwise passes. Neither is this screen's decision: `{colors.border}` is what DESIGN.md:112-115 prescribes for `audit-log-row` and every other admin surface already uses it, and `--disabled-opacity` is a product-wide token. They fall below the 3:1 non-text and 4.5:1 text thresholds respectively, and both are arguably exempt - a row separator beside text rows is decorative, and WCAG 1.4.3 exempts inactive components. The question is whether the tokens themselves should move, which is a spine decision affecting every screen at once.
+status: open
+
+### DW-158: `auth.py` still describes this screen in the future tense now that it exists.
+origin: spec-deferred 8b2ea378254f
+location: apps/api/api/auth.py:777
+source_spec: `spec-1-13-view-audit-log.md`
+severity: low
+reason: `apps/api/api/auth.py:777` reads "keeps 'every entry names who it was about' true for the read Story 1.13 builds". Every other forecast of this story - in `audit.py`, `test_source_guards.py`, `UserListScreen.tsx`, `EditUserScreen.tsx` and `README.md` - was corrected to the past tense by this story, and this one was not, because `auth.py` is on the intent contract's Never-touch list and a comment-only edit is still an edit to it. Cosmetic, and safe to fold into the next change that opens the file.
+status: open

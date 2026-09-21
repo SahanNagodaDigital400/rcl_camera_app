@@ -44,15 +44,43 @@
 
 /* The door to Users, on the home panel and rendered only for an Administrator.
  * EXPERIENCE.md line 33's nav entry, standing in for a nav that does not exist
- * yet — Create user is reached from the list's "+ Add user" (line 34), so there
- * is one admin entry here rather than two. DESIGN.md's secondary button — navy
- * outline, navy text, transparent fill — because the accent-filled primary is
- * reserved for the one action a screen is *for*, and the home panel's job is not
- * user management. `global.css` already holds it to the touch-target floor. */
+ * yet. It is one of *two* admin entries here since Story 1.13 — line 38's Audit
+ * Log is the other, and two collections is two nav entries in the spine's own
+ * IA. What is still not a door is Create user, which line 34 reaches from the
+ * list's "+ Add user", and Edit user, which a row's own control reaches.
+ * DESIGN.md's secondary button — navy outline, navy text, transparent fill —
+ * because the accent-filled primary is reserved for the one action a screen is
+ * *for*, and the home panel's job is not user management. `global.css` already
+ * holds it to the touch-target floor. */
 .userList {
   align-self: flex-start;
   justify-content: center;
   margin-top: var(--space-6);
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* The door to the Audit log, beside Users and on the same terms: role-
+ * conditional, and the same secondary treatment. Written out rather than
+ * composed from `.userList` because a class named for the user list carried by
+ * the audit entry is a rule nobody can read — the same reason `UserListScreen`
+ * states `.back` and `.retry` separately.
+ *
+ * Deliberately not the accent, and this one matters more than most: the home
+ * panel has no primary action, and an orange button reading "Audit log" would
+ * make reviewing history the loudest thing on a screen whose job is scanning
+ * tiles. */
+.auditLog {
+  align-self: flex-start;
+  justify-content: center;
+  margin-top: var(--space-3);
   padding: var(--space-3) var(--space-5);
   border: var(--border-hairline) solid var(--color-primary);
   border-radius: var(--radius-sm);

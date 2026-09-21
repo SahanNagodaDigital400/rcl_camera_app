@@ -282,11 +282,14 @@ interface UserListScreenProps {
  *   action is *labelled*, which a plain labelled button satisfies directly. The
  *   role and status badges stay display-only (EXPERIENCE.md line 66) — never a
  *   button, at any width.
- * - **No view of the audit log.** All four endpoints behind this screen now
- *   write an append-only entry naming the Administrator who acted and the
- *   account they acted on (Story 1.12) — a deactivation records how many
- *   sessions it revoked, a delete records the row it removed. Nothing here
- *   renders any of it; the log's own surface is Story 1.13.
+ * - **No view of the audit log.** All four endpoints behind this screen write
+ *   an append-only entry naming the Administrator who acted and the account
+ *   they acted on (Story 1.12) — a deactivation records how many sessions it
+ *   revoked, a delete records the row it removed. Nothing here renders any of
+ *   it, and nothing here should: the log has its own surface now
+ *   (`AuditLogScreen`), reached from its own door on the home panel. A
+ *   per-row "history" control would be a second, filtered view of a record
+ *   whose whole value is being one chronological list.
  *
  * Copy follows EXPERIENCE.md's tone rules: short, factual, no exclamation marks.
  */

@@ -10,6 +10,7 @@ Glossary terms from the PRD (`Tile`, `Category`, `Size`, `Code`,
 retired by AD-18 and must not appear.
 """
 
+from shared_schema.audit import AuditAction, AuditLogEntry
 from shared_schema.errors import ApiError, ErrorBody, ErrorEnvelope
 from shared_schema.passwords import (
     hash_password,
@@ -22,6 +23,8 @@ from shared_schema.user import Role, User
 
 __all__ = [
     "ApiError",
+    "AuditAction",
+    "AuditLogEntry",
     "ErrorBody",
     "ErrorEnvelope",
     "Role",

@@ -141,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_five_auth_routes_health_and_the_four_admin_paths() -> None:
+def test_the_route_table_is_the_five_auth_routes_health_and_the_five_admin_paths() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -196,6 +196,13 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_four_admin_paths
     # the delete safe here is the same thing twice over — it carries no body,
     # and it can only ever remove a row.
     #
+    # `/admin/audit` (Story 1.13, FR-21) is the fifth admin path and the one
+    # that is furthest from a registration surface of all: it is a read. It
+    # takes no request body, writes nothing, and the only thing a caller may
+    # send it is a cursor naming an entry that already exists. It is
+    # authenticated and Administrator-only through the same
+    # `require_administrator` every route under `/admin/` declares.
+    #
     # The seeded Administrator (`infra/rocell_infra/seed.py`) is still the only
     # row written with no Administrator behind it, and it is written by the
     # migration runner outside the application entirely.
@@ -210,6 +217,7 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_four_admin_paths
         "/admin/users/{user_id}",
         "/admin/users/{user_id}/deactivate",
         "/admin/users/{user_id}/activate",
+        "/admin/audit",
     }
 
 

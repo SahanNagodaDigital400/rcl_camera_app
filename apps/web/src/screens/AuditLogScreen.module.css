@@ -1,0 +1,208 @@
+/* Audit log — the chronological record of who did what, when and from where
+ * (FR-21).
+ *
+ * Rendered *inside* the shell, like Users: the app bar is above it and
+ * `AppShell`'s `<main>` is around it, so there is no full-height centring and
+ * no chrome-less panel here.
+ *
+ * DESIGN.md's `audit-log-row` is the whole of the table treatment, and it is
+ * deliberately *not* `data-table-row`: surface background, a hairline
+ * `{colors.border}` between rows, `{colors.muted-text}` as the foreground —
+ * and **no `background-hover` key**, because `audit-log-row` does not declare
+ * one. That absence is the visual half of the behavioural rule: nothing on
+ * this row responds to a pointer, because nothing on it is interactive
+ * (EXPERIENCE.md:75). A hover tint would promise a click that does not exist.
+ *
+ * **No accent token anywhere in this file, and that is enforceable.**
+ * DESIGN.md's rule is one accent-filled primary action per screen; this screen
+ * has no primary action at all. Back, Try again and Load more are navigation,
+ * and painting one of them orange would make "fetch more rows" the most
+ * important thing on an Administrator's security surface.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target
+ * floor and the accent focus ring are already on `button` in global.css and
+ * are deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+/* One control, in the row every other admin screen puts its controls in, so
+ * the surfaces line up as an Administrator moves between them. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* Back: DESIGN.md's secondary button — navy outline, navy text, transparent
+ * fill. The default for every non-primary action, and on this screen every
+ * action is non-primary. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* The in-flight lines, first page and appended page alike. Muted, never
+ * orange — orange is reserved for the action that has not fired yet
+ * (DESIGN.md's `save-indicator` reasoning), and never red, which in this
+ * system means destructive-or-failed and nothing else. */
+.pending {
+  color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The failure and its one way out, stacked so "Try again" sits directly under
+ * the sentence explaining why it is there. */
+.failure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+/* The refusal, carrying the API's own sentence. Used for a first page that
+ * failed and for an append that failed; red is destructive-or-failed in this
+ * system and nothing else, and it is never the only signal — the text says
+ * what happened. */
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The retry: the navy outline again, not an accent control. Refetching is not
+ * an action this screen is *for* — this screen is for reading. */
+.retry {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* Unreachable in the product — the reader's own sign-in is an entry — and
+ * muted rather than alarming for exactly that reason. */
+.empty {
+  color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The table's own scroll container. One `<table>` at every width, and this is
+ * what keeps the *page* from scrolling sideways at 375px instead: the
+ * container takes the overflow, and takes focus, so the last column is
+ * reachable from a keyboard. */
+.scroller {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* Column headers: the label type role, muted, and a heavier rule under the
+ * head than between the rows so the head reads as the head. Plain text — no
+ * control, so no sort. */
+.heading {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-hairline) solid var(--color-border);
+  color: var(--color-muted-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* DESIGN.md's `audit-log-row`: surface background, a hairline border between
+ * rows, muted-text foreground, no card wrapper and no shadow.
+ *
+ * **There is deliberately no hover rule here.** `data-table-row` declares
+ * `background-hover`; `audit-log-row` does not, and the difference is the
+ * whole distinction between the two components (DESIGN.md:112-115). A row on
+ * this surface has nothing to click, so a hover tint would be an affordance
+ * with nothing behind it. */
+.row {
+  background: var(--color-surface);
+  border-top: var(--border-hairline) solid var(--color-border);
+  color: var(--color-muted-text);
+}
+
+/* The admin density tier (DESIGN.md Layout & Spacing): a dense row scanned
+ * quickly, not the generous mobile spacing of the scan flow. */
+.cell {
+  padding: var(--space-2) var(--space-3);
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+/* The one cell allowed to wrap, and capped so it cannot push the other five
+ * off the screen on its own. A `details` payload is a sentence's worth of
+ * facts; forcing it onto one line would make every row scroll sideways. */
+.details {
+  padding: var(--space-2) var(--space-3);
+  max-width: var(--measure-prose);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+/* Load more: the navy outline, the third of three secondary controls. An
+ * accent fill here would be the single loudest thing on a read-only record,
+ * which is exactly backwards. */
+.more {
+  align-self: flex-start;
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* Frozen while its own request is open. Dimmed rather than hidden, so the
+ * control does not move under the thumb (tokens.css's own note on
+ * `--disabled-opacity`).
+ *
+ * Selected on `aria-disabled` rather than `:disabled` because the control is
+ * deliberately not `disabled`: a disabled button leaves the tab order, and the
+ * browser blurs it, which would drop a keyboard reader to the top of the
+ * document on every Load more press but the last. The screen states the
+ * reasoning; this is the matching paint. */
+.more[aria-disabled='true'] {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}

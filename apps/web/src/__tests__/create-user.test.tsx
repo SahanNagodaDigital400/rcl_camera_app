@@ -660,11 +660,17 @@ describe('the door on the home panel', () => {
     expect(await screen.findByRole('button', { name: /^users$/i })).toBeTruthy();
   });
 
-  it('is the one admin entry, not two', async () => {
-    // EXPERIENCE.md's nav has one entry for this collection — User List — and
+  it('is the one door to this collection, and Create user is not a second', async () => {
+    // EXPERIENCE.md's nav has one entry for *this* collection — User List — and
     // reaches Create/Edit User from a row or from "+ Add User" on it (line 34).
-    // Leaving Story 1.8's door beside it would be two admin entries the spine
-    // does not have, and would leave Story 1.10's Edit User nowhere to go.
+    // Leaving Story 1.8's door beside it would be a second entry to one
+    // collection, which the spine does not have, and would leave Story 1.10's
+    // Edit User nowhere to go.
+    //
+    // The home panel does carry two admin entries since Story 1.13 — Users and
+    // Audit log — and that is not what this asserts: those are line 33 and line
+    // 38, two collections with two nav entries. `audit-log.test.tsx` owns the
+    // second one.
     stubShell([{ status: 200, body: ADMIN }]);
     render(<App />);
 

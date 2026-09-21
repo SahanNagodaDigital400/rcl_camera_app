@@ -80,8 +80,8 @@ THROTTLE_HOME = REPO_ROOT / "apps" / "api" / "api" / "throttle.py"
 #: `login_attempts` are guarded against a second *write*, because a second read
 #: of either is a reasonable thing a later story needs. This table's whole
 #: invariant is about which statements exist against it, and the read surface
-#: Story 1.13 builds will be a function in this same module. A file that merely
-#: mentions the table is a file that is about to write to it.
+#: Story 1.13 shipped is a route and three `SELECT`s in this same module. A
+#: file that merely mentions the table is a file that is about to write to it.
 AUDIT_HOME = REPO_ROOT / "apps" / "api" / "api" / "audit.py"
 
 # Never spelled out in one piece. See the module docstring.

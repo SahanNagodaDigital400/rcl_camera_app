@@ -138,9 +138,28 @@ from **Users → Edit**.
 That change is written down. Two entries land with it in the append-only audit log — the change
 itself, and the revocation, carrying how many devices it signed out — each naming the account, the
 time and the address the request came from. So "was this password changed on Tuesday, and how many
-sessions did it end?" is a question the system can now answer. What it cannot yet do is *show* you:
-there is no screen over the log, and reading it means reading the database. That screen is Story
-1.13.
+sessions did it end?" is a question the system can now answer, **and answer on screen**: an
+Administrator opens **Audit log** from the home panel and reads it there, with no database
+credential and no `psql` prompt.
+
+**Audit log** is that surface, and it is Administrators only — a Staff user has no entry to it
+anywhere, and the server refuses them even if they find the address. It shows every recorded event
+**newest first**, six columns wide: when it happened, who did it, what they did, who it was done
+to, the address the request came from, and whatever else the event carried. An event with no known
+actor — somebody trying an address that is not an account — says **No actor** rather than naming
+anyone, because the log was never told who tried; an address that could not be recorded says **Not
+recorded** rather than showing a blank cell. An action this build does not recognise is still
+shown, under its stored name, because a record that hid the parts it did not understand would be a
+less faithful record than the table behind it.
+
+It arrives one page at a time, newest first, and **Load more** fetches the next page and adds it
+underneath; the control disappears once the oldest entry has been reached. There is no search box,
+no date picker, no sort control and no export — and, most deliberately, **no way to change or
+remove an entry**. Not a hidden one, not a disabled one: no edit control, no delete control, no
+row-end menu and no clickable row exist on that screen at any role, and no route behind it could
+serve one. The application's database role is granted `SELECT` and `INSERT` on that table and
+nothing else, so an update or a delete is refused by PostgreSQL itself rather than by a rule
+somebody could change. A wrong entry is corrected by appending a corrective one.
 
 An Administrator provisions everybody else, from **Users** on the home panel and then **+ Add
 user** on the list — the entry is rendered only for an Administrator, and a Staff user never sees
@@ -180,8 +199,8 @@ Two limits worth knowing. The address must be unique, case and surrounding space
 `Nadeesha@Rocell.LK` and `nadeesha@rocell.lk` are the same login — and a second attempt at one
 already in use is refused without writing anything. And **who provisioned whom is written down**:
 every successful provisioning appends an audit entry naming the Administrator who did it, the
-account they created and the time — a refused one appends nothing, because nothing happened. The
-screen that displays the log is Story 1.13.
+account they created and the time — a refused one appends nothing, because nothing happened. That
+entry is on the **Audit log** screen, at the top of it, the moment the user is provisioned.
 
 **Users** is the list of everyone who has access, and it is Administrators only — a Staff user has
 no entry to it anywhere, and the server refuses them even if they find the address. It shows every
