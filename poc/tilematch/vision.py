@@ -256,6 +256,48 @@ def _get_session() -> ort.InferenceSession:
         return _build_session()
 
 
+def _cpu_quota() -> int | None:
+    """Cores this process may actually use, from the cgroup CPU quota, or None.
+
+    os.cpu_count() reports the host's cores, not the container's share. On a
+    2-vCPU instance scheduled onto a much larger host that oversubscribes the
+    ONNX thread pool several times over, which is exactly the collapse measured
+    in server.py: 206 ms per scan becoming 2.6 s.
+    """
+    try:                                                          # cgroup v2
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        if quota != "max":
+            return max(1, round(int(quota) / int(period)))
+    except (OSError, ValueError):
+        pass
+    try:                                                          # cgroup v1
+        quota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
+        period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+        if quota > 0 and period > 0:
+            return max(1, round(quota / period))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _intra_op_threads() -> int:
+    """Threads for the ONNX intra-op pool.
+
+    TILEMATCH_THREADS overrides everything, for hosts that expose no readable
+    quota. Then the cgroup quota, where every allotted core is a real one, so
+    halving would leave the instance idle. Then the bare-metal default below.
+    """
+    override = os.environ.get("TILEMATCH_THREADS")
+    if override:
+        return max(1, int(override))
+    quota = _cpu_quota()
+    if quota is not None:
+        return quota
+    # Physical (performance) cores only. Measured on M-series: 4 threads = 492
+    # ms/img, 8 threads = 616 ms/img — the efficiency cores actively hurt.
+    return max(1, (os.cpu_count() or 4) // 2)
+
+
 def _build_session() -> ort.InferenceSession:
     global _session, _input_name, _output_name
 
@@ -265,11 +307,9 @@ def _build_session() -> ort.InferenceSession:
         )
 
     opts = ort.SessionOptions()
-    # Physical (performance) cores only. Measured on M-series: 4 threads = 492
-    # ms/img, 8 threads = 616 ms/img — the efficiency cores actively hurt.
     # CoreML was also tried and is worse (754 ms/img): it claims only 41 of 643
     # nodes, so the graph ends up split across providers.
-    opts.intra_op_num_threads = max(1, (os.cpu_count() or 4) // 2)
+    opts.intra_op_num_threads = _intra_op_threads()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     # CPUExecutionProvider only: production pins ONNX Runtime CPU, and pinning it
     # here keeps POC numbers comparable and deterministic.

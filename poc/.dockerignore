@@ -1,0 +1,14 @@
+# Only affects local `docker build` — App Platform builds from git, where most
+# of this is ignored anyway. Keeps Tiles-prepared/ (242 MB) out of the context.
+.venv/
+Tiles/
+Tiles-prepared/
+queries/
+index/
+models/
+certs/
+experiments/
+tests/
+.pytest_cache/
+**/__pycache__/
+.DS_Store

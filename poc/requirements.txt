@@ -1,0 +1,12 @@
+# Runtime dependencies for the container image.
+#
+# Mirrors [project].dependencies in pyproject.toml — keep the two in step. The
+# App Platform build does not use uv (uv.lock lives at the repo root, outside
+# this source directory), so the Dockerfile installs from here instead.
+onnxruntime>=1.23
+pillow>=11.0
+numpy>=2.0
+fastapi>=0.115
+uvicorn>=0.34
+python-multipart>=0.0.20
+huggingface-hub>=0.28

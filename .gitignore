@@ -21,3 +21,4 @@ apps/web/*.tsbuildinfo
 .venv/
 *.egg-info/
 
+poc/index.tgz
