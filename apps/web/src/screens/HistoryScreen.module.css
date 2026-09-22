@@ -1,0 +1,212 @@
+/* History — a caller's own past Scans (Story 3.5). Every value here comes
+ * from src/styles/tokens.css. The 44px touch-target floor and the accent
+ * focus ring are already on `button` in global.css and are deliberately not
+ * restated.
+ *
+ * Two sources, restated rather than imported — `AuditLogScreen.module.css`'s
+ * own precedent for a screen that shares no stylesheet with a sibling:
+ * `.pending`/`.failure`/`.error`/`.retry`/`.empty`/`.more` are
+ * `AuditLogScreen.module.css`'s own rules, and `.list`/`.card`/`.cardBest`/
+ * `.refImage`/`.info`/`.bestPill`/`.code`/`.meta` are `ResultsScreen.module.css`'s
+ * — one Candidate card looks identical wherever it is rendered. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* Back: DESIGN.md's secondary button — navy outline, navy text, transparent
+ * fill. This screen has no primary action of its own; the accent belongs to
+ * Scan, one surface over. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* The in-flight lines, first page and appended page alike —
+ * `AuditLogScreen.module.css`'s own rule, restated. */
+.pending {
+  color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+.failure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+.retry {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* EXPERIENCE.md:86's empty-history state — reachable in the product, unlike
+ * the audit log's own empty state, since a fresh account really has scanned
+ * nothing yet. */
+.empty {
+  color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+.more {
+  align-self: flex-start;
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.more[aria-disabled='true'] {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
+
+/* --- One entry per past Scan --------------------------------------------- */
+
+.entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* The timestamp above each entry's Candidates. Muted, never the accent — it
+ * is a label for the row beneath it, not a control. */
+.when {
+  color: var(--color-muted-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+/* A past scan with no confident match — `ResultsScreen`'s own empty state,
+ * in miniature, for one entry rather than the whole screen. */
+.noMatch {
+  color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* --- The Candidate card, `ResultsScreen.module.css`'s own rules ---------- */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-card);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cardBest {
+  border: var(--card-best-match-border-width) solid var(--color-accent);
+}
+
+.refImage {
+  width: var(--candidate-image-size);
+  height: var(--candidate-image-size);
+  flex-shrink: 0;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  border: var(--border-hairline) solid var(--color-border);
+  background: var(--color-background);
+}
+
+.info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.bestPill {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+.code {
+  font-family: var(--font-mono);
+  font-size: var(--type-code-size);
+  font-weight: var(--type-code-weight);
+  line-height: var(--type-code-line);
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}

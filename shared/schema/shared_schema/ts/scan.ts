@@ -1,10 +1,11 @@
 /**
- * `ScanCandidate` — the TypeScript twin of `shared_schema/scan.py`.
+ * `ScanCandidate` and `ScanHistoryEntry` — the TypeScript twins of
+ * `shared_schema/scan.py`.
  *
- * One ranked match `POST /scans` answers with, up to three, best match
- * first. **Order in the array is the rank** — there is no `rank` field, and
- * the client paints the first element as "Best match" and never re-derives
- * or displays the ordinal.
+ * `ScanCandidate` is one ranked match `POST /scans` answers with, up to
+ * three, best match first. **Order in the array is the rank** — there is no
+ * `rank` field, and the client paints the first element as "Best match" and
+ * never re-derives or displays the ordinal.
  *
  * **No similarity value has a field here, and none ever may** (AD-20). See
  * `tile.ts`'s own note on `Tile` — the reasoning is identical and the score
@@ -14,6 +15,10 @@
  * `GET /tiles/{tileId}/images/{imageId}`, which re-checks the caller's
  * session on every request; `image_id` is the only handle this contract
  * gives a client.
+ *
+ * `ScanHistoryEntry` is Story 3.5's addition — one past Scan `GET /scans`
+ * renders, carrying the same closed `ScanCandidate` array the original
+ * `POST /scans` answered with, persisted as a denormalized snapshot (AD-10).
  *
  * These two files are one contract in two languages; change them together.
  */
@@ -90,4 +95,96 @@ export function isScanCandidate(value: unknown): value is ScanCandidate {
   }
 
   return isUuid(value['tile_id']) && isUuid(value['image_id']);
+}
+
+/**
+ * How many entries one page of a caller's own scan history carries — the
+ * twin of `shared_schema/scan.py`'s `HISTORY_PAGE_SIZE`, pinned to it by
+ * `shared/schema/tests/test_scan.py`.
+ *
+ * `audit.ts`'s `AUDIT_PAGE_SIZE`'s own reasoning: `GET /scans` declares no
+ * `limit` parameter, so this is here only so a page shorter than it *is* the
+ * end of a caller's history — the only thing the bare-array response cannot
+ * say for itself.
+ */
+export const HISTORY_PAGE_SIZE = 50;
+
+/**
+ * The query parameter the keyset cursor travels in — the twin of
+ * `shared_schema/scan.py`'s `HISTORY_CURSOR_PARAM`, pinned to it by
+ * `shared/schema/tests/test_scan.py`.
+ *
+ * `audit.ts`'s `AUDIT_CURSOR_PARAM`'s own reasoning: the value is the id of
+ * the oldest row already rendered, and the request is
+ * `GET /scans?before=<that id>`.
+ */
+export const HISTORY_CURSOR_PARAM = 'before';
+
+/**
+ * ISO 8601 with an explicit UTC designator, transcribed from `audit.ts`,
+ * which transcribed it from `user.ts` in turn — each contract file stands
+ * alone, so a change here that the Python half does not follow is a failure
+ * rather than a quiet divergence.
+ */
+const UTC_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]00:?00)$/i;
+
+/** Whether a value is an ISO 8601 UTC timestamp the runtime can also parse. */
+export function isUtcTimestamp(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    UTC_TIMESTAMP_PATTERN.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+/**
+ * `ScanHistoryEntry` — one past Scan, as `GET /scans` renders it (Story 3.5).
+ *
+ * A denormalized snapshot (AD-10): `candidates` is the same closed
+ * `ScanCandidate` array the original `POST /scans` answered with, so a
+ * history entry's Code, Size and Category keep rendering after the Tile they
+ * matched is removed — only the proxied image request then 404s.
+ */
+export interface ScanHistoryEntry {
+  /** UUIDv4. */
+  id: string;
+  /** ISO 8601 UTC. The database clock, written once and never moved. */
+  created_at: string;
+  /** Up to three, best match first — never re-sorted or re-derived here. */
+  candidates: ScanCandidate[];
+}
+
+const HISTORY_ENTRY_CONTRACT_KEYS: readonly (keyof ScanHistoryEntry)[] = [
+  'id',
+  'created_at',
+  'candidates',
+];
+
+/** Sorted, because `isScanHistoryEntry` compares it against a sorted `Object.keys`. */
+export const SCAN_HISTORY_ENTRY_KEYS: readonly (keyof ScanHistoryEntry)[] = [
+  ...HISTORY_ENTRY_CONTRACT_KEYS,
+].sort();
+
+/**
+ * Narrow an unknown response body element to the shared `ScanHistoryEntry`.
+ *
+ * `isAuditLogEntry`'s own shape: deliberately strict, rejecting a missing
+ * key, a malformed UUID, a non-UTC timestamp, any extra key — and a
+ * `candidates` array whose elements are not each a valid `ScanCandidate`, so
+ * a row this build could not fully parse is refused rather than rendered as
+ * a partial, potentially misleading history entry.
+ */
+export function isScanHistoryEntry(value: unknown): value is ScanHistoryEntry {
+  if (!isPlainObject(value)) return false;
+
+  const keys = Object.keys(value).sort();
+  if (keys.length !== SCAN_HISTORY_ENTRY_KEYS.length) return false;
+  if (keys.some((key, index) => key !== SCAN_HISTORY_ENTRY_KEYS[index])) return false;
+
+  if (!isUuid(value['id'])) return false;
+  if (!isUtcTimestamp(value['created_at'])) return false;
+
+  const candidates = value['candidates'];
+  return Array.isArray(candidates) && candidates.every(isScanCandidate);
 }

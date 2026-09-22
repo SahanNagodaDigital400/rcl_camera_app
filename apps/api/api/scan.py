@@ -1,20 +1,26 @@
-"""`POST /scans` — capture through match: crop, quality gate, and the ranked
-Candidates Epic 2's vector search already knew how to find (Stories 3.2-3.4).
+"""`POST /scans` and `GET /scans` — capture through match, and the record of it.
 
 Story 3.1 gave Scan a capture/upload path with nowhere to send the result.
-This route is that destination: it crops the submitted image server-side, in
-`shared_vision`, checks the cropped region's quality, matches the surviving
-crop against the catalogue through `api.catalogue.find_candidates` — the same
-function Epic 2 built and tested, wrapped here rather than reimplemented
-(AD-1) — and answers `200` with up to three ranked Candidates. A persisted
-`Scan` row (Story 3.5 — no such table exists yet) is a later story's extension
-of *this same handler*, not a second endpoint.
+`submit_scan` is that destination: it crops the submitted image server-side,
+in `shared_vision`, checks the cropped region's quality, matches the
+surviving crop against the catalogue through `api.catalogue.find_candidates`
+— the same function Epic 2 built and tested, wrapped here rather than
+reimplemented (AD-1) — answers `200` with up to three ranked Candidates
+(Stories 3.2-3.4), and persists what it just answered as one `scan` row
+(Story 3.5).
 
-**`require_claimed_user`, never `require_administrator`.** Scan is reachable
-by every authenticated role — Story 3.1's own home-panel door carries no role
-guard — so this route does not sit under `/admin/` and must not declare the
-Administrator check: `tests/test_admin_authorization.py`'s route-table guard
-fails the build if a route outside that prefix declares it.
+**`GET /scans`, not a new path.** `POST /scans` already owns the concept "a
+Scan"; a same-path `GET` is a second verb on one resource, `DELETE
+/admin/users/{user_id}`'s own precedent for a method added to an existing
+path rather than a new registration surface. `read_scan_history` below is
+that read: a caller's own past scans, newest first, one page at a time —
+`api.audit.read_audit_log`'s exact shape, scoped to `user_id` throughout.
+
+**`require_claimed_user`, never `require_administrator`, on both routes.**
+Scan is reachable by every authenticated role — Story 3.1's own home-panel
+door carries no role guard — so this module does not sit under `/admin/` and
+must not declare the Administrator check: `tests/test_admin_authorization.py`'s
+route-table guard fails the build if a route outside that prefix declares it.
 
 **The uploaded image is untrusted content from a phone camera, not an
 Administrator's studio asset**, so intake runs at `UPLOAD_MAX_PIXELS` —
@@ -39,13 +45,16 @@ in its threadpool, where that cost cannot block the event loop.
 
 from __future__ import annotations
 
-from typing import Annotated
+from collections.abc import Iterable
+from typing import Annotated, Any
+from uuid import UUID
 
 import psycopg
 import shared_vision
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
+from psycopg.types.json import Jsonb
 from shared_schema.errors import ApiError
-from shared_schema.scan import ScanCandidate
+from shared_schema.scan import HISTORY_PAGE_SIZE, ScanCandidate, ScanHistoryEntry
 from shared_schema.user import User
 
 from api.catalogue import (
@@ -96,6 +105,24 @@ def _refusal(code: str, message: str, status_code: int) -> ApiError:
     return ApiError(code, message, status_code=status_code, headers=NO_STORE)
 
 
+#: One row, one statement, fully parameterized (Story 3.5). `id` and
+#: `created_at` take their column defaults, `api.audit._INSERT_ENTRY`'s own
+#: reason: the timestamp is the database's clock, not this host's.
+#:
+#: `candidates_snapshot` is passed as `Jsonb`, so psycopg adapts the list
+#: rather than this module serializing JSON by hand. It is built from the
+#: same `list[ScanCandidate]` `submit_scan` already returns, after that list
+#: is constructed — so the persisted snapshot is byte-identical to the
+#: response body, never recomputed.
+#:
+#: No `RETURNING`: nothing reads the row back at the point it is written, and
+#: a caller has no use for its id today.
+_INSERT_SCAN = """
+INSERT INTO scan (user_id, candidates_snapshot)
+VALUES (%s, %s)
+"""
+
+
 @router.post("/scans", response_model=list[ScanCandidate])
 def submit_scan(
     response: Response,
@@ -131,11 +158,17 @@ def submit_scan(
     synchronous route in this product already uses. An empty catalogue (no
     tile ever indexed) is not an error — `find_candidates` answers `[]`, and
     this route answers the same empty array, which `apps/web`'s Results screen
-    reads as "no confident match" rather than a failure. Nothing is persisted
-    yet (no `Scan` table exists — Story 3.5): that story extends this same
-    handler with the thing it adds, rather than this one inventing a response
-    shape today that tomorrow would only replace. A quality failure (3.3,
-    below) never reaches the match at all.
+    reads as "no confident match" rather than a failure. A quality failure
+    (3.3, above) never reaches the match at all.
+
+    **Story 3.5 persists the answer.** Once the Candidates below are built,
+    one `scan` row is inserted — `user_id`, and the same array as
+    `candidates_snapshot` (AD-10) — including an empty array, which is a real
+    answer and not the absence of one. A refused submission (an invalid crop
+    rectangle, a quality failure, an oversized or unreadable upload, a missing
+    model, a stale index) writes no row, because every refusal above raises
+    before this point is ever reached. `GET /scans` below is the read that
+    surfaces it.
 
     **The embedding forward pass is serialized service-wide** (AD-16):
     `find_candidates` holds a module-level lock around the one call that
@@ -187,7 +220,7 @@ def submit_scan(
     # than `[...]`, so that rare overlap drops the one affected candidate —
     # one fewer entry in the returned array — instead of raising a `KeyError`
     # that would surface as a raw, un-enveloped `500`.
-    return [
+    answer = [
         ScanCandidate(
             tile_id=candidate.tile_id,
             code=candidate.code,
@@ -198,3 +231,161 @@ def submit_scan(
         for candidate in candidates
         if (image_id := image_ids.get(candidate.tile_id)) is not None
     ]
+
+    # The persisted snapshot is built from `answer`, never recomputed from
+    # `candidates` — so what lands in `scan.candidates_snapshot` is
+    # byte-identical to the body this route is about to return, image drops
+    # and all.
+    conn.execute(
+        _INSERT_SCAN,
+        (user.id, Jsonb([candidate.model_dump(mode="json") for candidate in answer])),
+    )
+
+    return answer
+
+
+# --- `GET /scans` — a caller's own scan history (Story 3.5) -------------------
+#
+# `api.audit.read_audit_log`'s exact shape — keyset-paginated, newest first,
+# a bare JSON array, a cursor naming no row is a `404` — with one predicate
+# added throughout: `user_id = %s`, because this history is scoped to the
+# caller's own rows and never reaches another user's. Unlike the audit log
+# this surface is `require_claimed_user`-gated rather than Administrator-only
+# — every claimed Staff or Administrator account reaches its own history.
+
+
+def _scan_entry_not_found() -> ApiError:
+    """The `404` for a cursor that names no entry of the caller's own.
+
+    **`SCAN_ENTRY_NOT_FOUND` and `NO_SUCH_SCAN_ENTRY` are deliberately local
+    to this function, not module constants** — the one place this route
+    diverges from every other refusal in this file. `AuditAction`'s own
+    `AUDIT_ENTRY_NOT_FOUND` has no TypeScript twin either, for the reason
+    given below, and earns that exemption because `api.audit` sits outside
+    `error-code-parity.test.ts`'s scanned router list entirely. `api.scan` is
+    on that list, for its other codes — `INVALID_CROP_RECT`,
+    `SCAN_QUALITY_TOO_LOW` — which do need a twin, so a *module-level*
+    `NAME = "value"` assignment here is exactly the shape that test's "every
+    code the API can emit" scan looks for and would demand one of. Scoping
+    the two constants to this function keeps them out of that scan without
+    fabricating a twin: the client never invents a cursor, so this `404` is
+    not a case any screen branches on, and there is nothing for a twin to do.
+    """
+    SCAN_ENTRY_NOT_FOUND = "scan_entry_not_found"
+    NO_SUCH_SCAN_ENTRY = "No scan entry has that id."
+    return ApiError(
+        SCAN_ENTRY_NOT_FOUND,
+        NO_SUCH_SCAN_ENTRY,
+        status_code=status.HTTP_404_NOT_FOUND,
+        headers=NO_STORE,
+    )
+
+
+#: The first page: the caller's own newest `HISTORY_PAGE_SIZE` scans.
+#:
+#: `ORDER BY created_at DESC, id DESC`, `_SELECT_LATEST_ENTRIES`'s own
+#: reasoning: `created_at` defaults to `now()`, the transaction timestamp, so
+#: the `id` tiebreaker is what gives this a total order to page through.
+#:
+#: `LIMIT %s` is a parameter, never a formatted number — `HISTORY_PAGE_SIZE`
+#: is ours and could safely be interpolated, and interpolating it anyway is
+#: the habit `tests/test_source_guards.py` exists to stop before it reaches a
+#: value that is not ours.
+_SELECT_LATEST_SCANS = """
+SELECT id, created_at, candidates_snapshot
+FROM scan
+WHERE user_id = %s
+ORDER BY created_at DESC, id DESC
+LIMIT %s
+"""
+
+#: The next page: the caller's own newest `HISTORY_PAGE_SIZE` scans strictly
+#: older than one row.
+#:
+#: **Keyset, not `OFFSET`**, `_SELECT_ENTRIES_BEFORE`'s own reasoning: a scan
+#: lands at the top of this order on every submission, so an `OFFSET` would
+#: re-serve rows the reader has already seen.
+#:
+#: The cursor subquery is scoped by `user_id` too, not only the outer query:
+#: a cursor naming another user's own scan then resolves no row at all, so it
+#: is refused exactly as an invented id is — a caller can never page from an
+#: id that is not theirs, even to a timestamp that would otherwise be a valid
+#: boundary.
+_SELECT_SCANS_BEFORE = """
+SELECT id, created_at, candidates_snapshot
+FROM scan
+WHERE user_id = %s
+  AND (created_at, id) < (
+        SELECT created_at, id FROM scan WHERE id = %s AND user_id = %s
+      )
+ORDER BY created_at DESC, id DESC
+LIMIT %s
+"""
+
+#: Whether a cursor names a row belonging to *this* caller. Run only when the
+#: page above came back empty — `_SELECT_ENTRY_EXISTS`'s own reasoning: the
+#: oldest entry and an invented (or another user's) id produce the same empty
+#: result set, and they are a `200 []` and a `404` respectively.
+_SELECT_SCAN_EXISTS = """
+SELECT 1
+FROM scan
+WHERE id = %s AND user_id = %s
+"""
+
+
+def _history_entries(rows: Iterable[Any]) -> list[ScanHistoryEntry]:
+    """Map `scan` rows to `ScanHistoryEntry`, the one place this read diverges
+    from `read_audit_log`.
+
+    `AuditLogEntry.model_validate(row)` works directly because every column
+    name matches a model field name. `scan`'s `candidates_snapshot` column and
+    `ScanHistoryEntry.candidates` field do not share a name, so each row is
+    built explicitly rather than through a bare `model_validate(row)`.
+    `psycopg` decodes `jsonb` to a Python `list` on its own, `api.catalogue`'s
+    own `details` decode path.
+    """
+    return [
+        ScanHistoryEntry(
+            id=row["id"],
+            created_at=row["created_at"],
+            candidates=[ScanCandidate(**candidate) for candidate in row["candidates_snapshot"]],
+        )
+        for row in rows
+    ]
+
+
+@router.get("/scans", response_model=list[ScanHistoryEntry])
+def read_scan_history(
+    response: Response,
+    user: Annotated[User, Depends(require_claimed_user)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    before: UUID | None = None,
+) -> list[ScanHistoryEntry]:
+    """A caller's own scan history, newest first, one page at a time (Story 3.5).
+
+    **`require_claimed_user`, never `require_administrator`.** Every claimed
+    Staff or Administrator account reaches this route and it is scoped to
+    `user.id` throughout — never another user's rows, and the two-argument
+    subquery inside `_SELECT_SCANS_BEFORE` is what stops a cursor borrowed
+    from another user's history from resolving to anything at all.
+
+    `read_audit_log`'s exact shape otherwise: a bare JSON array (never an
+    envelope), a keyset cursor naming the oldest row already rendered, and a
+    cursor that names no row of the caller's own answered with `404`. See
+    that function's own docstring for the reasoning behind each of those —
+    it applies here unchanged, with `user_id` added to every predicate.
+    """
+    response.headers.update(NO_STORE)
+
+    if before is None:
+        return _history_entries(conn.execute(_SELECT_LATEST_SCANS, (user.id, HISTORY_PAGE_SIZE)))
+
+    entries = _history_entries(
+        conn.execute(_SELECT_SCANS_BEFORE, (user.id, before, user.id, HISTORY_PAGE_SIZE))
+    )
+    # Only when the page is empty — `read_audit_log`'s own reasoning, scoped
+    # to this caller: an exhausted history and a cursor naming no row of the
+    # caller's own produce the same empty result set.
+    if not entries and conn.execute(_SELECT_SCAN_EXISTS, (before, user.id)).fetchone() is None:
+        raise _scan_entry_not_found()
+    return entries

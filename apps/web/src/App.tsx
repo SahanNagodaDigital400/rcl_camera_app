@@ -16,6 +16,7 @@ import { CropScreen } from './screens/CropScreen';
 import { EditTileScreen } from './screens/EditTileScreen';
 import { EditUserScreen } from './screens/EditUserScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
+import { HistoryScreen } from './screens/HistoryScreen';
 import { LoginScreen } from './screens/LoginScreen';
 import { ResultsScreen } from './screens/ResultsScreen';
 import { ScanScreen } from './screens/ScanScreen';
@@ -30,17 +31,19 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 /**
  * Which surface inside the shell is showing.
  *
- * Thirteen values because thirteen surfaces exist. This is not a router and is
+ * Fourteen values because fourteen surfaces exist. This is not a router and is
  * not the beginning of one: EXPERIENCE.md's nav is role-conditional, spans six
  * top-level surfaces and changes shape at a breakpoint, and several of those
- * six do not exist yet. Four sections have a door of their own on the home
+ * six do not exist yet. Five sections have a door of their own on the home
  * panel: `'scan'` is Story 3.1's own entry point, reachable by every
- * authenticated role and the panel's one accent control; `'users'` is
- * EXPERIENCE.md line 33's User List, `'audit'` is line 38's Audit Log, and
- * `'catalogue'` is line 35's Catalogue — all four standing on the home panel
- * until there is a nav to hold them. Create user is not a door: line 34
- * reaches it from the list's "+ Add user", and `'edit-user'` from a row's own
- * Edit control on the same line.
+ * authenticated role and the panel's one accent control; `'history'` is Story
+ * 3.5's own door, standing beside `'scan'` and reachable by the same every
+ * role — a caller's own scan history is theirs to read whatever their role;
+ * `'users'` is EXPERIENCE.md line 33's User List, `'audit'` is line 38's
+ * Audit Log, and `'catalogue'` is line 35's Catalogue — all five standing on
+ * the home panel until there is a nav to hold them. Create user is not a
+ * door: line 34 reaches it from the list's "+ Add user", and `'edit-user'`
+ * from a row's own Edit control on the same line.
  *
  * **`'crop'` and `'results'` are reached only from Scan and from Crop**, the
  * way `'edit-tile'` is reached only from a Catalogue row: `showCrop` sets the
@@ -65,6 +68,7 @@ type Section =
   | 'scan'
   | 'crop'
   | 'results'
+  | 'history'
   | 'create-user'
   | 'users'
   | 'edit-user'
@@ -75,13 +79,13 @@ type Section =
   | 'bulk-upload';
 
 /**
- * Which of the sixteen screens the session state selects.
+ * Which of the seventeen screens the session state selects.
  *
  * Named separately from `SessionStatus` because the two are not the same shape:
  * `'signed-in'` covers the forced-change screen, the shell, Account Settings,
- * Scan, Crop, Results, Users, Create user, Edit user, the Audit log, the
- * Catalogue, Add tile, Edit tile and Bulk upload, and the moves between them
- * are screen swaps that the status cannot see. Focus management keys off
+ * Scan, Crop, Results, History, Users, Create user, Edit user, the Audit log,
+ * the Catalogue, Add tile, Edit tile and Bulk upload, and the moves between
+ * them are screen swaps that the status cannot see. Focus management keys off
  * this, not off the status — which is why the section is folded in here
  * rather than handled beside it: swapping the home panel for another surface
  * unmounts whatever had focus exactly as the other swaps do.
@@ -95,6 +99,7 @@ type Screen =
   | 'scan'
   | 'crop'
   | 'results'
+  | 'history'
   | 'create-user'
   | 'users'
   | 'edit-user'
@@ -145,6 +150,11 @@ function currentScreen(
   if (user.must_change_password) return 'password-change';
   if (section === 'account') return 'account';
   if (section === 'scan') return 'scan';
+  // Reachable by every role — `reachableBy`'s default covers it, `'scan'`'s
+  // own precedent — so there is no captured-state precondition and no
+  // admin-gated fallback to `'shell'` the way `'audit'`/`'catalogue'` need
+  // below.
+  if (section === 'history') return 'history';
   if (section === 'crop') {
     // `showCrop` sets the image and the section together in one render, so
     // this branch with nothing captured is reached only by Back discarding it
@@ -690,6 +700,23 @@ function Gate(): JSX.Element {
     );
   }
 
+  if (screen === 'history') {
+    // Inside the shell, in place of the home panel, exactly as Users is: the
+    // app bar stays, so Sign out stays, and the screen supplies its own way
+    // back. It renders no `<main>` of its own — `AppShell` provides the one
+    // the focus effect above moves focus to.
+    //
+    // Back goes to the home panel rather than to Scan: History is a
+    // top-level nav entry of its own (Story 3.5, EXPERIENCE.md line 31), not
+    // a surface reached from Scan the way Crop and Results are.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <HistoryScreen onBack={() => showSection('home')} />
+      </AppShell>
+    );
+  }
+
   if (screen === 'users') {
     // Inside the shell, in place of the home panel, exactly as the two screens
     // below are: the app bar stays, so Sign out stays, and the screen supplies
@@ -915,6 +942,18 @@ function Gate(): JSX.Element {
           and, as of this story, it is scanning a tile. */}
       <button className={styles.scan} type="button" onClick={() => showSection('scan')}>
         Scan
+      </button>
+      {/* The door to History (Story 3.5), beside Scan and outside the
+          role-conditional group below: a caller's own scan history is
+          theirs to read whatever their role, `reachableBy`'s default
+          `return true` covers it exactly as it does Scan's own door, and
+          `GET /scans` is gated by `require_claimed_user`, never
+          `require_administrator`. DESIGN.md's secondary button — navy
+          outline, navy text, transparent fill — because Scan is the one
+          accent-filled action this panel has room for; a second orange
+          button here would compete with it. */}
+      <button className={styles.history} type="button" onClick={() => showSection('history')}>
+        History
       </button>
       {/* The doors to the admin surfaces, role-conditional as EXPERIENCE.md
           line 18 requires: a Staff user never sees an entry they cannot use.

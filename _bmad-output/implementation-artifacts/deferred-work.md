@@ -1776,3 +1776,19 @@ source_spec: `spec-3-3-capture-quality-guidance.md`
 severity: high
 reason: Measured directly against `shared_vision.quality.blur_score`: a flat 180x160x140 tile re-photographed with realistic sensor noise (sigma 1-3, typical of a well-lit low-ISO phone shot) and JPEG-encoded at quality 75-92 scores 0.0-26.0, versus the provisional `DEFAULT_SCAN_QUALITY_THRESHOLD` of 100.0 -- it only clears the bound once whole-frame noise reaches sigma>=5 (q92) or sigma>=8 (q75), noise levels not guaranteed in good lighting. A synthetic smooth-gradient tile (no fine texture, only large-scale colour variation -- the Crema Marmol shape) scored 0.25 whether left sharp or run through a radius-20 Gaussian blur: the metric is completely insensitive to focus for this content family, in either direction. This is a structural property of any no-reference, high-frequency-energy blur metric applied to inherently low-texture subjects, not a tunable-threshold problem -- no single `SCAN_QUALITY_THRESHOLD` value can both catch real blur on textured tiles and pass real flat/smooth tiles,
 status: open
+
+### DW-223: `HistoryScreen.module.css`'s `.back`/`.retry`/`.more` rules are byte-for-byte duplicates of each other (and of `AuditLogScreen.module.css`'s own copies of the same three).
+origin: spec-deferred 147ae3dc2eab
+location: apps/web/src/screens/HistoryScreen.module.css
+source_spec: `spec-3-5-scan-history.md`
+severity: low
+reason: Verified by direct diff of the two files: all three classes carry the identical secondary-button rule set. This is a pre-existing convention `AuditLogScreen.module.css` already established before this story — HistoryScreen faithfully restated it rather than introducing it. No shared base class exists for a CSS-module screen to import from today.
+status: open
+
+### DW-224: No test pins a history card's reference-image `<img src>` to the `GET /tiles/{tile_id}/images/{image_id}` route pattern it is supposed to reuse.
+origin: spec-deferred 70f72675b1e0
+location: apps/web/src/screens/HistoryScreen.tsx
+source_spec: `spec-3-5-scan-history.md`
+severity: low
+reason: The boundary ("no new image route") is satisfied by inspection of `imageSrc()` in `HistoryScreen.tsx`, byte-identical to `ResultsScreen.tsx`'s own function, but neither screen's test suite asserts the rendered `src` resolves to that path pattern. Pre-existing test-coverage habit, not introduced by this story.
+status: open

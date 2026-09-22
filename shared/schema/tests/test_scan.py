@@ -13,14 +13,21 @@ exactly what a review stops noticing.
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-from shared_schema.scan import ScanCandidate
+from shared_schema.scan import (
+    HISTORY_CURSOR_PARAM,
+    HISTORY_PAGE_SIZE,
+    ScanCandidate,
+    ScanHistoryEntry,
+)
 
 TS_SCAN = Path(__file__).resolve().parents[1] / "shared_schema" / "ts" / "scan.ts"
 
@@ -136,3 +143,94 @@ def test_no_field_can_carry_a_storage_reference() -> None:
     names = set(ScanCandidate.model_fields) | _interface("ScanCandidate")
     for forbidden in ("url", "key", "href", "src", "path", "bucket"):
         assert not any(forbidden in name for name in names), forbidden
+
+
+# --- `ScanHistoryEntry` (Story 3.5) -------------------------------------------
+
+
+def a_history_entry_body(**overrides: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "id": str(uuid4()),
+        "created_at": datetime(2026, 9, 22, 9, 30, tzinfo=UTC).isoformat(),
+        "candidates": [a_candidate_body()],
+    }
+    body.update(overrides)
+    return body
+
+
+def test_a_history_entry_round_trips() -> None:
+    entry = ScanHistoryEntry.model_validate(a_history_entry_body())
+
+    assert len(entry.candidates) == 1
+    assert entry.candidates[0].code == "RP.CMA.0001DJ.SM.0T"
+    assert set(entry.model_dump()) == {"id", "created_at", "candidates"}
+
+
+def test_a_history_entry_may_carry_no_candidates() -> None:
+    # An empty array is a real answer (no confident match at the time), never
+    # the absence of one — the same value `POST /scans` itself can return.
+    entry = ScanHistoryEntry.model_validate(a_history_entry_body(candidates=[]))
+
+    assert entry.candidates == []
+
+
+def test_the_history_entry_shape_is_closed() -> None:
+    with pytest.raises(ValidationError):
+        ScanHistoryEntry.model_validate(a_history_entry_body(score=0.918))
+
+
+def test_a_history_entry_with_a_wrong_typed_candidates_element_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        ScanHistoryEntry.model_validate(
+            a_history_entry_body(candidates=[{**a_candidate_body(), "tile_id": "not-a-uuid"}])
+        )
+
+
+def test_a_history_entry_with_an_extra_key_on_a_candidate_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        ScanHistoryEntry.model_validate(
+            a_history_entry_body(candidates=[{**a_candidate_body(), "score": 0.9}])
+        )
+
+
+def test_a_naive_history_timestamp_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        ScanHistoryEntry.model_validate(a_history_entry_body(created_at="2026-09-22T09:30:00"))
+
+
+def test_the_history_timestamp_is_emitted_as_utc() -> None:
+    emitted = json.loads(
+        ScanHistoryEntry.model_validate(
+            a_history_entry_body(created_at="2026-09-22T09:30:00+05:30")
+        ).model_dump_json()
+    )
+
+    assert emitted["created_at"].endswith(("Z", "+00:00"))
+
+
+def _history_interface(name: str) -> set[str]:
+    match = re.search(rf"export interface {name} \{{(.*?)\n\}}", _ts(), re.DOTALL)
+    assert match is not None, f"the {name} interface is no longer declared in scan.ts"
+    return set(re.findall(r"^  (\w+):", match.group(1), re.MULTILINE))
+
+
+def test_the_typescript_interface_declares_every_history_field() -> None:
+    assert _history_interface("ScanHistoryEntry") == set(ScanHistoryEntry.model_fields)
+
+
+def test_the_history_narrowing_check_covers_every_python_field() -> None:
+    assert _key_array("HISTORY_ENTRY_CONTRACT_KEYS") == set(ScanHistoryEntry.model_fields)
+
+
+def test_the_history_page_size_is_the_same_number_in_both_languages() -> None:
+    match = re.search(r"^export const HISTORY_PAGE_SIZE = (\d+);$", _ts(), re.MULTILINE)
+    assert match is not None, "HISTORY_PAGE_SIZE is no longer a literal integer in scan.ts"
+
+    assert int(match.group(1)) == HISTORY_PAGE_SIZE
+
+
+def test_the_history_cursor_parameter_is_the_same_name_in_both_languages() -> None:
+    match = re.search(r"^export const HISTORY_CURSOR_PARAM = '([^']+)';$", _ts(), re.MULTILINE)
+    assert match is not None, "HISTORY_CURSOR_PARAM is no longer a literal string in scan.ts"
+
+    assert match.group(1) == HISTORY_CURSOR_PARAM

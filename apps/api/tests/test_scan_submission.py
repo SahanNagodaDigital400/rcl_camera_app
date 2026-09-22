@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import psycopg
 import pytest
 import shared_vision
 from api import catalogue
@@ -136,6 +137,54 @@ def test_a_claimed_caller_submits_a_scan_against_an_empty_catalogue(
     assert response.headers["cache-control"] == "no-store"
 
 
+# --- Story 3.5's persistence --------------------------------------------------
+
+
+def _scan_rows(conn: psycopg.Connection) -> list[dict[str, Any]]:
+    """Every `scan` row, for a before/after comparison — `conftest.audit_rows`'s
+    own shape, restated here rather than imported: this suite's own helper for
+    a table it is the only file exercising directly.
+    """
+    return list(
+        conn.execute("SELECT user_id, candidates_snapshot FROM scan ORDER BY created_at").fetchall()
+    )
+
+
+def test_an_empty_match_result_still_persists_a_row(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    """An empty catalogue answers `[]`, and that empty array is still written —
+    a real answer (no confident match), never the absence of one.
+    """
+    account = make_user()
+    sign_in(client, account)
+
+    response = submit_scan(client)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+    rows = _scan_rows(conn)
+    assert len(rows) == 1
+    assert rows[0]["user_id"] == account.id
+    assert rows[0]["candidates_snapshot"] == []
+
+
+def test_a_quality_refusal_persists_no_row(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    """A refused submission (here, the quality gate) writes nothing at all — the
+    crop/quality gates and matching must all succeed before anything lands.
+    """
+    sign_in(client, make_user())
+
+    response = submit_scan(
+        client, image=("scan.jpg", jpeg_bytes(a_flat_photograph()), "image/jpeg")
+    )
+
+    assert response.status_code == 422, response.text
+    assert _scan_rows(conn) == []
+
+
 #: Edge length of a generated reference. `test_tile_searchable.py`'s own
 #: constant, large enough that a perturbed copy still carries structure.
 TILE_SIZE = 384
@@ -236,6 +285,35 @@ def test_a_populated_catalogue_returns_the_matching_tile_as_a_candidate(
     assert best["image_id"] == seeded["reference_images"][0]["id"]
     for candidate in body:
         assert set(candidate) == {"tile_id", "code", "size", "category", "image_id"}
+
+
+@needs_model
+def test_a_successful_submission_persists_a_scan_row(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    """The persisted snapshot is byte-identical to the response body — built
+    from the same `list[ScanCandidate]`, never recomputed.
+    """
+    reference = a_tile(42)
+    add_reference_tile(client, make_user, "RP.CMA.0002DJ.SM.0T", reference)
+
+    account = make_user(role=Role.STAFF, name="Kasun Perera")
+    sign_in(client, account)
+    response = submit_scan(
+        client,
+        crop_x=0,
+        crop_y=0,
+        crop_width=1,
+        crop_height=1,
+        image=("scan.jpg", jpeg_bytes(a_photograph_of(reference)), "image/jpeg"),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    rows = _scan_rows(conn)
+    assert len(rows) == 1
+    assert rows[0]["user_id"] == account.id
+    assert rows[0]["candidates_snapshot"] == body
 
 
 @needs_model
