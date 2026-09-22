@@ -17,8 +17,10 @@ import { EditTileScreen } from './screens/EditTileScreen';
 import { EditUserScreen } from './screens/EditUserScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
 import { LoginScreen } from './screens/LoginScreen';
+import { ResultsScreen } from './screens/ResultsScreen';
 import { ScanScreen } from './screens/ScanScreen';
 import { UserListScreen } from './screens/UserListScreen';
+import type { ScanCandidate } from '@rocell/schema/scan';
 import type { Tile } from '@rocell/schema/tile';
 import type { Role, User } from '@rocell/schema/user';
 
@@ -28,8 +30,8 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 /**
  * Which surface inside the shell is showing.
  *
- * Twelve values because twelve surfaces exist. This is not a router and is not
- * the beginning of one: EXPERIENCE.md's nav is role-conditional, spans six
+ * Thirteen values because thirteen surfaces exist. This is not a router and is
+ * not the beginning of one: EXPERIENCE.md's nav is role-conditional, spans six
  * top-level surfaces and changes shape at a breakpoint, and several of those
  * six do not exist yet. Four sections have a door of their own on the home
  * panel: `'scan'` is Story 3.1's own entry point, reachable by every
@@ -40,11 +42,13 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
  * reaches it from the list's "+ Add user", and `'edit-user'` from a row's own
  * Edit control on the same line.
  *
- * **`'crop'` is reached only from Scan**, the way `'edit-tile'` is reached
- * only from a Catalogue row: `showCrop` sets the captured image and the
- * section together, and Back returns to Scan with the image discarded. A
- * confirmed crop (Story 3.2) also returns to Scan — there is no Results
- * screen yet (Story 3.4) — and carries no further surfaces of its own.
+ * **`'crop'` and `'results'` are reached only from Scan and from Crop**, the
+ * way `'edit-tile'` is reached only from a Catalogue row: `showCrop` sets the
+ * captured image and the section together, and Back returns to Scan with the
+ * image discarded. A confirmed crop (Story 3.2) now matches against the
+ * catalogue and lands on Results (Story 3.4) — `showResults`' own version of
+ * the same pattern — which carries no further surfaces of its own and whose
+ * own Back also returns to Scan.
  *
  * **The three catalogue surfaces are reached from the Catalogue, not from the
  * home panel** — which is what line 36 and line 37 always said, and what
@@ -60,6 +64,7 @@ type Section =
   | 'account'
   | 'scan'
   | 'crop'
+  | 'results'
   | 'create-user'
   | 'users'
   | 'edit-user'
@@ -70,16 +75,16 @@ type Section =
   | 'bulk-upload';
 
 /**
- * Which of the fifteen screens the session state selects.
+ * Which of the sixteen screens the session state selects.
  *
  * Named separately from `SessionStatus` because the two are not the same shape:
  * `'signed-in'` covers the forced-change screen, the shell, Account Settings,
- * Scan, Crop, Users, Create user, Edit user, the Audit log, the Catalogue, Add
- * tile, Edit tile and Bulk upload, and the moves between them are screen swaps
- * that the status cannot see. Focus management keys off this, not off the
- * status — which is why the section is folded in here rather than handled
- * beside it: swapping the home panel for another surface unmounts whatever had
- * focus exactly as the other swaps do.
+ * Scan, Crop, Results, Users, Create user, Edit user, the Audit log, the
+ * Catalogue, Add tile, Edit tile and Bulk upload, and the moves between them
+ * are screen swaps that the status cannot see. Focus management keys off
+ * this, not off the status — which is why the section is folded in here
+ * rather than handled beside it: swapping the home panel for another surface
+ * unmounts whatever had focus exactly as the other swaps do.
  */
 type Screen =
   | 'loading'
@@ -89,6 +94,7 @@ type Screen =
   | 'account'
   | 'scan'
   | 'crop'
+  | 'results'
   | 'create-user'
   | 'users'
   | 'edit-user'
@@ -132,6 +138,7 @@ function currentScreen(
   editing: User | null,
   editingTile: Tile | null,
   capturedImage: Blob | null,
+  candidates: ScanCandidate[] | null,
 ): Screen {
   if (status === 'loading') return 'loading';
   if (status === 'signed-out' || user === null) return 'login';
@@ -147,6 +154,15 @@ function currentScreen(
     // choice `'edit-tile'` makes below: a screen with nothing to show answers
     // with the surface that produces one.
     return capturedImage === null ? 'scan' : 'crop';
+  }
+  if (section === 'results') {
+    // `showResults`' own twin of `showCrop`'s reasoning above: candidates and
+    // section are set together in one render, so nothing captured here means
+    // a stale section outlived the answer it belonged to. `candidates` is
+    // `null` only before a first result ever landed — an *empty* array (no
+    // confident match) is a real Results state and renders as one, never
+    // falls back to Scan.
+    return candidates === null ? 'scan' : 'results';
   }
   // EXPERIENCE.md line 95: a permission revoked mid-session sends the user to
   // the highest surface the new role can reach, not to a dead screen. Expressed
@@ -254,6 +270,20 @@ function Gate(): JSX.Element {
    */
   const [capturedImage, setCapturedImage] = useState<Blob | null>(null);
   /**
+   * `submitScan`'s answer to the crop just confirmed, or `null`.
+   *
+   * `capturedImage`'s twin, one surface over: `ResultsScreen` needs the whole
+   * ranked array and there is no route to fetch it back — a match that was
+   * not persisted anywhere is gone the moment the request that produced it
+   * resolves (no `Scan` table exists yet — Story 3.5). Cleared by
+   * `showSection` on every move, so a later `'results'` section — set by a
+   * stale value surviving a role or session change — can never render a match
+   * from a scan somebody already left. `null` is "no result yet"; an *empty*
+   * array is a real answer (no confident match) and is never confused with
+   * the absence above.
+   */
+  const [candidates, setCandidates] = useState<ScanCandidate[] | null>(null);
+  /**
    * The Catalogue's last submitted search, held here so it outlives the screen.
    *
    * `CatalogueScreen` is unmounted the moment a row, "+ Add Tile" or Bulk
@@ -312,6 +342,11 @@ function Gate(): JSX.Element {
       // reason: it is a photo of the shop floor and whatever tile was in
       // frame, taken on a handset the next shift also uses.
       setCapturedImage(null);
+      // The match goes with the image that produced it, for the same
+      // reason one step further along: a ranked Candidate carries the same
+      // catalogue data — Codes, Sizes, Categories, reference images — that
+      // `editingTile` above is cleared for.
+      setCandidates(null);
       // And the search with them, for the same reason one step smaller: a
       // fragment of a Code is still something the next person on the handset
       // did not type.
@@ -356,12 +391,14 @@ function Gate(): JSX.Element {
       setSection('home');
       setEditing(null);
       setEditingTile(null);
-      // Scan and Crop are reachable by every role, so this branch cannot
-      // actually be taken for either section today — but the capture belongs
-      // with the two selections above for the same reason, and stating it
-      // here rather than only in `showSection` is what keeps a future
-      // role-gated surface from inheriting a gap instead of the fix.
+      // Scan, Crop and Results are reachable by every role, so this branch
+      // cannot actually be taken for any of the three today — but the
+      // capture and the match belong with the two selections above for the
+      // same reason, and stating it here rather than only in `showSection`
+      // is what keeps a future role-gated surface from inheriting a gap
+      // instead of the fix.
       setCapturedImage(null);
+      setCandidates(null);
       // And the search, for the reason the sign-out reconciler above clears it:
       // a fragment of a Code is catalogue data, and a demotion is the moment
       // the Catalogue stops being this person's to read. Leaving it in state
@@ -372,7 +409,15 @@ function Gate(): JSX.Element {
     }
   }
 
-  const screen = currentScreen(status, user, section, editing, editingTile, capturedImage);
+  const screen = currentScreen(
+    status,
+    user,
+    section,
+    editing,
+    editingTile,
+    capturedImage,
+    candidates,
+  );
   const previous = useRef<Screen>('loading');
 
   useEffect(() => {
@@ -492,6 +537,10 @@ function Gate(): JSX.Element {
     // already left — which on this surface would be Crop opening on somebody
     // else's photo taken minutes ago.
     setCapturedImage(null);
+    // The match belongs to Results and to nothing else, the same reason one
+    // step further along: a later `'results'` section can never render a
+    // scan's Candidates after the user has already left them.
+    setCandidates(null);
     setSection(next);
   }
 
@@ -502,14 +551,15 @@ function Gate(): JSX.Element {
     // Catalogue, so the screen would flicker back to where it came from. React
     // batches these two, and the order says why it may not be relied on to.
     setSignOutError(null);
-    // The *other* selections go, exactly as `showSection` clears all three:
-    // these three functions are the only paths that set one, so without this
-    // a row or a capture from another surface survives a move to Edit tile
-    // and back, and `showSection`'s stated invariant — that no selection
-    // outlives the screen it belongs to — would be true of one path and not
-    // of the three that matter.
+    // The *other* selections go, exactly as `showSection` clears all four:
+    // these four functions are the only paths that set one, so without this
+    // a row, a capture or a match from another surface survives a move to
+    // Edit tile and back, and `showSection`'s stated invariant — that no
+    // selection outlives the screen it belongs to — would be true of one
+    // path and not of the four that matter.
     setEditing(null);
     setCapturedImage(null);
+    setCandidates(null);
     setEditingTile(target);
     setSection('edit-tile');
   }
@@ -524,6 +574,7 @@ function Gate(): JSX.Element {
     // See `showEditTile`: the other selections go with the move.
     setEditingTile(null);
     setCapturedImage(null);
+    setCandidates(null);
     setEditing(target);
     setSection('edit-user');
   }
@@ -538,8 +589,27 @@ function Gate(): JSX.Element {
     // them for its own.
     setEditing(null);
     setEditingTile(null);
+    setCandidates(null);
     setCapturedImage(image);
     setSection('crop');
+  }
+
+  function showResults(result: ScanCandidate[]): void {
+    // The candidates first, then the section — `showCrop`'s own reason:
+    // `currentScreen` reads both, and setting the section first would give it
+    // one render with `'results'` and nothing captured, which it answers with
+    // Scan, so the screen would flicker back to where the crop was just
+    // confirmed.
+    setSignOutError(null);
+    // The other selections go with the move, exactly as `showCrop` clears
+    // them for its own — including the image that produced this answer: the
+    // crop it was confirmed from is done, and `ResultsScreen` needs the
+    // candidates, not the photo.
+    setEditing(null);
+    setEditingTile(null);
+    setCapturedImage(null);
+    setCandidates(result);
+    setSection('results');
   }
 
   // One node, rendered on whichever surface the click was made on. Written once
@@ -586,18 +656,36 @@ function Gate(): JSX.Element {
         <CropScreen
           image={capturedImage}
           onBack={() => showSection('scan')}
-          // Story 3.2's submission path. `submitScan` runs the request;
-          // `showSection('scan')` only runs once it resolves — a rejection
-          // propagates straight back to `CropScreen`, which is what leaves
-          // the image and the selection in place with Confirm re-enabled
-          // rather than this function clearing them on a failed request.
-          // There is no Results screen yet (Story 3.4), so success lands back
-          // on Scan, `ScanScreen`'s own precedent from Story 3.1.
+          // Story 3.2's submission path, now matching the crop against the
+          // catalogue too (Story 3.4). `submitScan` runs the request;
+          // `showResults` only runs once it resolves — a rejection propagates
+          // straight back to `CropScreen`, which is what leaves the image and
+          // the selection in place with Confirm re-enabled rather than this
+          // function clearing them on a failed request.
           onConfirm={async (rect) => {
-            await submitScan(capturedImage, rect);
-            showSection('scan');
+            const result = await submitScan(capturedImage, rect);
+            showResults(result);
+            return result;
           }}
         />
+      </AppShell>
+    );
+  }
+
+  if (screen === 'results' && candidates !== null) {
+    // **The false branch is what is unreachable**: `currentScreen` already
+    // answers `'scan'` for a `'results'` section with nothing captured, so
+    // this condition never fails at runtime. It is written anyway because it
+    // is what narrows `candidates` for the prop below — removing it as
+    // redundant breaks the build, so it says why, exactly as the `crop`
+    // branch above does for `capturedImage`.
+    //
+    // Back goes to Scan, not to the home panel: Scan is where a fresh capture
+    // is made, and Results has nothing of its own to return to.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <ResultsScreen candidates={candidates} onBack={() => showSection('scan')} />
       </AppShell>
     );
   }

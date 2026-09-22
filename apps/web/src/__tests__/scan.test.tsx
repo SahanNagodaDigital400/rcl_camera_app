@@ -13,7 +13,7 @@
  * viewfinder, a capture, or Crop's preview stubs the piece jsdom is missing
  * rather than exercising the real API.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../App';
@@ -606,7 +606,7 @@ describe("the Crop screen's selection", () => {
     stubImageBitmap({ width: 1000, height: 1000 });
     const { calls } = stubFetchWithCalls({
       '/api/auth/session': [{ status: 200, body: STAFF }],
-      '/api/scans': [{ status: 202 }],
+      '/api/scans': [{ status: 200, body: [] }],
     });
 
     await reachCrop();
@@ -638,7 +638,7 @@ describe("the Crop screen's selection", () => {
     expect(selection.style.height).toBe(pct(0.85));
 
     fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
-    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
 
     // The rectangle actually sent to the server carries the same, correct
     // fractions — not just the on-screen style.
@@ -649,24 +649,39 @@ describe("the Crop screen's selection", () => {
   });
 });
 
+/** A closed `ScanCandidate`, valid enough for `isScanCandidate` to accept. */
+const A_CANDIDATE = {
+  tile_id: '11111111-1111-4111-8111-111111111111',
+  code: 'RP.CMA.0001DJ.SM.0T',
+  size: '45X90',
+  category: 'CREMA MARMOL',
+  image_id: '22222222-2222-4222-8222-222222222222',
+};
+
 describe('confirming a crop', () => {
-  it('sends a normalized rect matching the on-screen selection, and returns to Scan on success', async () => {
+  it('sends a normalized rect matching the on-screen selection, and shows the ranked candidates on Results', async () => {
     stubCanvas();
     stubObjectUrl();
     stubImageBitmap({ width: 1000, height: 1000 });
     const { calls } = stubFetchWithCalls({
       '/api/auth/session': [{ status: 200, body: STAFF }],
-      '/api/scans': [{ status: 202 }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
     });
 
     await reachCrop();
 
     fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
 
-    // Back on Scan: there is no Results screen yet (Story 3.4), and the
-    // image is not carried back with it — `showSection` clears `capturedImage`
-    // on every move away from Crop.
-    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    // On Results, not back on Scan: `POST /scans` (Story 3.4) now fully
+    // resolves the match before answering. The image is not carried back
+    // with it — `showResults` clears `capturedImage` on every move away from
+    // Crop, the same way `showSection` always did.
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /^crop$/i })).toBeNull();
+    expect(screen.getByText(A_CANDIDATE.code)).toBeTruthy();
+    expect(screen.getByText(/best match/i)).toBeTruthy();
+    // No similarity value anywhere on screen (AD-20).
+    expect(document.body.textContent).not.toMatch(/\d+%|score|confidence/i);
 
     const submitted = calls.find(([path]) => path === '/api/scans');
     expect(submitted).toBeTruthy();
@@ -680,6 +695,33 @@ describe('confirming a crop', () => {
     // The whole downscaled image travels too, unmodified — never a
     // client-side pixel crop (AD-11).
     expect(body.get('image')).toBeInstanceOf(Blob);
+  });
+
+  it('shows the empty-match message and a single Retake action when nothing matches', async () => {
+    stubCanvas();
+    stubObjectUrl();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [] }],
+    });
+
+    await reachCrop();
+
+    fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
+
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
+    expect(
+      screen.getByText('No confident match — retake, or ask a colleague.'),
+    ).toBeTruthy();
+    // The empty state's one action is Retake, never an empty screen with
+    // nothing to look at and never a Back beside it.
+    expect(screen.queryByRole('button', { name: /^back$/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /^retake$/i }));
+
+    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /^results$/i })).toBeNull();
   });
 
   it('disables Confirm and Back while the submission is in flight', async () => {
@@ -723,9 +765,9 @@ describe('confirming a crop', () => {
     });
     expect(screen.getByRole('button', { name: /^back$/i })).toHaveProperty('disabled', true);
 
-    scanResolver.resolve?.({ ok: true, status: 202, json: () => Promise.resolve(null) } as Response);
+    scanResolver.resolve?.({ ok: true, status: 200, json: () => Promise.resolve([]) } as Response);
 
-    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
   });
 
   it(
@@ -749,7 +791,7 @@ describe('confirming a crop', () => {
           },
           // The AC's third clause: a later, ordinary submission still works —
           // nothing about the retake state lingers and breaks it.
-          { status: 202 },
+          { status: 200, body: [] },
         ],
       });
 
@@ -784,7 +826,7 @@ describe('confirming a crop', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
 
-      expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
+      expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
     },
   );
 
@@ -830,4 +872,156 @@ describe('confirming a crop', () => {
       );
     },
   );
+
+  it(
+    'stays on Crop with the server\'s own message when matching is unavailable, ' +
+      'keeping the image and the selection',
+    async () => {
+      // Model missing or a stale index (I/O matrix): the existing generic-error
+      // path already covers this shape for `internal_error` above — this proves
+      // the same handling holds for the two refusals Story 3.4 adds.
+      stubCanvas();
+      stubObjectUrl();
+      stubImageBitmap({ width: 1000, height: 1000 });
+      stubFetch({
+        '/api/auth/session': [{ status: 200, body: STAFF }],
+        '/api/scans': [
+          {
+            status: 503,
+            body: {
+              error: {
+                code: 'matching_unavailable',
+                message: 'The image matching service is not set up on this server.',
+              },
+            },
+          },
+        ],
+      });
+
+      await reachCrop();
+
+      fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
+
+      expect(await screen.findByRole('alert')).toHaveProperty(
+        'textContent',
+        'The image matching service is not set up on this server.',
+      );
+      expect(screen.getByRole('heading', { name: /^crop$/i })).toBeTruthy();
+      expect(screen.getByTestId('crop-selection').style.width).toBe(pct(0.8));
+      expect(screen.getByRole('button', { name: /confirm crop/i })).toHaveProperty(
+        'disabled',
+        false,
+      );
+    },
+  );
+
+  it(
+    'stays on Crop on a network failure, keeping the image and the selection',
+    async () => {
+      stubCanvas();
+      stubObjectUrl();
+      stubImageBitmap({ width: 1000, height: 1000 });
+      vi.stubGlobal('fetch', (input: string) => {
+        if (input === '/api/auth/session') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(STAFF),
+          } as Response);
+        }
+        if (input === '/api/scans') {
+          return Promise.reject(new Error('the network is down'));
+        }
+        return Promise.resolve({
+          ok: false,
+          status: 404,
+          json: () => Promise.resolve({ error: { code: 'not_found', message: 'No such route.' } }),
+        } as Response);
+      });
+
+      await reachCrop();
+
+      fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
+
+      expect(await screen.findByRole('alert')).toHaveProperty(
+        'textContent',
+        'Could not reach the server. Check your connection and try again.',
+      );
+      expect(screen.getByRole('heading', { name: /^crop$/i })).toBeTruthy();
+      expect(screen.getByTestId('crop-selection').style.width).toBe(pct(0.8));
+      expect(screen.getByRole('button', { name: /confirm crop/i })).toHaveProperty(
+        'disabled',
+        false,
+      );
+    },
+  );
+});
+
+describe('the tap-to-fullscreen viewer', () => {
+  /** Renders `App`, reaches Results with one Candidate, and taps its card. */
+  async function openViewerFromCard(): Promise<HTMLElement> {
+    stubCanvas();
+    stubObjectUrl();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
+
+    await reachCrop();
+    fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
+    await screen.findByRole('heading', { name: /^results$/i });
+
+    // The card is the button carrying the Candidate's own code and reference
+    // image — `ImageViewer`'s own doc comment names this the "opener" focus
+    // has to return to.
+    const card = screen.getByRole('button', { name: new RegExp(A_CANDIDATE.code) });
+    // jsdom's `fireEvent.click` does not focus the element the way a real
+    // browser click does, so the opener has to be focused by hand —
+    // `deactivate-delete-user.test.tsx`'s own `opener.focus()` pattern, for
+    // the same reason.
+    card.focus();
+    fireEvent.click(card);
+
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+    return card;
+  }
+
+  it.each([
+    [
+      'Escape',
+      (): void => {
+        fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+      },
+    ],
+    [
+      'a scrim click',
+      (): void => {
+        const scrim = screen.getByRole('dialog').parentElement;
+        expect(scrim, 'the dialog is not inside a scrim').toBeTruthy();
+        fireEvent.click(scrim as HTMLElement);
+      },
+    ],
+    [
+      'Close',
+      (): void => {
+        fireEvent.click(
+          within(screen.getByRole('dialog')).getByRole('button', { name: /^close$/i }),
+        );
+      },
+    ],
+  ])('%s closes the viewer and returns focus to the tapped candidate card', async (
+    _label,
+    close,
+  ) => {
+    const card = await openViewerFromCard();
+
+    close();
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // The card is where the tap started, and it is where it is left —
+    // `ConfirmDialog`'s own focus-restore contract, restated for the one
+    // control `ImageViewer` has to return to.
+    expect(document.activeElement).toBe(card);
+  });
 });

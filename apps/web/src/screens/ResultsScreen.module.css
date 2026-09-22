@@ -1,0 +1,145 @@
+/* Results — up to three ranked Candidate cards (Story 3.4). Every value here
+ * comes from src/styles/tokens.css. The 44px touch-target floor and the
+ * accent focus ring are already on `button` in global.css and are
+ * deliberately not restated for the card, Retake or Back controls. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* DESIGN.md's `card` block: surface background, hairline border, `md`
+ * radius, one elevation tier. Full-width and left-aligned so this reads as a
+ * row of the list rather than a centred dialog — the tap-to-fullscreen
+ * affordance the story asks for, not a confirmation. */
+.card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-card);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* DESIGN.md's `candidate-card-best-match`: the accent border is the *only*
+ * rank signal on the card besides the pill below — no percentage, bar or
+ * derived wording anywhere (AD-20). Declared after `.card` so its `border`
+ * wins the cascade where both classes land on one element. */
+.cardBest {
+  border: var(--card-best-match-border-width) solid var(--color-accent);
+}
+
+.refImage {
+  width: var(--candidate-image-size);
+  height: var(--candidate-image-size);
+  flex-shrink: 0;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  border: var(--border-hairline) solid var(--color-border);
+  background: var(--color-background);
+}
+
+.info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* DESIGN.md's `badge-role-admin` shape, accent-filled: navy on orange is
+ * 5.94:1 and passes AA. The one other place the accent appears on this
+ * screen besides Retake's empty-state fill, and it is a status pill rather
+ * than a second competing action. */
+.bestPill {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* The monospace role: a Code is read character by character against a
+ * physical tile, so 0/O and 1/I must not be confusable. */
+.code {
+  font-family: var(--font-mono);
+  font-size: var(--type-code-size);
+  font-weight: var(--type-code-weight);
+  line-height: var(--type-code-line);
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+.empty {
+  color: var(--color-muted-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* The empty state's one action — `CropScreen`'s own Retake treatment for a
+ * quality refusal: the accent fill, because there is nothing else on this
+ * screen for it to compete with. */
+.confirm {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* DESIGN.md's secondary button — navy outline, navy text, transparent fill.
+ * Matches every other screen's Back control exactly (Scan, Crop, Catalogue). */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}

@@ -599,3 +599,61 @@ def test_a_signed_out_caller_is_refused_the_removal(
     # The half the route-table guard cannot see, as on every other refusal in
     # this file: the caller reached neither the database nor the store.
     nothing_was_written(conn, storage_root)
+
+
+# --- The Scan surface's own image route (Story 3.4) ----------------------------
+# `GET /tiles/{tile_id}/images/{image_id}` is gated by `require_claimed_user`
+# alone, never `require_administrator` — a Candidate card is not an admin
+# surface, and Scan is reachable by every authenticated role. This file's own
+# claim inverts here: a *claimed* session of either role must reach it rather
+# than be refused, and only a signed-out caller or a pair naming no row is
+# turned away — mirroring `test_add_tile.py`'s own coverage of the admin
+# route's success, refusal and mismatched-pair cases over this second door.
+
+
+def get_scan_image(
+    client: TestClient, tile_id: str | None = None, image_id: str | None = None
+) -> Any:
+    return client.get(f"/tiles/{tile_id or uuid4()}/images/{image_id or uuid4()}")
+
+
+@needs_model
+@pytest.mark.parametrize("role", [Role.STAFF, Role.ADMIN])
+def test_a_claimed_session_of_either_role_reaches_the_scan_image_route(
+    client: TestClient, make_user: MakeUser, a_catalogued_tile: Any, role: Role
+) -> None:
+    # The sign-in below overwrites the admin session `a_catalogued_tile` left
+    # behind, so the claimed caller under test really is the only session the
+    # request carries — `a_catalogued_tile`'s own reason.
+    sign_in(client, make_user(role=role, name="Kasun Perera"))
+
+    response = get_scan_image(
+        client, a_catalogued_tile["id"], a_catalogued_tile["reference_images"][0]["id"]
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_a_signed_out_caller_is_refused_the_scan_image_route(client: TestClient) -> None:
+    response = get_scan_image(client)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+@needs_model
+def test_a_mismatched_pair_is_not_found_on_the_scan_image_route(
+    client: TestClient, make_user: MakeUser, a_catalogued_tile: Any
+) -> None:
+    # The id pair names no row — a real Tile paired with an image id that is
+    # not one of its own — which is the same "does not exist" fact
+    # `test_an_image_id_paired_with_the_wrong_tile_is_not_found` proves for the
+    # admin route, over the one lookup helper both routes share.
+    sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
+
+    response = get_scan_image(client, a_catalogued_tile["id"], str(uuid4()))
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "image_not_found"

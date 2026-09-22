@@ -1,0 +1,57 @@
+/* The tap-to-fullscreen image viewer (Story 3.4). Reuses `--scrim`,
+ * `--z-modal` and `--radius-lg` exactly as `ConfirmDialog.module.css` does —
+ * the one modal surface in the product besides that one, and the same
+ * stacking level and depth treatment (a scrim, never a second elevation
+ * tier). Every value here comes from src/styles/tokens.css; the 44px
+ * touch-target floor and the accent focus ring are already on `button` in
+ * global.css and are deliberately not restated for Close. */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: var(--scrim);
+}
+
+/* The large radius DESIGN.md reserves for a full-screen sheet, which is what
+ * this becomes at phone width — `ConfirmDialog.module.css`'s own reasoning,
+ * one screen over. `overflow: hidden` is what makes the radius visible on
+ * the image it clips rather than only on an empty corner behind it. */
+.panel {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+/* The one picture, at the size the card used — larger, and legible. Never
+ * cropped to fill: a member of staff verifying a tile needs the whole face. */
+.image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.close {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary-foreground);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}

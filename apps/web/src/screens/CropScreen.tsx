@@ -4,6 +4,7 @@ import type { JSX, PointerEvent as ReactPointerEvent } from 'react';
 import { ApiRequestError, SCAN_QUALITY_TOO_LOW } from '../api/client';
 import type { NormalizedCropRect } from '../api/client';
 import styles from './CropScreen.module.css';
+import type { ScanCandidate } from '@rocell/schema/scan';
 
 /**
  * Crop — the real crop editor Story 3.1 left as a placeholder (Story 3.2).
@@ -56,7 +57,11 @@ interface CropScreenProps {
   /** Discards `image` and returns to Scan. */
   onBack: () => void;
   /**
-   * Sends `image` and the confirmed selection to the server.
+   * Sends `image` and the confirmed selection to the server, and matches it.
+   *
+   * Resolves to up to three ranked Candidates (Story 3.4) — the return value
+   * is unused inside this component and forwarded by `App` to the Results
+   * screen it navigates to on success.
    *
    * A rejection is caught here, not by the caller: the AC is explicit that a
    * failed submission leaves the image and the selection in place with
@@ -64,7 +69,7 @@ interface CropScreenProps {
    * discarded nothing by the time this rejects, but it has also not been
    * asked to keep anything around for a retry.
    */
-  onConfirm: (rect: NormalizedCropRect) => Promise<void>;
+  onConfirm: (rect: NormalizedCropRect) => Promise<ScanCandidate[]>;
 }
 
 /** A crop selection, normalized 0-1 against the image's own dimensions. */
@@ -415,7 +420,21 @@ export function CropScreen({ image, onBack, onConfirm }: CropScreenProps): JSX.E
               onClick={() => void handleConfirm()}
               disabled={confirming}
             >
-              {confirming ? 'Submitting…' : 'Confirm Crop'}
+              {confirming ? (
+                <>
+                  {/* EXPERIENCE.md: "processing: lightweight spinner, no
+                      skeleton" — the wait for matching (Story 3.4) now
+                      happens inside this same request, so it lives beside the
+                      button's own text rather than as a second element on the
+                      screen. Decorative: the button's own text already says
+                      "Submitting…", so a screen reader has nothing to gain
+                      from a second announcement of the same state. */}
+                  <span aria-hidden="true" className={styles.spinner} />
+                  Submitting…
+                </>
+              ) : (
+                'Confirm Crop'
+              )}
             </button>
             {/* Disabled in flight, `AddTileScreen`'s own reason: a click that
                 unmounted this screen mid-request would leave the caller unsure

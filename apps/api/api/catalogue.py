@@ -1,6 +1,6 @@
 """`/admin/tiles` — the Catalogue's write path, its read door, and the query that proves it worked.
 
-Seven routes and one function that is not a route:
+Eight routes and three functions that are not routes:
 
 * `POST /admin/tiles` (FR-14) takes a Code, a Size, an optional Category and
   one to eight reference images, and creates a Tile that a Scan can return in
@@ -26,13 +26,22 @@ Seven routes and one function that is not a route:
   Catalogue screen opens Edit Tile from; this is what Edit Tile uses when
   nobody handed it a Tile.
 * `GET /admin/tiles/{tile_id}/images/{image_id}` serves AD-17's capped
-  derivative, and only that — the retained source asset has no route at all.
+  derivative to an Administrator, and only that — the retained source asset
+  has no route at all.
+* `GET /tiles/{tile_id}/images/{image_id}` (Story 3.4) serves the same capped
+  derivative to any claimed session — Results' Candidate cards, not an admin
+  surface — through the one lookup helper the route above also uses.
+* `_serve_reference_image` is that one lookup helper: the shared lookup-and-
+  proxy logic both image routes above wrap, so a tile id and an image id that
+  name no row are answered the same way from either door.
 * `find_candidates` is the max-over-views search. It lives here, with the
   write path it validates, because "the Tile is immediately findable" is this
-  story's acceptance criterion and the Scan surface does not exist until Epic
-  3. Epic 3 wraps this function in an endpoint rather than writing a second
-  one — a second query is exactly the asymmetry AD-1 is about, one level up
-  from the pixels.
+  story's acceptance criterion. Story 3.4's `POST /scans` wraps this function
+  rather than writing a second query — the asymmetry AD-1 is about, one level
+  up from the pixels.
+* `primary_reference_image_ids` (Story 3.4) answers each candidate tile's
+  earliest Reference Image id in one batched read, for the picture beside
+  every Candidate card.
 
 What is load-bearing here, in the order it happens:
 
@@ -142,6 +151,7 @@ import io
 import json
 import logging
 import tempfile
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -179,7 +189,7 @@ from shared_schema.user import User
 from api import audit
 from api.audit import AuditAction
 from api.db import get_connection, get_pool
-from api.dependencies import NO_STORE, require_administrator
+from api.dependencies import NO_STORE, require_administrator, require_claimed_user
 from api.storage import ObjectNotFound, ObjectStore, get_object_store
 
 logger = logging.getLogger("rocell.api.catalogue")
@@ -424,6 +434,20 @@ NDJSON = "application/x-ndjson"
 #: confidently wrong. Deliberately separate from whatever a screen chooses to
 #: display (AD-20).
 TOP_K = 3
+
+#: AD-16's serialization: one forward pass at a time, within this server
+#: process. A `threading.Lock` binds one process's threads and nothing wider —
+#: a multi-worker deployment runs one of these per worker, each serializing
+#: its own ONNX Runtime session. ONNX Runtime's CPU session is shared within a
+#: process, and two scans embedding concurrently on it would contend for the
+#: same cores rather than run in parallel for free — this turns that
+#: contention into a queue instead of a slowdown neither caller can see.
+#: Scoped to `shared_vision.embed` alone, inside `find_candidates`, and
+#: never to `preprocess`, which touches no model and costs nothing to run
+#: unserialized. Not extended to index-time embedding (`add_tile`/bulk
+#: upload): AD-16 is about scan-time concurrency, and an Administrator's add
+#: is already one request at a time by the nature of the screen that sends it.
+_inference_lock = threading.Lock()
 
 #: Why `_discard` was called, for its log line and for nothing else. The two
 #: cases leave an identical orphaned object behind, and an operator reading the
@@ -893,6 +917,15 @@ def find_candidates(
     `shared/vision/tests/test_pipeline.py` asserts the two produce bit-identical
     vectors.
 
+    **The embedding forward pass is serialized within this server process,
+    AD-16.** `preprocess` runs unlocked — it touches no model and costs
+    nothing to run concurrently — and only the `shared_vision.embed` call is
+    held under `_inference_lock`, so two scans that reach *this process's*
+    model together queue for the one forward pass rather than contending for
+    it. `_inference_lock` is a `threading.Lock`, which binds only the threads
+    of the process that holds it; a multi-worker deployment serializes within
+    each worker, not across them.
+
     Fewer than `limit` come back when the catalogue holds fewer Tiles, and none
     at all when it holds none. There are two shapes of "none" and both answer
     the empty list, by different routes: a catalogue that has *never* been
@@ -911,8 +944,10 @@ def find_candidates(
         # be tens of seconds of CPU spent to search nothing.
         return []
 
+    preprocessed = shared_vision.preprocess(image)
     try:
-        query = _vector_literal(shared_vision.embed(shared_vision.preprocess(image))[0])
+        with _inference_lock:
+            embedding = shared_vision.embed(preprocessed)[0]
     except FileNotFoundError as missing_model:
         # The same refusal the add path raises for the same condition. Named
         # here as well so that Epic 3's scan endpoint inherits the sentence
@@ -920,6 +955,7 @@ def find_candidates(
         raise _refusal(
             MATCHING_UNAVAILABLE, NOT_INSTALLED, status.HTTP_503_SERVICE_UNAVAILABLE
         ) from missing_model
+    query = _vector_literal(embedding)
 
     rows = conn.execute(_SELECT_CANDIDATES, (query, generation_id, query, limit)).fetchall()
     return [
@@ -934,6 +970,42 @@ def find_candidates(
         )
         for rank, row in enumerate(rows, 1)
     ]
+
+
+#: The Scan surface's own picture for a Tile — the earliest Reference Image,
+#: `_SELECT_TILE_IMAGES`'s `created_at, id` order, so the image a Candidate
+#: card shows is the same one `CatalogueScreen.thumbnail` shows first. A batch
+#: read over the (≤3) tile ids `find_candidates` returns, `_SEARCH_TILE_IMAGES`'s
+#: own reasoning for one round trip over several: `DISTINCT ON` picks the
+#: first row per `tile_id` under the `ORDER BY` that follows it, which is
+#: Postgres's own way to answer "the first of each group" in one scan rather
+#: than N.
+_SELECT_PRIMARY_IMAGES = """
+SELECT DISTINCT ON (tile_id) tile_id, id AS image_id
+  FROM reference_image
+ WHERE tile_id = ANY(%s)
+ ORDER BY tile_id, created_at, id
+"""
+
+
+def primary_reference_image_ids(conn: psycopg.Connection, tile_ids: list[UUID]) -> dict[UUID, UUID]:
+    """Each `tile_id`'s earliest Reference Image id, for `submit_scan`'s Candidate cards.
+
+    **A second query rather than a join onto `_SELECT_CANDIDATES`.** That
+    statement is AD-13's tested max-pool search, carrying its own review
+    history; folding "which image represents this tile" into it would couple
+    two independent concerns — ranking and display — inside one query. This is
+    one extra indexed round trip, batched over at most three ids, well inside
+    the scan's budget.
+
+    `{}` on an empty list, without querying — `find_candidates` answers `[]`
+    for an empty or never-indexed catalogue, and `ANY('{}')` is a query worth
+    skipping rather than sending.
+    """
+    if not tile_ids:
+        return {}
+    rows = conn.execute(_SELECT_PRIMARY_IMAGES, (tile_ids,)).fetchall()
+    return {row["tile_id"]: row["image_id"] for row in rows}
 
 
 # --- The add ------------------------------------------------------------------
@@ -2838,25 +2910,26 @@ def remove_tile(
 # --- The image read (AD-9, AD-17) ---------------------------------------------
 
 
-@router.get("/admin/tiles/{tile_id}/images/{image_id}")
-def read_reference_image(
-    tile_id: UUID,
-    image_id: UUID,
-    administrator: Annotated[User, Depends(require_administrator)],
-    conn: Annotated[psycopg.Connection, Depends(get_connection)],
-    store: Annotated[ObjectStore, Depends(get_object_store)],
+def _serve_reference_image(
+    conn: psycopg.Connection, store: ObjectStore, tile_id: UUID, image_id: UUID
 ) -> Response:
-    """Serve one Reference Image's capped derivative, and only ever that.
+    """Look up and proxy one Reference Image's capped derivative. No authorization here.
+
+    **The shared lookup+response logic behind both image routes** — the
+    Administrator-only one below and Epic 3's Scan-surface one — so that a
+    tile id and an image id that name no row are answered the same "does not
+    exist" way from either door, by one implementation rather than two that
+    could drift.
 
     **The source asset has no route**, here or anywhere: AD-17 says the
     original is never served, and the way to make that true is to give it
-    nowhere to be asked for. This handler reads `derivative_key` and there is
-    no parameter that can make it read the other column.
+    nowhere to be asked for. This reads `derivative_key` and there is no
+    parameter that can make it read the other column.
 
-    **Proxied, never redirected** (AD-9). The bytes travel through this
-    endpoint, which re-checks the Administrator role on every request through
-    the dependency above; `apps/web` never holds a storage URL, presigned or
-    otherwise.
+    **Proxied, never redirected** (AD-9). The bytes travel through the caller's
+    endpoint, which re-checks the caller's role or claimed-user status on every
+    request through its own dependency; `apps/web` never holds a storage URL,
+    presigned or otherwise.
 
     `no-store`, like every other authenticated response in the product. A
     reference image is catalogue data, and catalogue exfiltration through a
@@ -2872,10 +2945,9 @@ def read_reference_image(
     browser that sniffed its way to `text/html` on a response served from this
     origin would be executing script from the catalogue.
 
-    The `administrator` parameter is unread: on this route the dependency is
-    the whole of its job. Nothing here is recorded, because nothing is changed
-    — `AuditAction` has no member for a read (FR-20 covers changes), and a log
-    entry per rendered thumbnail would bury the entries that matter.
+    Nothing here is recorded, because nothing is changed — `AuditAction` has no
+    member for a read (FR-20 covers changes), and a log entry per rendered
+    thumbnail would bury the entries that matter.
     """
     row = conn.execute(_SELECT_DERIVATIVE_KEY, (image_id, tile_id)).fetchone()
     if row is None:
@@ -2895,3 +2967,51 @@ def read_reference_image(
         raise _refusal(IMAGE_NOT_FOUND, NO_SUCH_IMAGE, status.HTTP_404_NOT_FOUND) from missing
 
     return Response(content=data, media_type="image/jpeg", headers={**NO_STORE, **NO_SNIFF})
+
+
+@router.get("/admin/tiles/{tile_id}/images/{image_id}")
+def read_reference_image(
+    tile_id: UUID,
+    image_id: UUID,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    store: Annotated[ObjectStore, Depends(get_object_store)],
+) -> Response:
+    """Serve one Reference Image's capped derivative to an Administrator.
+
+    A thin, `require_administrator`-gated wrapper over `_serve_reference_image`
+    — see that function for the lookup, the proxying and the headers. The
+    `administrator` parameter is unread: on this route the dependency is the
+    whole of its job.
+    """
+    return _serve_reference_image(conn, store, tile_id, image_id)
+
+
+@router.get("/tiles/{tile_id}/images/{image_id}")
+def read_scan_reference_image(
+    tile_id: UUID,
+    image_id: UUID,
+    user: Annotated[User, Depends(require_claimed_user)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    store: Annotated[ObjectStore, Depends(get_object_store)],
+) -> Response:
+    """Serve one Reference Image's capped derivative to any claimed session.
+
+    Story 3.4's own door: a Candidate card on the Results screen is not an
+    admin surface, and Scan is reachable by every authenticated role — so this
+    is gated by `require_claimed_user` alone, never `require_administrator`,
+    and it does not sit under `/admin/` (`tests/test_admin_authorization.py`'s
+    route-table guard fails the build if a route outside that prefix declares
+    the role check).
+
+    **A second route rather than loosening the admin one's gate.**
+    `GET /admin/tiles/{tile_id}/images/{image_id}` is deliberately
+    Administrator-only; widening it would open an admin surface to Staff. A
+    second, thin route over the same `_serve_reference_image` helper keeps
+    both authorization boundaries exactly where they are, with one lookup
+    implementation behind both.
+
+    The `user` parameter is unread: on this route the dependency is the whole
+    of its job.
+    """
+    return _serve_reference_image(conn, store, tile_id, image_id)

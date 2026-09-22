@@ -141,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_five_auth_routes_health_the_ten_admin_paths_and_scans() -> None:
+def test_the_route_table_is_the_eighteen_routes_the_product_serves() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -251,10 +251,23 @@ def test_the_route_table_is_the_five_auth_routes_health_the_ten_admin_paths_and_
     # `require_administrator` — every claimed Staff or Administrator account
     # reaches it, not only Administrators — but a claimed account is still an
     # account an Administrator already provisioned. It takes four crop
-    # coordinates and an image; no field on it names a person, an address or a
-    # password, and it writes nothing at all (no `Scan` table exists yet —
-    # Story 3.5). It cannot be a registration surface because it cannot be
-    # reached without a session that already required one.
+    # coordinates and an image and answers up to three ranked Candidates
+    # (Story 3.4); no field it takes or returns names a person, an address or
+    # a password, and it still writes nothing at all (no `Scan` table exists
+    # yet — Story 3.5). It cannot be a registration surface because it cannot
+    # be reached without a session that already required one.
+    #
+    # `/tiles/{tile_id}/images/{image_id}` (Story 3.4) is the twelfth new
+    # path, and the second outside `/admin/` — the Scan surface's own
+    # reference-image proxy behind Results' Candidate cards, gated by
+    # `require_claimed_user` rather than `require_administrator` for
+    # `/scans`' own reason: a Candidate card is not an admin surface, so every
+    # claimed Staff or Administrator account reaches it. It answers with
+    # bytes rather than the shared JSON envelope, `/admin/tiles/{tile_id}/images/{image_id}`'s
+    # own reason, through the one lookup helper both routes share; it takes
+    # no body and writes nothing, and it cannot bring a user into existence
+    # for the same reason `/scans` cannot — it is unreachable without a
+    # session an Administrator already provisioned.
     #
     # The seeded Administrator (`infra/rocell_infra/seed.py`) is still the only
     # row written with no Administrator behind it, and it is written by the
@@ -277,6 +290,7 @@ def test_the_route_table_is_the_five_auth_routes_health_the_ten_admin_paths_and_
         "/admin/tiles/{tile_id}",
         "/admin/tiles/{tile_id}/images/{image_id}",
         "/scans",
+        "/tiles/{tile_id}/images/{image_id}",
     }
 
 

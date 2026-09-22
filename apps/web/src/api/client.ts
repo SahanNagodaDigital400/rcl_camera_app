@@ -14,6 +14,8 @@
  * same reason.
  */
 import { isErrorEnvelope } from '@rocell/schema/errors';
+import { isScanCandidate } from '@rocell/schema/scan';
+import type { ScanCandidate } from '@rocell/schema/scan';
 
 /** Every path below is relative to this. See the module comment. */
 export const API_PREFIX = '/api';
@@ -601,11 +603,12 @@ function refusal(response: Response, body: unknown): ApiRequestError {
 /**
  * Send one request and return its parsed body, or throw an `ApiRequestError`.
  *
- * A `204` or a `202` returns `null`. A `204` because there is nothing to
- * return; a `202` because `POST /scans` (Story 3.2) answers "accepted" with
- * nothing yet to hand back — no candidates (3.4), no persisted row (3.5) —
- * and both cases are the server saying "done, nothing to read." Parsing
- * either body as JSON would throw where nothing is wrong.
+ * A `204` returns `null` — there is nothing to return, and parsing that body
+ * as JSON would throw where nothing is wrong. `POST /scans` (Story 3.2)
+ * answered `202` with an empty body for the same reason before Story 3.4 gave
+ * it a real one; it now resolves the match before answering and returns `200`
+ * with a body like every other synchronous route, so this shortcut no longer
+ * applies to it.
  */
 export async function apiRequest(path: string, options: RequestOptions = {}): Promise<unknown> {
   const method = options.method ?? 'GET';
@@ -696,11 +699,31 @@ export interface NormalizedCropRect {
 }
 
 /**
- * Send the Crop screen's confirmed selection to the server, and crop it there.
+ * Narrow the response body to an array of the shared `ScanCandidate`, or fail
+ * loudly.
  *
- * `CropScreen`'s own submission path (Story 3.2, AD-11): the request carries
- * the same downscaled image `ScanScreen` produced, unmodified, plus the
- * on-screen selection expressed as a fraction of that image's own pixel
+ * `CatalogueScreen.asTiles`'s shape, per element: `isScanCandidate` rejects a
+ * missing key, a malformed UUID — and any extra key, which is how a `score`
+ * (AD-20) or a storage reference (AD-9) would announce itself rather than
+ * being quietly ignored. A partially-understood body must not be rendered as
+ * a Result: a candidate this screen could not parse is a match a member of
+ * staff would never know to look for.
+ */
+function asScanCandidates(body: unknown): ScanCandidate[] {
+  if (Array.isArray(body)) {
+    const rows: unknown[] = body;
+    if (rows.every(isScanCandidate)) return rows;
+  }
+  throw new ApiRequestError(MALFORMED_RESPONSE, 'The server returned an unexpected response.', 200);
+}
+
+/**
+ * Send the Crop screen's confirmed selection to the server, crop it there,
+ * match it against the catalogue, and return the ranked Candidates.
+ *
+ * `CropScreen`'s own submission path (Stories 3.2-3.4, AD-11): the request
+ * carries the same downscaled image `ScanScreen` produced, unmodified, plus
+ * the on-screen selection expressed as a fraction of that image's own pixel
  * dimensions — never a pixel rectangle, and never an image already cropped on
  * this side. The pixel crop itself runs exactly once, server-side, in
  * `shared_vision`.
@@ -708,21 +731,29 @@ export interface NormalizedCropRect {
  * A `FormData`, `AddTileScreen`'s own reason: the body carries a file, and
  * only `fetch` — never this module — may set the multipart boundary that
  * delimits its parts. `UPLOAD_TIMEOUT_MS`, not the default: intake decodes,
- * colour-manages and re-encodes the image server-side, which the 15s default
- * is sized wrong for in exactly the way it is wrong for `POST /admin/tiles`.
+ * colour-manages, re-encodes and now matches the image server-side, which the
+ * 15s default is sized wrong for in exactly the way it is wrong for
+ * `POST /admin/tiles`.
  *
- * Resolves to nothing: `POST /scans` answers `202` with no body — this
- * story's own scope is crop-only, with no candidates and no persisted row yet
- * — and `apiRequest` reads a `202` the same way it reads a `204`.
+ * Resolves to up to three ranked Candidates, or an empty array when nothing
+ * in the catalogue matched — never a similarity value, and never more than
+ * three (AD-20). `POST /scans` answers `200` now, not the old `202`: the
+ * request fully resolves the match before answering, so this no longer takes
+ * `apiRequest`'s `204`/`202` shortcut and reads a real body instead.
  */
-export async function submitScan(image: Blob, rect: NormalizedCropRect): Promise<void> {
+export async function submitScan(
+  image: Blob,
+  rect: NormalizedCropRect,
+): Promise<ScanCandidate[]> {
   const body = new FormData();
   body.append('image', image, 'scan.jpg');
   body.append('crop_x', String(rect.x));
   body.append('crop_y', String(rect.y));
   body.append('crop_width', String(rect.width));
   body.append('crop_height', String(rect.height));
-  await apiRequest('/scans', { method: 'POST', body, timeoutMs: UPLOAD_TIMEOUT_MS });
+  return asScanCandidates(
+    await apiRequest('/scans', { method: 'POST', body, timeoutMs: UPLOAD_TIMEOUT_MS }),
+  );
 }
 
 /**

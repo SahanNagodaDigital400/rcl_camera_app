@@ -178,6 +178,23 @@
    * below-right of it, on both axes. */
   --crop-handle-offset: -50%;
 
+  /* Results (Story 3.4). DESIGN.md's `candidate-card-best-match` names the
+   * accent border but not its width; its own prose ("Components > Candidate
+   * card (best match)") gives it as 2px, which this pins so the rank signal
+   * reads as a border rather than a hairline. */
+  --card-best-match-border-width: 2px;
+  /* A Candidate card's reference image. Smaller than `--thumbnail-size`
+   * deliberately — up to three sit in a single column of cards rather than a
+   * gallery grid — and sized from `mockups/key-results.html`'s own
+   * illustrative render, `CropScreen`'s own derived tokens' reason for why
+   * that source is a starting value and not a pixel contract. */
+  --candidate-image-size: 68px;
+  /* The Crop screen's processing spinner (Story 3.4) — the first spinner in
+   * this codebase. Small enough to sit beside the button's own label rather
+   * than dominating it. */
+  --spinner-size: 16px;
+  --spinner-border-width: 2px;
+
   /* The one breakpoint in the system: below it, mobile scan surfaces with
    * generous spacing and a bottom tab bar; at and above it, desktop admin
    * surfaces with a sidebar and denser table rows. CSS media queries cannot
