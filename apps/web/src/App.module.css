@@ -42,6 +42,29 @@
   line-height: var(--type-body-line);
 }
 
+/* The door to Scan (Story 3.1), on the home panel and reachable by every
+ * authenticated role — the one control this file fills with the accent.
+ * DESIGN.md's Colors section names "Scan" itself as the canonical example of
+ * "the one action per screen that matters most," and every door below this
+ * one argues in its own comment for staying outlined *because* the home
+ * panel's job is not user management or catalogue browsing — which is the
+ * same argument for filling this one, one surface over: the home panel's job
+ * is, as of this story, scanning a tile. */
+.scan {
+  align-self: flex-start;
+  justify-content: center;
+  margin-top: var(--space-6);
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
 /* The door to Users, on the home panel and rendered only for an Administrator.
  * EXPERIENCE.md line 33's nav entry, standing in for a nav that does not exist
  * yet. It is one of *two* admin entries here since Story 1.13 — line 38's Audit
@@ -108,10 +131,10 @@
  * the controls on it.
  *
  * Deliberately not the accent, and the case is the same one every door here
- * makes: the home panel has no primary action, and an orange button reading
- * "Catalogue" would make browsing the catalogue the loudest thing on a screen
- * whose job is scanning tiles. The accent belongs to "+ Add Tile" *on the
- * Catalogue*, which is why this file still holds zero `--color-accent`.
+ * makes: the home panel has no primary action beyond Scan, and a second orange
+ * button reading "Catalogue" would compete with the one this file now spends
+ * on `.scan`. The accent for "+ Add Tile" belongs to the Catalogue screen
+ * itself, not to this door.
  */
 .catalogue {
   align-self: flex-start;

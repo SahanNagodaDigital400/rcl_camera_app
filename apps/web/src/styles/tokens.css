@@ -147,6 +147,16 @@
    * Above AppShell's skip link (z-index 1) with room left between them. */
   --z-modal: 100;
 
+  /* Minimum height for the live camera viewfinder (Scan) and the handed-off
+   * image (Crop), so the framing guide reads as a rectangle rather than a
+   * sliver on a short viewport. Derived, not in DESIGN.md's frontmatter —
+   * adding a token is fine, contradicting one is not. */
+  --viewfinder-min-height: 360px;
+  /* DESIGN.md's `framing-guide-overlay` names the colour and the corner
+   * radius but not a width; `mockups/key-scan.html`'s `.frame-guide` renders
+   * it at 3px, which this pins so the overlay is not a hairline. */
+  --framing-guide-border-width: 3px;
+
   /* The one breakpoint in the system: below it, mobile scan surfaces with
    * generous spacing and a bottom tab bar; at and above it, desktop admin
    * surfaces with a sidebar and denser table rows. CSS media queries cannot

@@ -1688,3 +1688,19 @@ source_spec: `spec-2-5-catalogue-search.md`
 severity: medium
 reason: `GET /admin/tiles/{tile_id}/images/{image_id}` answers with `{**NO_STORE, **NO_SNIFF}` (Story 2.1), so no thumbnail is ever cached by the browser, and the Catalogue's refetch on mount is deliberate -- a tile just added, renamed or removed has to show up. Together they mean that Back from Add tile, Edit tile or Bulk upload re-requests the list *and* every row's image through an authenticated, role-rechecking, DB-reading route. This compounds the oversized-derivative entry above rather than duplicating it: that one is about the size of one fetch, this one is about how many times it happens. Whether a catalogue thumbnail may be privately cached is an AD-17 / AGENTS.md decision about how much catalogue data may sit in a shared handset's disk cache, not a patch this story could make.
 status: open
+
+### DW-212: The upload path has no file-size/dimension guard before decoding a chosen file.
+origin: spec-deferred 6028056a0512
+location: apps/web/src/screens/ScanScreen.tsx (chooseFile)
+source_spec: `spec-3-1-capture-or-upload-a-scan.md`
+severity: low
+reason: `chooseFile` in ScanScreen.tsx hands whatever file the user picks straight to `createImageBitmap`/canvas with no size check, so an unusually large photo-library pick could hang or strain a mobile tab's memory before the ~1024px downscale ever runs. No AC or I/O-matrix row in this story covers file size, and typical phone camera photos are far below any risky threshold, so this is a hardening item rather than a defect in the shipped scenarios.
+status: open
+
+### DW-213: Nothing detects the camera track ending or being revoked externally mid-session.
+origin: spec-deferred 8540ea625d43
+location: apps/web/src/screens/ScanScreen.tsx (enableCamera)
+source_spec: `spec-3-1-capture-or-upload-a-scan.md`
+severity: low
+reason: If the OS/browser revokes camera access or the hardware disconnects while `cameraState` is `'granted'`, the viewfinder would show a frozen/black frame with no state change and no user-facing message. EXPERIENCE.md's State Patterns table doesn't call for this case, and it's rare in practice.
+status: open

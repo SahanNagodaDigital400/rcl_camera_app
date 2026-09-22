@@ -1,0 +1,58 @@
+/* Crop — the inert placeholder (Story 3.1). One preview, one secondary Back
+ * control, no accent button — see the screen's own module comment for why.
+ * Every value here comes from src/styles/tokens.css. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+.preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--viewfinder-min-height);
+  border-radius: var(--radius-lg);
+  background: var(--color-primary);
+  overflow: hidden;
+}
+
+/* `contain`, not `cover`: this is the whole frame the shutter captured, and
+ * cropping it to fill the box would hide the very thing Story 3.2's crop
+ * editor exists to let the user adjust. */
+.image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* DESIGN.md's secondary button — navy outline, navy text, transparent fill.
+ * The only control on this screen, so it is never in competition with an
+ * accent one. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}

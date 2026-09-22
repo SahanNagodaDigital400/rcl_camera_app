@@ -1060,12 +1060,13 @@ describe('uploading is the one accented action on the bulk upload screen', () =>
 describe('the home panel\'s admin entries', () => {
   it('are outlined, never filled', () => {
     // A door on the home panel is a secondary control: the shell's landing
-    // surface has no primary action, and an accent button there would be the one
-    // orange thing on a screen that is for neither user management nor the
-    // catalogue. Since Story 1.9 the first entry is Users — EXPERIENCE.md line
-    // 33's nav entry, with Create user reached from its "+ Add user" (line 34)
-    // — since Story 1.13 the second is the Audit log, line 38's, and since
-    // Story 2.5 the third is the Catalogue, line 35's.
+    // surface has no primary action of its own beyond Scan (below), and an
+    // accent button here would be a second orange thing on a screen that is
+    // for neither user management nor the catalogue. Since Story 1.9 the
+    // first entry is Users — EXPERIENCE.md line 33's nav entry, with Create
+    // user reached from its "+ Add user" (line 34) — since Story 1.13 the
+    // second is the Audit log, line 38's, and since Story 2.5 the third is the
+    // Catalogue, line 35's.
     //
     // **Story 2.5 replaced three entries with one, and that is the change this
     // list records.** Add tile, Edit tile and Bulk upload each had a door here
@@ -1078,9 +1079,8 @@ describe('the home panel\'s admin entries', () => {
     // as well would ship two ways to reach one screen.
     //
     // The Catalogue door stays outlined for the reason the Audit log's does:
-    // the home panel has no primary action, and an orange button reading
-    // "Catalogue" would make browsing it the loudest thing on a screen whose
-    // job is scanning tiles.
+    // the home panel's only primary action is Scan (Story 3.1), and an orange
+    // button reading "Catalogue" would compete with it.
     const app = read(join(SRC, 'App.module.css'));
 
     for (const name of ['.userList', '.auditLog', '.catalogue']) {
@@ -1092,7 +1092,80 @@ describe('the home panel\'s admin entries', () => {
         'var(--border-hairline) solid var(--color-primary)',
       );
     }
-    expect([...app.matchAll(/var\(--color-accent\)/g)]).toHaveLength(0);
+  });
+});
+
+describe('Scan is the one accent action on the home panel', () => {
+  // Story 3.1: DESIGN.md's Colors section names "Scan" itself as the canonical
+  // example of "the one action per screen that matters most," and it is the
+  // first primary action the home panel has ever had — Users, the Audit log
+  // and the Catalogue stay outlined, asserted just above. Nothing else in the
+  // suite can see any of this: `vite.config.ts` sets `css: false`, so jsdom
+  // applies no stylesheet and there is no computed style to read.
+  const css = (): string => read(join(SRC, 'App.module.css'));
+
+  it('fills Scan with the accent and writes on it in navy', () => {
+    // Never white on orange — 2.63:1, the one contrast pair DESIGN.md bans.
+    const scan = rule(css(), '.scan');
+
+    expect(declaration(scan, 'background')).toBe('var(--color-accent)');
+    expect(declaration(scan, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('paints nothing else on the home panel with the accent', () => {
+    // Counted over the whole stylesheet rather than rule by rule, so a new
+    // rule cannot introduce a second orange thing on this panel unseen —
+    // exactly the discipline every other screen's own block in this file
+    // holds itself to.
+    expect([...css().matchAll(/var\(--color-accent\)/g)]).toHaveLength(1);
+  });
+});
+
+describe('the accent budget on the Scan screen itself', () => {
+  // Two intentional, mutually exclusive uses on this screen's own stylesheet:
+  // the framing-guide overlay (`framing-guide-overlay`'s accent outline) and
+  // `.primary`, the one accent-filled control — "Enable camera" before a
+  // grant, "Capture" after one, never both rendered together. Every other
+  // screen with `--color-accent` usage in this file pins its own count the
+  // same way; Scan's own module comment is why this one is two rather than
+  // one.
+  const css = (): string => read(join(SRC, 'screens', 'ScanScreen.module.css'));
+
+  it('outlines the framing guide with the accent', () => {
+    expect(declaration(rule(css(), '.frameGuide'), 'border')).toContain('var(--color-accent)');
+  });
+
+  it('fills the one primary control with the accent', () => {
+    const primary = rule(css(), '.primary');
+
+    expect(declaration(primary, 'background')).toBe('var(--color-accent)');
+    expect(declaration(primary, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('leaves Back as the navy outline, not a third accented thing', () => {
+    const back = rule(css(), '.back');
+
+    expect(declaration(back, 'color')).toBe('var(--color-primary)');
+    expect(declaration(back, 'background')).toBe('transparent');
+  });
+
+  it('uses the accent only for the frame guide and the primary control', () => {
+    const accents = [...css().matchAll(/var\(--color-accent\)/g)];
+
+    expect(accents).toHaveLength(2);
+  });
+});
+
+describe('Crop is deliberately accent-free', () => {
+  // Story 3.2 owns the first accent action on this screen ("Confirm Crop");
+  // adding one now, even as a placeholder, would both violate DESIGN.md's
+  // one-accent-per-screen rule ahead of schedule and hand that story a
+  // control to rip out rather than one to build — see CropScreen's own module
+  // comment.
+  const css = (): string => read(join(SRC, 'screens', 'CropScreen.module.css'));
+
+  it('paints nothing on this screen with the accent', () => {
+    expect([...css().matchAll(/var\(--color-accent\)/g)]).toHaveLength(0);
   });
 });
 

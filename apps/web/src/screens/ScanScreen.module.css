@@ -1,0 +1,180 @@
+/* Scan — the live camera capture and the upload fallback (Story 3.1).
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target
+ * floor and the accent focus ring are already on `button` and `input` in
+ * global.css and are deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* DESIGN.md's secondary button — navy outline, navy text, transparent fill.
+ * Matches every other home-panel-reached screen's Back control exactly
+ * (Audit/Catalogue). Never in competition with `.primary` below — the two
+ * never render in the same row. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* The camera surface: navy while there is nothing to show yet (the
+ * explanation, or the denial), the live feed once granted. `position:
+ * relative` so the video, the framing guide and the guide copy can layer on
+ * top of one another rather than stacking in the document. */
+.viewfinder {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  min-height: var(--viewfinder-min-height);
+  padding: var(--space-6) var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--color-primary);
+  overflow: hidden;
+}
+
+.video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* DESIGN.md's `framing-guide-overlay`: accent outline, transparent fill,
+ * `rounded.md` corners. Decorative only — see ScanScreen's own module
+ * comment for why nothing analyses what is inside it. `pointer-events: none`
+ * so it never intercepts the shutter tap sitting below the viewfinder. */
+.frameGuide {
+  position: absolute;
+  inset: var(--space-8);
+  border: var(--framing-guide-border-width) solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: transparent;
+  pointer-events: none;
+}
+
+/* Positioned (not `static`) so it paints after the video and the frame guide
+ * rather than underneath them — CSS paints non-positioned in-flow content
+ * before positioned descendants, in document order. */
+.guideCopy {
+  position: relative;
+  margin-top: var(--space-4);
+  color: var(--color-primary-foreground);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+.explanation {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  max-width: var(--measure-prose);
+}
+
+.lede {
+  color: var(--color-primary-foreground);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  text-align: center;
+}
+
+.denied {
+  max-width: var(--measure-prose);
+  color: var(--color-primary-foreground);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  text-align: center;
+}
+
+/* Shutter and the controls row beneath the viewfinder. Wraps rather than
+ * shrinks, the same reasoning `AddTileScreen`'s `.actions` gives: at the
+ * narrowest phone width, two items forced onto one line would push either
+ * below the touch-target floor. */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* The one accent control on this screen, whichever state is rendering it:
+ * "Enable camera" before a grant, "Capture" after one. The two are never
+ * shown together, which is why one rule serves both rather than two —
+ * `EditTileScreen`'s Find/Save pair sets the same precedent. */
+.primary {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.primary:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+.uploadField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.uploadLabel {
+  color: var(--color-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+.fileInput {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* A decode failure. Red is destructive-or-failed in this system and nothing
+ * else, and it is never the only signal: the text says what happened, and
+ * the file input beside it stays enabled for another try. */
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}

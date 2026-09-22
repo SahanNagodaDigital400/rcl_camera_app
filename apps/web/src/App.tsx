@@ -12,10 +12,12 @@ import { AuditLogScreen } from './screens/AuditLogScreen';
 import { BulkUploadScreen } from './screens/BulkUploadScreen';
 import { CatalogueScreen } from './screens/CatalogueScreen';
 import { CreateUserScreen } from './screens/CreateUserScreen';
+import { CropScreen } from './screens/CropScreen';
 import { EditTileScreen } from './screens/EditTileScreen';
 import { EditUserScreen } from './screens/EditUserScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
 import { LoginScreen } from './screens/LoginScreen';
+import { ScanScreen } from './screens/ScanScreen';
 import { UserListScreen } from './screens/UserListScreen';
 import type { Tile } from '@rocell/schema/tile';
 import type { Role, User } from '@rocell/schema/user';
@@ -26,15 +28,23 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 /**
  * Which surface inside the shell is showing.
  *
- * Ten values because ten surfaces exist. This is not a router and is not the
- * beginning of one: EXPERIENCE.md's nav is role-conditional, spans six
- * top-level surfaces and changes shape at a breakpoint, and three of those six
- * do not exist yet. Three sections have a door of their own on the home panel:
- * `'users'` is EXPERIENCE.md line 33's User List, `'audit'` is line 38's Audit
- * Log, and `'catalogue'` is line 35's Catalogue — all standing on the home
- * panel until there is a nav to hold them. Create user is not a door: line 34
+ * Twelve values because twelve surfaces exist. This is not a router and is not
+ * the beginning of one: EXPERIENCE.md's nav is role-conditional, spans six
+ * top-level surfaces and changes shape at a breakpoint, and several of those
+ * six do not exist yet. Four sections have a door of their own on the home
+ * panel: `'scan'` is Story 3.1's own entry point, reachable by every
+ * authenticated role and the panel's one accent control; `'users'` is
+ * EXPERIENCE.md line 33's User List, `'audit'` is line 38's Audit Log, and
+ * `'catalogue'` is line 35's Catalogue — all four standing on the home panel
+ * until there is a nav to hold them. Create user is not a door: line 34
  * reaches it from the list's "+ Add user", and `'edit-user'` from a row's own
  * Edit control on the same line.
+ *
+ * **`'crop'` is reached only from Scan**, the way `'edit-tile'` is reached
+ * only from a Catalogue row: `showCrop` sets the captured image and the
+ * section together, and Back returns to Scan with the image discarded. It is
+ * a placeholder for Story 3.2's real crop editor and carries no further
+ * surfaces of its own.
  *
  * **The three catalogue surfaces are reached from the Catalogue, not from the
  * home panel** — which is what line 36 and line 37 always said, and what
@@ -48,6 +58,8 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 type Section =
   | 'home'
   | 'account'
+  | 'scan'
+  | 'crop'
   | 'create-user'
   | 'users'
   | 'edit-user'
@@ -58,16 +70,16 @@ type Section =
   | 'bulk-upload';
 
 /**
- * Which of the thirteen screens the session state selects.
+ * Which of the fifteen screens the session state selects.
  *
  * Named separately from `SessionStatus` because the two are not the same shape:
  * `'signed-in'` covers the forced-change screen, the shell, Account Settings,
- * Users, Create user, Edit user, the Audit log, the Catalogue, Add tile, Edit
- * tile and Bulk upload, and the moves between them are screen swaps that the
- * status cannot see. Focus management keys off this, not off the status — which
- * is why the section is folded in here rather than handled beside it: swapping
- * the home panel for another surface unmounts whatever had focus exactly as the
- * other swaps do.
+ * Scan, Crop, Users, Create user, Edit user, the Audit log, the Catalogue, Add
+ * tile, Edit tile and Bulk upload, and the moves between them are screen swaps
+ * that the status cannot see. Focus management keys off this, not off the
+ * status — which is why the section is folded in here rather than handled
+ * beside it: swapping the home panel for another surface unmounts whatever had
+ * focus exactly as the other swaps do.
  */
 type Screen =
   | 'loading'
@@ -75,6 +87,8 @@ type Screen =
   | 'password-change'
   | 'shell'
   | 'account'
+  | 'scan'
+  | 'crop'
   | 'create-user'
   | 'users'
   | 'edit-user'
@@ -117,11 +131,23 @@ function currentScreen(
   section: Section,
   editing: User | null,
   editingTile: Tile | null,
+  capturedImage: Blob | null,
 ): Screen {
   if (status === 'loading') return 'loading';
   if (status === 'signed-out' || user === null) return 'login';
   if (user.must_change_password) return 'password-change';
   if (section === 'account') return 'account';
+  if (section === 'scan') return 'scan';
+  if (section === 'crop') {
+    // `showCrop` sets the image and the section together in one render, so
+    // this branch with nothing captured is reached only by Back discarding it
+    // and a stale section somehow surviving — `showSection` already prevents
+    // that by clearing `capturedImage` on every move away from Crop. Falling
+    // back to Scan rather than defending inside `CropScreen` is the same
+    // choice `'edit-tile'` makes below: a screen with nothing to show answers
+    // with the surface that produces one.
+    return capturedImage === null ? 'scan' : 'crop';
+  }
   // EXPERIENCE.md line 95: a permission revoked mid-session sends the user to
   // the highest surface the new role can reach, not to a dead screen. Expressed
   // as a condition inside this pure function rather than as an effect that
@@ -217,6 +243,17 @@ function Gate(): JSX.Element {
    */
   const [editingTile, setEditingTile] = useState<Tile | null>(null);
   /**
+   * The downscaled Blob `ScanScreen` handed off, or `null`.
+   *
+   * `editingTile`'s twin, one surface over, and held for the same reason:
+   * `CropScreen` needs the whole image and there is no route to fetch it back
+   * — a captured frame that was not stored anywhere is gone the moment
+   * `ScanScreen` unmounts. Cleared by `showSection` on every move, so a later
+   * `'crop'` section — set by a stale value surviving a role or session
+   * change — can never render an image from a scan somebody already left.
+   */
+  const [capturedImage, setCapturedImage] = useState<Blob | null>(null);
+  /**
    * The Catalogue's last submitted search, held here so it outlives the screen.
    *
    * `CatalogueScreen` is unmounted the moment a row, "+ Add Tile" or Bulk
@@ -271,6 +308,10 @@ function Gate(): JSX.Element {
       // they are catalogue data, and catalogue exfiltration through a shared
       // handset is what AGENTS.md names as the primary commercial threat.
       setEditingTile(null);
+      // The captured image goes with them, for a stronger version of the same
+      // reason: it is a photo of the shop floor and whatever tile was in
+      // frame, taken on a handset the next shift also uses.
+      setCapturedImage(null);
       // And the search with them, for the same reason one step smaller: a
       // fragment of a Code is still something the next person on the handset
       // did not type.
@@ -315,6 +356,12 @@ function Gate(): JSX.Element {
       setSection('home');
       setEditing(null);
       setEditingTile(null);
+      // Scan and Crop are reachable by every role, so this branch cannot
+      // actually be taken for either section today — but the capture belongs
+      // with the two selections above for the same reason, and stating it
+      // here rather than only in `showSection` is what keeps a future
+      // role-gated surface from inheriting a gap instead of the fix.
+      setCapturedImage(null);
       // And the search, for the reason the sign-out reconciler above clears it:
       // a fragment of a Code is catalogue data, and a demotion is the moment
       // the Catalogue stops being this person's to read. Leaving it in state
@@ -325,7 +372,7 @@ function Gate(): JSX.Element {
     }
   }
 
-  const screen = currentScreen(status, user, section, editing, editingTile);
+  const screen = currentScreen(status, user, section, editing, editingTile, capturedImage);
   const previous = useRef<Screen>('loading');
 
   useEffect(() => {
@@ -439,6 +486,12 @@ function Gate(): JSX.Element {
     // looked at minutes ago — which on this surface would be an edit form
     // pre-filled with one tile's Code under another tile's picture.
     setEditingTile(null);
+    // The captured image belongs to Crop and to nothing else, exactly as the
+    // row and the tile above do. Cleared on every move away from it, so a
+    // later `'crop'` section can never render an image from a scan the user
+    // already left — which on this surface would be Crop opening on somebody
+    // else's photo taken minutes ago.
+    setCapturedImage(null);
     setSection(next);
   }
 
@@ -449,13 +502,14 @@ function Gate(): JSX.Element {
     // Catalogue, so the screen would flicker back to where it came from. React
     // batches these two, and the order says why it may not be relied on to.
     setSignOutError(null);
-    // The *other* selection goes, exactly as `showSection` clears both: these
-    // two functions are the only paths that set one, so without this a row
-    // opened on the user list survives a move to Edit tile and back, and
-    // `showSection`'s stated invariant — that neither selection outlives the
-    // screen it belongs to — would be true of one path and not of the two that
-    // matter.
+    // The *other* selections go, exactly as `showSection` clears all three:
+    // these three functions are the only paths that set one, so without this
+    // a row or a capture from another surface survives a move to Edit tile
+    // and back, and `showSection`'s stated invariant — that no selection
+    // outlives the screen it belongs to — would be true of one path and not
+    // of the three that matter.
     setEditing(null);
+    setCapturedImage(null);
     setEditingTile(target);
     setSection('edit-tile');
   }
@@ -467,10 +521,25 @@ function Gate(): JSX.Element {
     // it came from. React batches these two, and the order says why it may not
     // be relied on to.
     setSignOutError(null);
-    // See `showEditTile`: the other selection goes with the move.
+    // See `showEditTile`: the other selections go with the move.
     setEditingTile(null);
+    setCapturedImage(null);
     setEditing(target);
     setSection('edit-user');
+  }
+
+  function showCrop(image: Blob): void {
+    // The image first, then the section — `showEditTile`'s reason:
+    // `currentScreen` reads both, and setting the section first would give it
+    // one render with `'crop'` and no image, which it answers with Scan, so
+    // the screen would flicker back to where the shutter was just pressed.
+    setSignOutError(null);
+    // The other selections go with the move, exactly as `showEditTile` clears
+    // them for its own.
+    setEditing(null);
+    setEditingTile(null);
+    setCapturedImage(image);
+    setSection('crop');
   }
 
   // One node, rendered on whichever surface the click was made on. Written once
@@ -484,6 +553,40 @@ function Gate(): JSX.Element {
         {signOutError}
       </p>
     );
+
+  if (screen === 'scan') {
+    // Inside the shell, in place of the home panel, exactly as every other
+    // surface reached from a home-panel door is: the app bar stays, so Sign
+    // out stays, and `AppShell` provides the one `<main>` the focus effect
+    // above moves focus to. Reachable by every authenticated role —
+    // `reachableBy`'s default covers it — so there is no role guard here, the
+    // one difference from every screen below it.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <ScanScreen onCaptured={showCrop} onBack={() => showSection('home')} />
+      </AppShell>
+    );
+  }
+
+  if (screen === 'crop' && capturedImage !== null) {
+    // **The false branch is what is unreachable**: `currentScreen` already
+    // answers `'scan'` for a `'crop'` section with nothing captured, so this
+    // condition never fails at runtime. It is written anyway because it is
+    // what narrows `capturedImage` for the prop below — removing it as
+    // redundant breaks the build, so it says why, exactly as the `edit-tile`
+    // branch below does for `editingTile`.
+    //
+    // Back goes to Scan, not to the home panel: Scan is where the capture was
+    // made, and the AC is explicit that Back discards the image rather than
+    // preserving anything to come back to.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <CropScreen image={capturedImage} onBack={() => showSection('scan')} />
+      </AppShell>
+    );
+  }
 
   if (screen === 'users') {
     // Inside the shell, in place of the home panel, exactly as the two screens
@@ -700,6 +803,17 @@ function Gate(): JSX.Element {
         Internal staff tool. Photograph a tile and get the three closest matches from the
         catalogue, each with its reference image, Size and Category.
       </p>
+      {/* The door to Scan (Story 3.1), reachable by every authenticated role —
+          `reachableBy`'s default `return true` already covers it, so it is not
+          in the admin-only group below. DESIGN.md names "Scan" itself as an
+          accent-button example, and it is the panel's one `--color-accent`
+          control: Users, the Audit log and the Catalogue stay the secondary,
+          navy-outline treatment their own comments already argue for, because
+          the home panel's job is not user management or catalogue browsing —
+          and, as of this story, it is scanning a tile. */}
+      <button className={styles.scan} type="button" onClick={() => showSection('scan')}>
+        Scan
+      </button>
       {/* The doors to the admin surfaces, role-conditional as EXPERIENCE.md
           line 18 requires: a Staff user never sees an entry they cannot use.
           Three doors, one per admin nav entry the spine's own IA names and this
