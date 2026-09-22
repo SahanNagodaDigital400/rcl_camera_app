@@ -86,6 +86,25 @@ deferred:
     location: >-
       apps/web/src/__tests__/session-expiry.test.tsx
     severity: low
+  - summary: >-
+      The three session-state authorization claims on the Catalogue are pinned
+      on the add alone, so no other catalogue route proves them.
+    evidence: |-
+      `test_an_administrator_on_an_unclaimed_temporary_credential_is_refused`,
+      `..._deactivated_mid_session_is_refused_as_unauthenticated` and
+      `..._demoted_mid_session_is_refused_on_the_next_request` all send
+      `post_tile` and nothing else, while the file's own
+      `test_every_refusal_is_uncacheable` is parametrized across all seven
+      routes. The claims hold today because `require_administrator` is one
+      shared dependency, but that is the thing being asserted -- a route that
+      ever declared its guard itself would be caught on the add and nowhere
+      else, and `GET /admin/tiles` is the route where a stale role discloses
+      the whole catalogue in one body. Pre-existing since Story 2.1; Story 2.5
+      added the seventh route to the parametrized test and left these three
+      unchanged, which is where the asymmetry became visible.
+    location: >-
+      apps/api/tests/test_catalogue_authorization.py:441-487
+    severity: low
 ---
 
 <intent-contract>
@@ -244,6 +263,22 @@ deferred:
 ## Review Triage Log
 
 ### 2026-09-22 — Review pass
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 7: (high 0, medium 0, low 7)
+- defer: 1: (high 0, medium 0, low 1)
+- reject: 19: (high 0, medium 0, low 19)
+- addressed_findings:
+  - `[low]` `[patch]` A mid-session demotion cleared the section, the edited user and the edited Tile but not the search — the fragment a demoted Administrator typed survived in state and would have been handed back on a promotion, against the sign-out reconciler's own stated reason for clearing it. `catalogueQuery` now goes with them.
+  - `[low]` `[patch]` `reachableBy`'s new `'catalogue'` arm, and the role reconciler that reads it, were exercised by nothing: every Staff assertion was a door-presence check the JSX condition alone satisfies, so the whole role-conditional half of the section could be deleted and ship green. A demotion test now drives it — verified to fail against both the removed `reachableBy` arm and the missing query clear.
+  - `[low]` `[patch]` A handed-over Tile whose removal is refused `404` — two Administrators on one row, the second confirming a removal the first already made — was the entry path this story added and the one the documented fallback was never pinned on. `edit-tile.test.tsx` now asserts it: the alert, the lookup stage, the focus, and that `onRemoved` is *not* called.
+  - `[low]` `[patch]` FR-20's "a search writes no audit entry" carried `@needs_model` only because its control was the add, so on a machine without the ONNX artifact the claim went unmade and `make test` does not depend on that target. A model-free twin seeds a Tile and uses the removal as its control; `seed()` now returns the id.
+  - `[low]` `[patch]` `App`'s Add Tile and Bulk Upload comments claimed the Catalogue's mount refetch "shows the tile just added" and lists "the whole batch", which this story's own query-persistence patch made false — the refetch runs the retained search. Both now say what actually happens and how to see the rest.
+  - `[low]` `[patch]` A test named "sends one request for two presses of Try again, and moves focus once" read no focus at all; the focus claim is the next test's and the name now stops at what it asserts.
+  - `[low]` `[patch]` A stray triple blank line in `CatalogueScreen.tsx` between `retry()` and the render.
+
+### 2026-09-22 — Review pass
 - intent_gap: 0
 - bad_spec: 0
 - patch: 14: (high 0, medium 2, low 12)
@@ -300,50 +335,101 @@ for row in conn.execute(_SEARCH_TILE_IMAGES, ([tile["id"] for tile in tiles],)):
 **Manual checks (if no CLI):**
 - `git status --porcelain` is empty of stray artifacts after a run, and `git diff --stat -- shared/vision` is empty -- a change there would owe a re-index and an eval run.
 
+
 ## Auto Run Result
 
 Status: done
 
-**Summary.** FR-18's catalogue search, end to end. `GET /admin/tiles?q=` matches substrings of the Code case-insensitively and answers a bare array of the existing `Tile` contract with its reference images; a blank query browses the whole catalogue. The Catalogue screen EXPERIENCE.md names is the surface: a search box over the user list's dense data-table treatment, each row carrying its proxied reference image, Code, Size and Category and opening Edit Tile for that row. The three tile doors left the home panel for it, as `App.module.css` and `App.tsx` had said since Story 2.1 they would: `+ Add Tile` takes the one accent there, `Bulk upload` stands beside it outlined, and `Edit tile` became a row-end control. No migration, no extension, no index, and `shared/vision/` is untouched — **no re-index and no eval run is owed**.
+### Summary of implemented change
 
-**Files changed**
+FR-18's catalogue search, delivered as one admin-only `GET /admin/tiles?q=` that
+matches substrings of the Code case-insensitively and answers a bare array of
+the unchanged `Tile` contract, plus the Catalogue screen the three tile doors
+now live on. This run was a **follow-up review pass** over the already-`done`
+story (`followup_review_recommended: true` from the previous pass), not a
+re-implementation: the implementation was reviewed again by four parallel
+layers, and seven low-severity patches were applied on top of it.
 
-- `shared/schema/shared_schema/tile.py` -- `clean_query`: strips, accepts blank as browse-all, refuses over `MAX_CODE_LENGTH` and refuses control characters.
-- `shared/schema/tests/test_tile.py` -- `clean_query`'s cases, including the NUL that would otherwise have surfaced as a `500`.
-- `apps/api/api/catalogue.py` -- `INVALID_QUERY` and its sentence; `_SEARCH_TILES` and `_SEARCH_TILE_IMAGES`; `_pattern`, which escapes `\`, `%` and `_` on the parameter and never in the statement; `GET /admin/tiles` (`search_tiles`); and the module docstring's route inventory, its "not here, deliberately" paragraph and `lookup_tile`'s "until 2.5" paragraph rewritten.
-- `apps/api/tests/test_catalogue_search.py` -- new; every I/O-matrix row plus the statement-text guards and a model-free metacharacter test.
-- `apps/api/tests/test_catalogue_authorization.py` -- the staff, signed-out and uncacheable refusals on the new route, seeded with a real Tile so "nothing was disclosed" is a claim about the guard.
-- `apps/api/tests/test_admin_authorization.py` -- `GET /admin/tiles` in the route table, the count in the test name moved to fourteen, and both comments extended.
-- `apps/web/src/api/client.ts` -- `INVALID_QUERY` exported with its doc block.
-- `apps/web/src/screens/CatalogueScreen.tsx` + `.module.css` -- new; the search form, the table, the thumbnails, the two empty sentences, one persistent live region, and the row that opens a Tile by click or by a labelled keyboard-reachable `Edit`.
-- `apps/web/src/screens/EditTileScreen.tsx` -- accepts a handed-over `tile` as initial state and an `onRemoved` for the row-opened path; docstring corrected.
-- `apps/web/src/App.tsx` + `App.module.css` -- the `catalogue` section and screen, `editingTile`, `catalogueQuery`, Back from Add/Edit/Bulk returning to the Catalogue, three doors replaced by one, and both docstring counts corrected.
-- `apps/web/src/__tests__/catalogue.test.tsx` -- new; the screen and its door, including the search surviving a round trip through a row.
-- `apps/web/src/__tests__/edit-tile.test.tsx`, `add-tile.test.tsx`, `bulk-upload.test.tsx` -- the handed-over-Tile path, and each door block retargeted to the Catalogue.
-- `apps/web/src/__tests__/styling-wiring.test.ts`, `error-code-parity.test.ts` -- the door list, the rejection matrix, the new per-screen block, and `invalid_query` on both sides of the parity map.
+### Files changed in this pass
 
-**Review findings breakdown**
+- `apps/web/src/App.tsx` -- the role reconciler now clears `catalogueQuery` with
+  the section and the two selections; the Add Tile and Bulk Upload comments
+  corrected to say what the Catalogue's mount refetch actually shows when a
+  search is retained.
+- `apps/web/src/screens/CatalogueScreen.tsx` -- stray triple blank line removed.
+- `apps/web/src/__tests__/catalogue.test.tsx` -- new mid-session demotion test
+  covering `reachableBy`'s `'catalogue'` arm, the reconciler and the query
+  clear; the `Try again` request-count test renamed to what it asserts.
+- `apps/web/src/__tests__/edit-tile.test.tsx` -- new test for a handed-over Tile
+  whose removal is refused `404 tile_not_found`.
+- `apps/api/tests/test_catalogue_search.py` -- `seed()` returns the new Tile's
+  id; new model-free twin of the FR-20 "a search writes no audit entry" claim,
+  using the removal as its control.
+- `_bmad-output/implementation-artifacts/spec-2-5-catalogue-search.md` -- triage
+  log entry, one new `deferred` item, this section.
 
-- Patches applied: 14 (high 0, medium 2, low 12). The two mediums were the search being discarded on `Back` — the one acceptance criterion the first pass missed — and a removal from a row dead-ending on Edit Tile's code-entry stage. The twelve lows were an empty-state sentence that branched on the live input, an unguarded nullable Category, a silently swallowed submit, a focus pull before a no-op retry, a row click that fired at the end of a drag-selection, an ordering test asserting Python's collation, a metacharacter guarantee that vanished without the model artifact, an unmounted live region, three stale comments, two uncleared entity selections, two vacuous disclosure assertions, and two docstrings that over-claimed the lookup's reachability.
-- Deferred: 5 — full-size derivatives behind 96px thumbnails (an AD-17 decision), the unthrottled and unrecorded whole-catalogue read, no optimistic concurrency on tile edits, Edit Tile's lookup replacing an in-progress edit, and `session-expiry.test.tsx`'s pre-existing flake under CPU contention. All five are recorded in frontmatter `deferred`.
-- Rejected: 6, all low. The substantial ones and why: no `maxLength` mirrored onto the search box (the spec forbade a new `BOUNDS` parity row, and the server's refusal is tested on both sides); `INVALID_QUERY` exported without the screen branching on it (the parity contract requires the export and the screen renders that refusal's own sentence, which is Story 2.4's accepted precedent); a broken-image glyph if a thumbnail 404s between the list and the fetch (the window needs a concurrent removal and the row still reads); no key event driving the row-end `Edit` in tests (it is a real `<button>`); 44px and focus not restated per screen (`global.css` sets both and `styling-wiring.test.ts` forbids restating them per module); `sprint-status.yaml` and the deferred-work ledger not updated (orchestration-owned — this run may not write them).
+Nothing under `shared/vision/` was touched in this pass or in the story: no
+re-index and no eval run is owed.
 
-**Follow-up review recommendation:** `true`. Patched this pass: high 0, medium 2, low 12. Score = 3x2 + 1x12 = 18, which is 5 or more.
+### Review findings breakdown
 
-**Verification performed**
+- Patches applied: 7 (high 0, medium 0, low 7) -- see the triage-log entry above
+  for each one.
+- Items deferred: 1 (low) -- the three session-state authorization claims on the
+  Catalogue are pinned on `post_tile` alone while the uncacheability claim is
+  parametrized across all seven routes.
+- Items rejected: 19 (all low by consequence). The substantive ones and why:
+  duplicates of ledger entries this spec already carries (the unthrottled,
+  unrecorded whole-catalogue read; the 1280px derivative behind a 96px
+  thumbnail; the `session-expiry.test.tsx` flake); a missing `ESCAPE '\'` clause
+  (backslash is PostgreSQL's default `LIKE`/`ILIKE` escape and the constant says
+  so); `Query(max_length=...)` on `q` (it would replace the product's
+  `invalid_query` envelope with FastAPI's own 422 body, against the matrix row);
+  missing `width`/`height` on the row thumbnail (`.image` sets `width` and
+  `aspect-ratio`, so the box is reserved before the fetch); `opensFromRow()`
+  reading the document-wide selection (a plain click collapses the selection at
+  `mousedown`, so only the drag-end case it was written for reaches it); and
+  clearing the search on `Back` from Add Tile or Bulk Upload (the opposite of
+  the acceptance criterion the previous pass patched in).
 
-- `make lint` -- green (ruff check, ruff format --check over 89 files, oxlint, `tsc --noEmit`).
+### Follow-up review recommendation
+
+`true`. Patched findings this pass: high 0, medium 0, low 7. Score =
+`3 x 0 + 1 x 7 = 7`, which is 5 or more. Every patch was low severity and none
+touched the route's behaviour, so the recommendation reflects the *number* of
+small corrections rather than any unresolved risk.
+
+### Verification performed
+
+- `make lint` -- green (ruff check, ruff format --check, oxlint, `tsc --noEmit`).
 - `uv run --project shared/schema pytest shared/schema/tests/test_tile.py -q` -- 48 passed.
-- The spec's API command over the catalogue, authorization, lookup, route-table, registration, source-guard and audit suites -- 187 passed, nothing skipped for a missing model.
-- `npm --prefix apps/web test -- --run` -- 25 files, 1503 tests passed, confirmed over eight consecutive clean runs.
-- Every remaining API test file was run in partitions covering all forty of them -- 280, 275, 244, 134 and 107 passed across five partitions before the patch pass, and the three files the patch pass touched were re-run in the 187 above. `make test` was not used as one command: the full workspace suite runs past this session's ten-minute command ceiling.
-- `uv run pytest shared/schema/tests infra/tests scripts/ingest/tests tests` -- 351 passed; `uv run pytest shared/vision/tests` -- 43 passed.
-- Matrix test audit: every row of the I/O & Edge-Case Matrix maps to at least one test that ran and passed, none skipped.
-- `git diff --stat -- shared/vision` is empty, and no migration, extension or index was added.
+- `uv run --project apps/api pytest` over the seven catalogue/authorization
+  files named in `## Verification` -- 188 passed, exit 0, **nothing skipped**.
+- `npm --prefix apps/web test -- --run catalogue edit-tile add-tile bulk-upload
+  styling-wiring error-code-parity no-raw-values tokens app-shell auth-gating
+  user-list tile-contract` -- 1037 passed.
+- `make test` run in two partitions, because the single command exceeds this
+  session's command ceiling: `uv run pytest` over the whole workspace -- green,
+  no failures, no errors; `npm --prefix apps/web run test` -- 25 files, 1505
+  passed.
+- Mutation checks on the new demotion test, to prove it is not vacuous: removing
+  `section === 'catalogue' ||` from `reachableBy` fails it, and removing
+  `setCatalogueQuery('')` from the role reconciler fails it.
+- `git diff --stat -- shared/vision` is empty.
 
-**Residual risks**
+### Residual risks
 
-- One web test flakes under CPU contention -- `session-expiry.test.tsx`'s 401 tests, on the default 1000ms `findBy` timeout. It is not this story's: the same failure in the same file reproduces in a worktree built from `87d032c74169146906de0059b26a4b5cf34cdada`, and fifteen standalone runs of that file pass. Recorded as deferred.
-- The search is a sequential scan by design. Correct at 381 rows and at the ~600-Tile scale the index is sized for; the answer past that is to measure before reaching for `pg_trgm`, and the statement's own comment says so.
-- The image bytes, not the JSON, are what a full browse costs. The row count argument the spec makes for no pagination was never an argument about derivative bytes, which is the first deferred item.
-- `EditTileScreen`'s code-entry stage is no longer an entry point -- nothing in the app opens that screen without a Tile. It remains as the post-404 fallback, and `GET /admin/tiles/lookup` is retained because Story 2.2's authorization criterion names it. Both docstrings now say exactly that rather than claiming a door that no longer exists.
+- The two medium ledger entries this story raised are still open and still
+  product decisions rather than code fixes: whether an Administrator's
+  catalogue reads deserve the scan throttle or an audit entry of their own
+  (DW-205), and whether AD-17 should cut a list-sized image derivative so a
+  browse of the whole catalogue is not tens of megabytes (DW-204). The first is
+  worth settling before the pen test that gates rollout.
+- `_SEARCH_TILES` and `_SEARCH_TILE_IMAGES` are two statements under READ
+  COMMITTED, so a Tile removed between them is answered with an empty
+  `reference_images` and its row paints "No image". Judged not worth a
+  transaction or a join: the outcome is a row that is about to disappear from
+  the next search anyway, and the screen states it in words rather than failing.
+- The route is still uncapped by design (`## Design Notes`). The argument rests
+  on a catalogue of a few hundred Tiles; it is the first thing to re-measure if
+  the catalogue grows by an order of magnitude.

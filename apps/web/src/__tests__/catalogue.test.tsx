@@ -818,13 +818,14 @@ describe('a failure', () => {
     });
   });
 
-  it('sends one request for two presses of Try again, and moves focus once', async () => {
+  it('sends one request for two presses of Try again', async () => {
     // Two clicks in one tick both read the state from before the first
     // `setListing`, and the button is still in the document for the second —
     // so without a synchronous guard the second sends a duplicate request
     // against a failure that is already being retried. The guard sits *above*
     // the focus call, so the press it declines does not also pull focus off
-    // the control that was pressed.
+    // the control that was pressed — which is the next test's claim, made
+    // where focus is actually read; this one counts requests and nothing else.
     const { calls } = stubFetch({
       [BROWSE]: [
         refusal('internal_error', 'Something went wrong.', 500),
@@ -1218,6 +1219,63 @@ describe('the door on the home panel', () => {
     await screen.findByText(/signed in as kasun perera/i);
 
     expect(screen.queryByRole('button', { name: /^catalogue$/i })).toBeNull();
+  });
+
+  it('is gone, with the surface and the search, after a mid-session demotion', async () => {
+    // The redirect EXPERIENCE.md line 95 asks for, expressed as a pure function
+    // of role: `reachableBy` is what puts `'catalogue'` behind `admin`, and the
+    // gate's role reconciler is what clears a section the new role cannot
+    // reach. Neither is exercised by the door-presence tests above — those are
+    // satisfied by the JSX condition around the panel's buttons alone — so
+    // without this the whole role-conditional half of the new section could be
+    // deleted and ship green, leaving a demoted Administrator looking at the
+    // catalogue table.
+    //
+    // The search goes with it, and the second revalidation is what proves it:
+    // a promotion inside one shift is two clicks since Story 1.10, and a
+    // Catalogue that reopened narrowed by a search made under a role that no
+    // longer applied would be handing the fragment straight back.
+    const { calls } = stubFetch({
+      '/api/auth/session': [
+        { status: 200, body: ADMIN },
+        { status: 200, body: { ...ADMIN, role: 'staff' } },
+        { status: 200, body: ADMIN },
+      ],
+      [BROWSE]: [{ status: 200, body: [TILE] }, { status: 200, body: [TILE] }],
+      [searchPath('cma')]: [{ status: 200, body: [TILE] }],
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^catalogue$/i }));
+    await screen.findByRole('table');
+
+    fireEvent.change(screen.getByLabelText(/search by code/i), { target: { value: 'cma' } });
+    fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
+    await waitFor(() => {
+      expect(calls.some(([path]) => path === searchPath('cma'))).toBe(true);
+    });
+
+    // The visibility revalidation `SessionProvider` registers is what re-reads
+    // the role (AD-3); this is that request arriving with the new one.
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    expect(await screen.findByText(/signed in as/i)).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /^catalogue$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^catalogue$/i })).toBeNull();
+    // And nothing of the catalogue survives the swap — not a stale table, not
+    // a row, not a Code.
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.queryByText(CODE)).toBeNull();
+
+    // Promoted back, the Catalogue opens on the full list rather than on the
+    // search the demotion interrupted.
+    document.dispatchEvent(new Event('visibilitychange'));
+    fireEvent.click(await screen.findByRole('button', { name: /^catalogue$/i }));
+    await screen.findByRole('table');
+
+    expect(screen.getByLabelText(/search by code/i)).toHaveProperty('value', '');
+    expect(calls.filter(([path]) => path === searchPath('cma'))).toHaveLength(1);
+    expect(calls.filter(([path]) => path === BROWSE)).toHaveLength(2);
   });
 
   it('replaced the three tile doors rather than joining them', async () => {

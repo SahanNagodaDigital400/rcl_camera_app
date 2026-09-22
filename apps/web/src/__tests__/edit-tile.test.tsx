@@ -1748,6 +1748,38 @@ describe('a tile handed over by a Catalogue row', () => {
     expect(onRemoved).not.toHaveBeenCalled();
   });
 
+  it('falls back to the code lookup when the tile is already gone', async () => {
+    // The one refusal that is not "stay put": a `404` means the tile this
+    // screen was handed no longer exists, so there is nothing for the form to
+    // be about *and* nothing for `onRemoved` to return to that would explain
+    // why — the Catalogue's own refetch is what shows the row gone, and it is
+    // reached from `Back`. The screen therefore does what its docstring says
+    // it does on a `404` from either write: clears the tile, states the
+    // server's own sentence, and leaves the lookup stage standing as the way
+    // to find another one.
+    //
+    // Reachable only since Story 2.5, because the handed-over path is: two
+    // Administrators on the same row, the second confirming a removal the
+    // first already made.
+    const onRemoved = vi.fn();
+    stubFetch({ [`DELETE ${REMOVE}`]: [refusal(TILE_NOT_FOUND, NO_SUCH_TILE, 404)] });
+    withTile(FOUND, onRemoved);
+
+    await screen.findByLabelText(/^code$/i);
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', NO_SUCH_TILE);
+    // Not `onRemoved`: the gate would unmount this screen and the sentence
+    // with it, leaving the Administrator on a Catalogue that simply no longer
+    // has the row, with nothing saying the removal was not theirs.
+    expect(onRemoved).not.toHaveBeenCalled();
+    // The form is gone with the tile it described, and the lookup stage — the
+    // one control that can still do anything — has the focus.
+    expect(screen.queryByLabelText(/^size$/i)).toBeNull();
+    expect(document.activeElement).toBe(screen.getByLabelText(/find a tile by code/i));
+  });
+
   it('still offers the code lookup when no tile was handed over', async () => {
     // The stage Story 2.5 deliberately did not weaken. It is what a tile
     // nobody handed the screen still needs, Story 2.2's authorization clause

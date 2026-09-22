@@ -315,6 +315,13 @@ function Gate(): JSX.Element {
       setSection('home');
       setEditing(null);
       setEditingTile(null);
+      // And the search, for the reason the sign-out reconciler above clears it:
+      // a fragment of a Code is catalogue data, and a demotion is the moment
+      // the Catalogue stops being this person's to read. Leaving it in state
+      // would also hand it straight back — a demotion and a promotion within
+      // one shift is two clicks since Story 1.10 — so the Catalogue would
+      // reopen narrowed by a search made under a role that no longer applies.
+      setCatalogueQuery('');
     }
   }
 
@@ -548,7 +555,11 @@ function Gate(): JSX.Element {
     // Back goes to the Catalogue, not to the home panel: the Catalogue is
     // where "+ Add Tile" was pressed (EXPERIENCE.md line 36), and it is where
     // the new tile belongs. `CatalogueScreen` refetches on mount, so returning
-    // to it shows the tile just added.
+    // to it lists the catalogue as it now stands — under whatever search was
+    // in place, which is the point of keeping it: an Administrator adding a
+    // run of `RP.CMA.*` tiles comes back to that run rather than to all 381.
+    // A tile whose Code does not contain the fragment is therefore not on
+    // screen; emptying the box lists it.
     return (
       <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
         {signOutFailure}
@@ -600,8 +611,9 @@ function Gate(): JSX.Element {
     //
     // Back goes to the Catalogue: EXPERIENCE.md line 37 reaches Bulk Upload
     // *from* the Catalogue, so that is where its control lives and where Back
-    // returns to — and the Catalogue refetches on mount, so the whole batch is
-    // listed on arrival.
+    // returns to — and the Catalogue refetches on mount, so the batch is on
+    // screen on arrival, narrowed by whatever search was in place. A batch
+    // wider than the search is listed in full by emptying the box.
     return (
       <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
         {signOutFailure}

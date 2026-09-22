@@ -393,8 +393,6 @@ export function CatalogueScreen({
     load(listing.query);
   }
 
-
-
   return (
     <section className={styles.screen}>
       <h1 className={styles.title} id={titleId} ref={titleRef} tabIndex={-1}>

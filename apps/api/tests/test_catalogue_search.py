@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import numpy as np
@@ -125,14 +125,22 @@ RETURNING id
 
 _SEED_TILE = """
 INSERT INTO tile (code, size_id) VALUES (%s, %s)
+RETURNING id
 """
 
 
-def seed(conn: psycopg.Connection, code: str, size: str = "45X90") -> None:
-    """One Tile row, straight into the table the route reads. See `_SEED_TILE`."""
+def seed(conn: psycopg.Connection, code: str, size: str = "45X90") -> UUID:
+    """One Tile row, straight into the table the route reads. See `_SEED_TILE`.
+
+    Returns the new id, so a caller that needs a *write* the audit log records —
+    `DELETE /admin/tiles/{id}` is the one this file uses — can make it without
+    the model the add needs.
+    """
     row = conn.execute(_SEED_SIZE, (size,)).fetchone()
     assert row is not None
-    conn.execute(_SEED_TILE, (code, row["id"]))
+    tile = conn.execute(_SEED_TILE, (code, row["id"])).fetchone()
+    assert tile is not None
+    return cast(UUID, tile["id"])
 
 
 def search(client: TestClient, **params: str) -> Any:
@@ -611,6 +619,35 @@ def test_no_number_of_searches_writes_an_audit_entry(
     # log nothing can write to.
     add(client)
     before = len(audit_rows(conn))
+    assert before > 0
+
+    for q in ("CMA", "", "ZZZZ", "%"):
+        assert client.get(SEARCH, params={"q": q}).status_code == 200
+
+    assert len(audit_rows(conn)) == before
+
+
+def test_a_search_writes_no_audit_entry_on_a_machine_with_no_model(
+    client: TestClient,
+    conn: psycopg.Connection,
+    administrator: Any,
+    audit_rows: AuditRows,
+) -> None:
+    """The twin above, with a control that needs no ONNX artifact.
+
+    `add(client)` embeds, so the version above carries `@needs_model` and skips
+    wherever `make model` has not been run — and `make test` does not depend on
+    that target, so on those machines FR-20's claim about this route went
+    unmade. The removal is the other audited write on the Catalogue and
+    `remove_tile` reads no model, so a seeded Tile and a `DELETE` give the same
+    control for nothing.
+    """
+    tile_id = seed(conn, CODE)
+    assert client.delete(f"{ADD_TILE}/{tile_id}").status_code == 204
+
+    before = len(audit_rows(conn))
+    # The control: the log is reachable from this test, so "no new entry" is a
+    # statement about the search rather than about a log nothing can write to.
     assert before > 0
 
     for q in ("CMA", "", "ZZZZ", "%"):
