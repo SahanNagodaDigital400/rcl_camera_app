@@ -74,6 +74,9 @@ SESSIONS_HOME = REPO_ROOT / "apps" / "api" / "api" / "sessions.py"
 #: The one file allowed to *write* the `login_attempts` table (AD-8).
 THROTTLE_HOME = REPO_ROOT / "apps" / "api" / "api" / "throttle.py"
 
+#: The one file allowed to *write* the `scan_rate_limit` table (AD-8, Story 3.6).
+SCAN_THROTTLE_HOME = REPO_ROOT / "apps" / "api" / "api" / "scan_throttle.py"
+
 #: The one file allowed to name the audit table at all (AD-4).
 #:
 #: Stricter than the three above, and deliberately: `sessions` and
@@ -88,6 +91,7 @@ AUDIT_HOME = REPO_ROOT / "apps" / "api" / "api" / "audit.py"
 _HASHER = "Password" + "Hasher"
 _SESSIONS = "sessions"
 _LOGIN_ATTEMPTS = "login_" + "attempts"
+_SCAN_RATE_LIMIT = "scan_rate_" + "limit"
 _AUDIT_LOG = "audit_" + "log"
 
 #: The three verbs AD-4 forbids against the audit table, in the spellings SQL
@@ -205,6 +209,7 @@ def test_the_scan_reaches_the_files_it_claims_to() -> None:
         HASHER_HOME,
         SESSIONS_HOME,
         THROTTLE_HOME,
+        SCAN_THROTTLE_HOME,
         AUDIT_HOME,
         REPO_ROOT / "apps" / "api" / "api" / "db.py",
         # Story 1.8's provisioning write. Named for the same reason the four
@@ -333,6 +338,34 @@ def test_only_one_module_writes_the_login_attempts_table() -> None:
     assert offenders == [], (
         f"A failed-login counter write outside {THROTTLE_HOME.relative_to(REPO_ROOT)} (AD-8): "
         + ", ".join(offenders)
+    )
+
+
+def test_only_one_module_writes_the_scan_rate_limit_table() -> None:
+    # AD-8, Story 3.6: FR-23's scan throttle is mutated by ONE atomic
+    # increment-and-check, `login_attempts`'s own shape. A second write
+    # anywhere else is the same lost-update risk that guard exists to stop,
+    # and it would look just as reasonable in whichever file needed one first.
+    #
+    # Reads are deliberately **not** guarded, for the same reason the login
+    # counter's are not: a later story may need to join this table to render
+    # status, and a guard forcing that join through here would be argued with
+    # rather than obeyed.
+    pattern = re.compile(
+        r"\b(?:INSERT\s+INTO\s+|UPDATE\s+|DELETE\s+FROM\s+)" + _SCAN_RATE_LIMIT + r"\b",
+        re.IGNORECASE,
+    )
+    offenders = [
+        str(path.relative_to(REPO_ROOT))
+        for path in _sources()
+        if path not in (SCAN_THROTTLE_HOME, SELF)
+        and "tests" not in path.parts
+        and pattern.search(path.read_text(encoding="utf-8"))
+    ]
+
+    assert offenders == [], (
+        f"A scan rate-limit counter write outside "
+        f"{SCAN_THROTTLE_HOME.relative_to(REPO_ROOT)} (AD-8): " + ", ".join(offenders)
     )
 
 

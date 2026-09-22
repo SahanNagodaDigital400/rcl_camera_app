@@ -57,6 +57,7 @@ from shared_schema.errors import ApiError
 from shared_schema.scan import HISTORY_PAGE_SIZE, ScanCandidate, ScanHistoryEntry
 from shared_schema.user import User
 
+from api import scan_throttle
 from api.catalogue import (
     IMAGE_TOO_LARGE,
     NOT_AN_IMAGE,
@@ -98,6 +99,19 @@ SCAN_QUALITY_TOO_LOW = "scan_quality_too_low"
 #: one. This exact wording is pinned by nothing but
 #: `test_scan_submission.py`'s own direct assertion against it.
 SCAN_QUALITY_MESSAGE = "This photo's a little blurry — try again."
+
+#: Story 3.6 / FR-23: this account has submitted more scans than
+#: `scan_throttle.SCAN_RATE_LIMIT` allows within `scan_throttle.SCAN_RATE_LIMIT_WINDOW`.
+#: A module-level constant, unlike `SCAN_ENTRY_NOT_FOUND` below — this one needs
+#: a TypeScript twin (`error-code-parity.test.ts`'s "every code the API can
+#: emit" scan), which only reaches a module-level `NAME = "..."` assignment.
+SCAN_RATE_LIMITED = "scan_rate_limited"
+
+#: EXPERIENCE.md line 89: a plain "temporarily paused" sentence, and
+#: deliberately no countdown — see AD-8 and `scan_throttle`'s own module
+#: docstring for why neither the rate nor the window ever reaches this
+#: sentence or any header on this response.
+SCAN_RATE_LIMITED_MESSAGE = "Scan submissions are temporarily paused. Try again shortly."
 
 
 def _refusal(code: str, message: str, status_code: int) -> ApiError:
@@ -178,6 +192,16 @@ def submit_scan(
     than contending with it.
     """
     response.headers.update(NO_STORE)
+
+    # Story 3.6 / AD-16's fixed order: session validation (already done, by
+    # `require_claimed_user`) → AD-8's rate-limit check → only then, the crop,
+    # the quality gate and the inference lock. A throttled caller never pays
+    # for any image work, and no `scan` row is written for this refusal, as
+    # for every other pre-match refusal in this handler.
+    if scan_throttle.check_and_record(conn, user.id):
+        raise _refusal(
+            SCAN_RATE_LIMITED, SCAN_RATE_LIMITED_MESSAGE, status.HTTP_429_TOO_MANY_REQUESTS
+        )
 
     data = _read_upload(image)
     try:

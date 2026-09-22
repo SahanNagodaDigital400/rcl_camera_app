@@ -65,6 +65,6 @@ development_status:
   3-3-capture-quality-guidance: done
   3-4-ranked-candidate-results-with-images: done
   3-5-scan-history: done
-  3-6-scan-rate-limiting: backlog
+  3-6-scan-rate-limiting: done
   3-7-anomaly-flagging: backlog
   epic-3-retrospective: optional

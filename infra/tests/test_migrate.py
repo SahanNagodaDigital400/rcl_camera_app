@@ -39,6 +39,7 @@ LOGIN_THROTTLING_VERSION = "20260918T1000_add_login_throttling"
 AUDIT_LOG_VERSION = "20260921T1000_create_audit_log"
 CATALOGUE_VERSION = "20260921T1500_create_catalogue"
 SCAN_VERSION = "20260922T1900_create_scan"
+SCAN_RATE_LIMIT_VERSION = "20260922T2000_create_scan_rate_limit"
 
 #: Every migration in `infra/migrations`, in the order the runner applies
 #: them. Listed once so adding a migration is one edit here rather than a
@@ -52,6 +53,7 @@ ALL_VERSIONS = [
     AUDIT_LOG_VERSION,
     CATALOGUE_VERSION,
     SCAN_VERSION,
+    SCAN_RATE_LIMIT_VERSION,
 ]
 
 SEED_EMAIL = "ruwan@rocell.lk"
@@ -513,6 +515,7 @@ def test_the_audit_down_takes_back_the_grants_and_the_membership(
     assert _holds(conn, "login_attempts", "UPDATE")
     assert _is_a_member(conn)
 
+    assert down(conn) == SCAN_RATE_LIMIT_VERSION
     assert down(conn) == SCAN_VERSION
     assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
@@ -528,7 +531,12 @@ def test_the_audit_down_takes_back_the_grants_and_the_membership(
 
     # And the pair round-trips: re-applying restores both, so a revert is not
     # a one-way door for the deployment that has to go forward again.
-    assert up(conn) == [AUDIT_LOG_VERSION, CATALOGUE_VERSION, SCAN_VERSION]
+    assert up(conn) == [
+        AUDIT_LOG_VERSION,
+        CATALOGUE_VERSION,
+        SCAN_VERSION,
+        SCAN_RATE_LIMIT_VERSION,
+    ]
     assert _holds(conn, "users", "SELECT")
     assert _is_a_member(conn)
 
@@ -738,10 +746,12 @@ def test_the_throttling_pair_round_trips(conn: psycopg.Connection, seed_password
     up(conn)
     assert "locked_until" in table_columns(conn, "users")
 
-    # The scan table sits on top of the catalogue pair, which sits on top of
-    # the audit pair, which sits on top of the throttling pair, so three steps
-    # come off before this one. Asserted rather than skipped past: a `down`
-    # that reverted more than its own file would show up right here.
+    # The scan rate limit table sits on top of the scan table, which sits on
+    # top of the catalogue pair, which sits on top of the audit pair, which
+    # sits on top of the throttling pair, so four steps come off before this
+    # one. Asserted rather than skipped past: a `down` that reverted more than
+    # its own file would show up right here.
+    assert down(conn) == SCAN_RATE_LIMIT_VERSION
     assert down(conn) == SCAN_VERSION
     assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
@@ -750,17 +760,92 @@ def test_the_throttling_pair_round_trips(conn: psycopg.Connection, seed_password
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert table_columns(conn, "login_attempts") == set()
     assert "locked_until" not in table_columns(conn, "users")
-    assert ledger_versions(conn) == ALL_VERSIONS[:-4]
+    assert ledger_versions(conn) == ALL_VERSIONS[:-5]
 
     assert up(conn) == [
         LOGIN_THROTTLING_VERSION,
         AUDIT_LOG_VERSION,
         CATALOGUE_VERSION,
         SCAN_VERSION,
+        SCAN_RATE_LIMIT_VERSION,
     ]
     assert "locked_until" in table_columns(conn, "users")
     assert table_columns(conn, "login_attempts") != set()
     assert ledger_versions(conn) == ALL_VERSIONS
+
+
+def test_the_scan_rate_limit_pair_round_trips(conn: psycopg.Connection, seed_password: str) -> None:
+    """Story 3.6's migration: up, down, up. A brand-new table, so there is no
+    existing-row upgrade case to prove — `login_attempts` and `scan` already
+    cover that shape for an `ALTER TABLE` and for a fresh `CREATE TABLE`
+    respectively, and this table is the latter with nothing preceding it to
+    upgrade.
+    """
+    up(conn)
+    assert table_columns(conn, "scan_rate_limit") == {
+        "user_id",
+        "submission_count",
+        "window_started_at",
+    }
+    assert _holds(conn, "scan_rate_limit", "SELECT")
+    assert _holds(conn, "scan_rate_limit", "INSERT")
+    assert _holds(conn, "scan_rate_limit", "UPDATE")
+    assert _holds(conn, "scan_rate_limit", "DELETE")
+
+    assert down(conn) == SCAN_RATE_LIMIT_VERSION
+    assert table_columns(conn, "scan_rate_limit") == set()
+    # `scan` itself survives this one step — proof the revert is this file's
+    # own table and not "everything on top".
+    assert table_columns(conn, "scan") != set()
+
+    assert up(conn) == [SCAN_RATE_LIMIT_VERSION]
+    assert table_columns(conn, "scan_rate_limit") == {
+        "user_id",
+        "submission_count",
+        "window_started_at",
+    }
+    assert _holds(conn, "scan_rate_limit", "SELECT")
+
+
+def test_a_negative_submission_count_is_refused_by_the_database(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # The CHECK is the database's own copy of a rule the one statement that
+    # writes this table already keeps — `login_attempts`'s own precedent, for
+    # the next statement somebody adds against this one.
+    up(conn)
+    account = conn.execute("SELECT id FROM users LIMIT 1").fetchone()
+    assert account is not None
+
+    with pytest.raises(pg_errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO scan_rate_limit (user_id, submission_count) VALUES (%s, %s)",
+            (account[0], -1),
+        )
+
+
+def test_a_deleted_user_takes_their_scan_rate_limit_row_with_them(
+    conn: psycopg.Connection, seed_password: str
+) -> None:
+    # `user_id` is a real foreign key, `ON DELETE CASCADE` — `scan.user_id`'s
+    # own precedent, and the opposite of `login_attempts.email_key`, which is
+    # deliberately not one.
+    up(conn)
+    conn.execute(
+        "INSERT INTO users (name, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+        ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
+    )
+    user_id = conn.execute("SELECT id FROM users WHERE email = %s", ("nimal@rocell.lk",)).fetchone()
+    assert user_id is not None
+    conn.execute("INSERT INTO scan_rate_limit (user_id) VALUES (%s)", (user_id[0],))
+
+    conn.execute("DELETE FROM users WHERE id = %s", (user_id[0],))
+
+    remaining = conn.execute(
+        "SELECT count(*) FROM scan_rate_limit WHERE user_id = %s", (user_id[0],)
+    ).fetchone()
+    assert remaining is not None
+    assert remaining[0] == 0
 
 
 # --- down --------------------------------------------------------------------
@@ -770,10 +855,14 @@ def test_down_reverts_one_step(conn: psycopg.Connection, seed_password: str) -> 
     up(conn)
 
     # One step is one migration: the most recently applied, and nothing behind
-    # it. The scan table goes first, the catalogue pair next and the audit
-    # pair after that, and the throttling objects below them are untouched by
-    # any of the three steps — proof the step really is one file and not
-    # "everything on top".
+    # it. The scan rate limit table goes first, the scan table next, the
+    # catalogue pair after that and the audit pair after that, and the
+    # throttling objects below them are untouched by any of the four steps —
+    # proof the step really is one file and not "everything on top".
+    assert down(conn) == SCAN_RATE_LIMIT_VERSION
+    assert table_columns(conn, "scan_rate_limit") == set()
+    assert table_columns(conn, "scan") != set()
+
     assert down(conn) == SCAN_VERSION
     assert table_columns(conn, "scan") == set()
     assert table_columns(conn, "tile") != set()
@@ -824,6 +913,7 @@ def test_stepping_all_the_way_down_restores_the_previous_shape(
     assert table_columns(conn, "audit_log") == set()
     assert table_columns(conn, "tile") == set()
     assert table_columns(conn, "reference_embedding") == set()
+    assert table_columns(conn, "scan_rate_limit") == set()
 
 
 def test_down_refuses_a_ledger_version_whose_files_are_gone(
@@ -870,6 +960,7 @@ def test_down_leaves_a_claimed_administrator_alone(
         ("admin",),
     )
 
+    assert down(conn) == SCAN_RATE_LIMIT_VERSION
     assert down(conn) == SCAN_VERSION
     assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
@@ -891,6 +982,7 @@ def test_down_leaves_an_administrator_who_has_signed_in_alone(
     up(conn)
     conn.execute("UPDATE users SET last_login_at = now() WHERE role = %s", ("admin",))
 
+    assert down(conn) == SCAN_RATE_LIMIT_VERSION
     assert down(conn) == SCAN_VERSION
     assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
@@ -911,6 +1003,7 @@ def test_down_leaves_an_administrator_who_set_their_own_password_alone(
         ("admin",),
     )
 
+    assert down(conn) == SCAN_RATE_LIMIT_VERSION
     assert down(conn) == SCAN_VERSION
     assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
@@ -931,6 +1024,7 @@ def test_down_leaves_staff_accounts_alone(conn: psycopg.Connection, seed_passwor
         ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
     )
 
+    assert down(conn) == SCAN_RATE_LIMIT_VERSION
     assert down(conn) == SCAN_VERSION
     assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
@@ -952,6 +1046,7 @@ def test_down_leaves_a_second_administrator_alone(
         ("Second Admin", "second@rocell.lk", "$argon2id$placeholder", "admin"),
     )
 
+    assert down(conn) == SCAN_RATE_LIMIT_VERSION
     assert down(conn) == SCAN_VERSION
     assert down(conn) == CATALOGUE_VERSION
     assert down(conn) == AUDIT_LOG_VERSION
@@ -1512,6 +1607,9 @@ def test_main_steps_down_with_the_confirmation_flag(
 ) -> None:
     assert migrate.main(["up"]) == 0
     capsys.readouterr()
+
+    assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
+    assert SCAN_RATE_LIMIT_VERSION in capsys.readouterr().out
 
     assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
     assert SCAN_VERSION in capsys.readouterr().out

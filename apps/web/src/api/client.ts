@@ -267,6 +267,17 @@ export const INVALID_CROP_RECT = 'invalid_crop_rect';
 export const SCAN_QUALITY_TOO_LOW = 'scan_quality_too_low';
 
 /**
+ * The envelope code for "this account has submitted too many scans recently".
+ *
+ * Story 3.6 / FR-23, AD-8's per-user counter. A `429`, and like `ACCOUNT_LOCKED`
+ * it carries no timing information for the client to render — EXPERIENCE.md's
+ * plain "temporarily paused" wording, with no countdown. Unlike the login
+ * lockout there is no `Retry-After` either: neither FR-23 nor epics.md 3.6 ask
+ * for one, so `CropScreen` has nothing to read but the server's own sentence.
+ */
+export const SCAN_RATE_LIMITED = 'scan_rate_limited';
+
+/**
  * The envelope code for a Code that is already a tile's.
  *
  * Marks the **code** field. A `409`: nothing is wrong with the caller's

@@ -1792,3 +1792,27 @@ source_spec: `spec-3-5-scan-history.md`
 severity: low
 reason: The boundary ("no new image route") is satisfied by inspection of `imageSrc()` in `HistoryScreen.tsx`, byte-identical to `ResultsScreen.tsx`'s own function, but neither screen's test suite asserts the rendered `src` resolves to that path pattern. Pre-existing test-coverage habit, not introduced by this story.
 status: open
+
+### DW-225: `api/throttle.py`'s "Not here" docstring paragraph still says scan rate limiting (FR-23) and the anomaly baseline (FR-22) are "Epic 2's," which was already wrong before this story and is now doubly
+origin: spec-deferred ca3950110a95
+location: apps/api/api/throttle.py
+source_spec: `spec-3-6-scan-rate-limiting.md`
+severity: low
+reason: Confirmed by reading `apps/api/api/throttle.py`'s module docstring directly; this diff never touches that file, so the stale reference predates this story and is unrelated to the change it describes.
+status: open
+
+### DW-226: This migration's `.down.sql` restates `20260922T1900_create_scan.down.sql`'s own "Deploy the code first, then step this back" wording, which reads ambiguously about which direction "the code" refers
+origin: spec-deferred f641ab2e5ab8
+location: infra/migrations/20260922T2000_create_scan_rate_limit.down.sql
+source_spec: `spec-3-6-scan-rate-limiting.md`
+severity: low
+reason: Verified by direct comparison of the two files: the phrasing is identical apart from the table name, so this story's file inherited an existing ambiguity rather than introducing a new one.
+status: open
+
+### DW-227: A user hard-deleted between `require_claimed_user` resolving and `check_and_record`'s `INSERT` landing would surface an unhandled foreign-key violation as a raw 500.
+origin: spec-deferred 69ddfc384279
+location: apps/api/api/scan_throttle.py
+source_spec: `spec-3-6-scan-rate-limiting.md`
+severity: low
+reason: `scan_rate_limit.user_id` is `REFERENCES users (id) ON DELETE CASCADE`, and `check_and_record` runs no `try`/`except` around the insert. This is the same general TOCTOU race Story 3.5's own spec already documented as a residual risk for `scan.user_id`'s identical shape — latent in every route that reads `user.id` after `require_claimed_user` resolves, not specific to this story, and no source document asks for it to be closed here.
+status: open

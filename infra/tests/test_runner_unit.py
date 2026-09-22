@@ -42,6 +42,7 @@ def test_the_repository_migrations_are_a_valid_plan() -> None:
         "20260921T1000_create_audit_log",
         "20260921T1500_create_catalogue",
         "20260922T1900_create_scan",
+        "20260922T2000_create_scan_rate_limit",
     ]
     assert all(migration.up_path.is_file() for migration in plan)
     assert all(migration.down_path.is_file() for migration in plan)
