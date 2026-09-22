@@ -1501,17 +1501,32 @@ describe('the audit log is a record, not a surface with an action', () => {
     expect(css()).not.toContain('box-shadow');
   });
 
-  it('paints nothing at all with the accent', () => {
-    // **Zero, not one.** DESIGN.md's rule is one accent-filled primary action
-    // per screen; this screen has no primary action, because it is a record.
-    // Painting Load more orange would make "fetch fifty more rows" the most
-    // important thing on an Administrator's security surface. Counted over the
-    // whole stylesheet, so a new rule cannot introduce one unseen.
-    expect([...css().matchAll(/var\(--color-accent\)/g)]).toHaveLength(0);
+  it('paints exactly one thing with the accent, and it is not a control', () => {
+    // **Exactly one, not zero and not two.** DESIGN.md's rule is one
+    // accent-filled primary action per screen; this screen still has no
+    // primary *action*, because it is a record. Painting Load more or the
+    // Flagged toggle orange would make "fetch fifty more rows" or "narrow the
+    // list" the most important thing on an Administrator's security surface.
+    // The one use Story 3.7 adds is `.flagIndicator`, DESIGN.md's
+    // `flagged-activity-row` token — a signal on a read-only word, not a
+    // control — counted over the whole stylesheet, so a second use on any
+    // other selector fails here too.
+    const uses = [...css().matchAll(/var\(--color-accent\)/g)];
+    expect(uses).toHaveLength(1);
+    expect(declaration(rule(css(), '.flagIndicator'), 'color')).toBe('var(--color-accent)');
   });
 
-  it('leaves Back, Try again and Load more as the navy outline', () => {
-    for (const name of ['.back', '.retry', '.more']) {
+  it('gives the flagged-activity-row treatment to the row itself, not a variant', () => {
+    // DESIGN.md's token keeps `flagged-activity-row`'s background and border
+    // identical to `audit-log-row`'s — only the `flag-indicator` differs. So
+    // `.row` (asserted above) is the whole of a flagged row's own treatment;
+    // this only pins that no second, flagged-specific row class exists to
+    // diverge from it later.
+    expect(css()).not.toMatch(/\.flagg?edRow\b/);
+  });
+
+  it('leaves Back, Flagged (at rest), Try again and Load more as the navy outline', () => {
+    for (const name of ['.back', '.flaggedFilter', '.retry', '.more']) {
       const control = rule(css(), name);
 
       expect(declaration(control, 'background'), name).toBe('transparent');
@@ -1520,6 +1535,20 @@ describe('the audit log is a record, not a surface with an action', () => {
         'var(--border-hairline) solid var(--color-primary)',
       );
     }
+  });
+
+  it('fills Flagged with navy, never accent, once it is pressed', () => {
+    // The toggle's "on" state is a filled navy button — `UserListScreen.
+    // module.css`'s own `.roleAdmin` fill/foreground pair — not the accent
+    // reserved for `.flagIndicator`. Matched on the attribute selector
+    // directly rather than through `rule()`, which requires the selector to
+    // be exactly `.flaggedFilter` and would not find this one.
+    const match = /\.flaggedFilter\[aria-pressed='true'\]\s*\{([^}]*)\}/.exec(css())?.[1];
+    expect(match, 'no .flaggedFilter[aria-pressed=\'true\'] rule found').toBeTruthy();
+    const pressed = match ?? '';
+
+    expect(declaration(pressed, 'background')).toBe('var(--color-primary)');
+    expect(declaration(pressed, 'color')).toBe('var(--color-primary-foreground)');
   });
 
   it('keeps the wait muted and the refusal destructive, never the other way round', () => {

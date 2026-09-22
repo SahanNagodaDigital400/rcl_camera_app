@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 import psycopg
 import pytest
-from api import scan_throttle
+from api import anomaly, scan_throttle
 from fastapi.testclient import TestClient
 from PIL import Image
 from psycopg.rows import dict_row
@@ -123,6 +123,44 @@ def test_a_low_limit_throttles_the_submission_past_it(
     # `Retry-After` — unlike the login lockout, nothing here carries timing.
     assert "retry-after" not in {key.lower() for key in over_limit.headers}
     assert not any(character.isdigit() for character in body["error"]["message"])
+
+
+def test_a_throttled_submission_is_still_counted_toward_the_anomaly_baseline(
+    client: TestClient,
+    conn: psycopg.Connection,
+    make_user: MakeUser,
+    low_limit: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 3.6's throttle and Story 3.7's anomaly flag are independent
+    checks on the same request (epic-3-context.md: "a burst can trip one
+    without the other") — this is the one test proving it for real, against
+    the actual over-the-limit response, rather than trusting that a future
+    refactor never moves the throttle's early return above the anomaly
+    check. `anomaly.check_and_flag` is forced `True` rather than driven past
+    a real deviation, `test_anomaly_flagging.py`'s own reason: that module is
+    covered in isolation there.
+    """
+    monkeypatch.setattr(anomaly, "check_and_flag", lambda *_args, **_kwargs: True)
+    account = make_user()
+    sign_in(client, account)
+    for _ in range(low_limit):
+        assert submit_scan(client).status_code == 200
+
+    over_limit = submit_scan(client)
+
+    assert over_limit.status_code == 429
+    assert over_limit.json()["error"]["code"] == "scan_rate_limited"
+    rows = conn.execute(
+        "SELECT actor_user_id, actor_email FROM audit_log WHERE action = %s",
+        ("scan_volume_anomaly_flagged",),
+    ).fetchall()
+    # One flag row per submission this fixture forced `True` for, including
+    # the throttled one itself — the throttled burst is still counted toward
+    # the volume baseline, not silently dropped because it was also refused.
+    assert len(rows) == low_limit + 1
+    assert all(row["actor_user_id"] == account.id for row in rows)
+    assert all(row["actor_email"] == account.email for row in rows)
 
 
 def test_a_throttled_submission_persists_no_scan_row(

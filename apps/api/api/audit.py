@@ -96,7 +96,7 @@ from psycopg.types.json import Jsonb
 #
 # Both moved to `shared_schema.audit` for the same reason — they stopped being
 # the writer's private concern. The read surface below labels an entry from the
-# enum and `apps/web` has to hold the same thirteen values; the screen has to
+# enum and `apps/web` has to hold the same eighteen values; the screen has to
 # know the page size to tell a last page from a full one, because the response
 # is a bare array that says nothing about what follows it. **Knowing it is not
 # choosing it**: this route declares no `limit` parameter and never will, for
@@ -104,7 +104,7 @@ from psycopg.types.json import Jsonb
 # caller-supplied page size is a denial-of-service knob on the one table
 # nobody may prune. Publishing the number the server picked leaves that
 # untouched.
-from shared_schema.audit import PAGE_SIZE, AuditAction, AuditLogEntry
+from shared_schema.audit import FLAGGED_AUDIT_ACTIONS, PAGE_SIZE, AuditAction, AuditLogEntry
 from shared_schema.errors import ApiError
 from shared_schema.user import User
 
@@ -338,6 +338,40 @@ ORDER BY created_at DESC, id DESC
 LIMIT %s
 """
 
+#: The first page of the Flagged filter (Story 3.7, FR-22): the newest
+#: `PAGE_SIZE` entries whose `action` is one of `FLAGGED_AUDIT_ACTIONS`.
+#:
+#: **`_SELECT_LATEST_ENTRIES`'s own text, plus one `AND`.** Never a
+#: dynamically assembled `WHERE` — the two flag actions are the only variable
+#: part, and they travel as a parameterized array (`= ANY(%s)`), never
+#: interpolated. Same column list, same `ORDER BY created_at DESC, id DESC`,
+#: same keyset shape: the Flagged filter is a predicate on top of the
+#: unfiltered read, not a second read with its own paging rules.
+#:
+#: `audit_log_flagged_idx` (`20260923T1010_add_audit_log_flagged_index.up.sql`)
+#: is this statement's own partial index over exactly this ordering and
+#: exactly this predicate.
+_SELECT_LATEST_FLAGGED_ENTRIES = """
+SELECT id, created_at, action, actor_user_id, actor_email,
+       target_user_id, target_email, source_ip, details
+FROM audit_log
+WHERE action = ANY(%s)
+ORDER BY created_at DESC, id DESC
+LIMIT %s
+"""
+
+#: The next page of the Flagged filter — `_SELECT_ENTRIES_BEFORE`'s own text,
+#: the same `AND action = ANY(%s)` added.
+_SELECT_FLAGGED_ENTRIES_BEFORE = """
+SELECT id, created_at, action, actor_user_id, actor_email,
+       target_user_id, target_email, source_ip, details
+FROM audit_log
+WHERE (created_at, id) < (SELECT created_at, id FROM audit_log WHERE id = %s)
+  AND action = ANY(%s)
+ORDER BY created_at DESC, id DESC
+LIMIT %s
+"""
+
 #: Whether a cursor names a row at all.
 #:
 #: Run only when the page above came back empty, which is the one case where
@@ -377,6 +411,7 @@ def read_audit_log(
     administrator: Annotated[User, Depends(require_administrator)],
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
     before: UUID | None = None,
+    flagged: bool = False,
 ) -> list[AuditLogEntry]:
     """FR-21 — the log, newest first, one page at a time.
 
@@ -409,6 +444,14 @@ def read_audit_log(
     function at all, because FastAPI validates `UUID` and `api.main`'s handler
     answers the shared `422` envelope.
 
+    **`flagged` (Story 3.7, FR-22) selects a second, otherwise-identical pair
+    of statements** — `_SELECT_LATEST_FLAGGED_ENTRIES` /
+    `_SELECT_FLAGGED_ENTRIES_BEFORE` — scoped to `FLAGGED_AUDIT_ACTIONS`, never
+    a `WHERE` assembled at request time. Same order, same page size, same
+    keyset cursor shape as the unfiltered read: the filter changes which rows
+    qualify, never how the page is built. Defaults to `False` so every
+    existing caller — and every unfiltered test — is unaffected.
+
     **This surface is read-only and has no counterpart.** There is no route
     that edits or removes an entry, here or anywhere, and there cannot be one:
     `rocell_app` holds `SELECT, INSERT` on this table and nothing else, so an
@@ -423,22 +466,30 @@ def read_audit_log(
     """
     response.headers.update(NO_STORE)
 
+    flag_actions = list(FLAGGED_AUDIT_ACTIONS)
+
     if before is None:
         # `model_validate` per row rather than a bulk construction: it is the
         # same gate the write goes through, so a column that stopped matching
         # the contract fails loudly here instead of reaching the wire.
-        return [
-            AuditLogEntry.model_validate(row)
-            for row in conn.execute(_SELECT_LATEST_ENTRIES, (PAGE_SIZE,))
-        ]
+        statement, params = (
+            (_SELECT_LATEST_FLAGGED_ENTRIES, (flag_actions, PAGE_SIZE))
+            if flagged
+            else (_SELECT_LATEST_ENTRIES, (PAGE_SIZE,))
+        )
+        return [AuditLogEntry.model_validate(row) for row in conn.execute(statement, params)]
 
-    entries = [
-        AuditLogEntry.model_validate(row)
-        for row in conn.execute(_SELECT_ENTRIES_BEFORE, (before, PAGE_SIZE))
-    ]
+    statement, params = (
+        (_SELECT_FLAGGED_ENTRIES_BEFORE, (before, flag_actions, PAGE_SIZE))
+        if flagged
+        else (_SELECT_ENTRIES_BEFORE, (before, PAGE_SIZE))
+    )
+    entries = [AuditLogEntry.model_validate(row) for row in conn.execute(statement, params)]
     # Only when the page is empty. A cursor that resolves and a cursor that
     # does not produce the same empty result — `(created_at, id) < NULL` is
-    # NULL for every row — and the two are a `200 []` and a `404`.
+    # NULL for every row — and the two are a `200 []` and a `404`. Existence is
+    # checked against the whole table regardless of `flagged`: a cursor is
+    # "invented" or not independent of which rows the current page filters to.
     if not entries and conn.execute(_SELECT_ENTRY_EXISTS, (before,)).fetchone() is None:
         raise _audit_entry_not_found()
     return entries

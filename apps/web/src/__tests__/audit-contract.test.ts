@@ -21,8 +21,10 @@ import { describe, expect, it } from 'vitest';
 import {
   AUDIT_ACTIONS,
   AUDIT_CURSOR_PARAM,
+  AUDIT_FLAGGED_PARAM,
   AUDIT_LOG_ENTRY_KEYS,
   AUDIT_PAGE_SIZE,
+  FLAGGED_AUDIT_ACTIONS,
   isAuditAction,
   isAuditLogEntry,
   isUtcTimestamp,
@@ -46,12 +48,13 @@ function anEntry(overrides: Record<string, unknown> = {}): Record<string, unknow
 }
 
 describe('the shared AuditAction', () => {
-  it('is the sixteen actions the product writes', () => {
-    // Thirteen from Epic 1 and three from Epic 2's catalogue writes — the add
-    // (Story 2.1), the edit (Story 2.2) and the removal (Story 2.3). The count
-    // is in the name on purpose: an addition has to be a deliberate edit here
-    // and in the Python twin, not a set that quietly grew.
-    expect(AUDIT_ACTIONS).toHaveLength(16);
+  it('is the eighteen actions the product writes', () => {
+    // Thirteen from Epic 1, three from Epic 2's catalogue writes (the add,
+    // Story 2.1; the edit, Story 2.2; the removal, Story 2.3) and two from
+    // Story 3.7's anomaly flags. The count is in the name on purpose: an
+    // addition has to be a deliberate edit here and in the Python twin, not a
+    // set that quietly grew.
+    expect(AUDIT_ACTIONS).toHaveLength(18);
     expect(new Set(AUDIT_ACTIONS)).toEqual(
       new Set<AuditAction>([
         'login_succeeded',
@@ -70,6 +73,8 @@ describe('the shared AuditAction', () => {
         'catalogue_tile_added',
         'catalogue_tile_edited',
         'catalogue_tile_removed',
+        'login_anomaly_flagged',
+        'scan_volume_anomaly_flagged',
       ]),
     );
   });
@@ -80,6 +85,8 @@ describe('the shared AuditAction', () => {
     ['catalogue_tile_added', true],
     ['catalogue_tile_edited', true],
     ['catalogue_tile_removed', true],
+    ['login_anomaly_flagged', true],
+    ['scan_volume_anomaly_flagged', true],
     // An action from an epic this build predates. The narrower answers
     // false and the *screen* still renders it, which is the asymmetry the
     // fallback label exists for.
@@ -269,5 +276,24 @@ describe('the published cursor parameter', () => {
     expect(typeof AUDIT_CURSOR_PARAM).toBe('string');
     expect(AUDIT_CURSOR_PARAM.length).toBeGreaterThan(0);
     expect(AUDIT_CURSOR_PARAM).toBe(encodeURIComponent(AUDIT_CURSOR_PARAM));
+  });
+});
+
+describe('the published Flagged filter parameter and vocabulary (Story 3.7)', () => {
+  it('is a non-empty name the screen can build a query string from', () => {
+    // `AUDIT_CURSOR_PARAM`'s own precedent and own reason.
+    expect(typeof AUDIT_FLAGGED_PARAM).toBe('string');
+    expect(AUDIT_FLAGGED_PARAM.length).toBeGreaterThan(0);
+    expect(AUDIT_FLAGGED_PARAM).toBe(encodeURIComponent(AUDIT_FLAGGED_PARAM));
+    expect(AUDIT_FLAGGED_PARAM).not.toBe(AUDIT_CURSOR_PARAM);
+  });
+
+  it('is exactly the two anomaly-flag actions, both real members of AuditAction', () => {
+    expect(new Set(FLAGGED_AUDIT_ACTIONS)).toEqual(
+      new Set<AuditAction>(['login_anomaly_flagged', 'scan_volume_anomaly_flagged']),
+    );
+    for (const action of FLAGGED_AUDIT_ACTIONS) {
+      expect(AUDIT_ACTIONS).toContain(action);
+    }
   });
 });

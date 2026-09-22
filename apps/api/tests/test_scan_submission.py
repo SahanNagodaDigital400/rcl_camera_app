@@ -48,6 +48,10 @@ SCANS = "/scans"
 ADD_TILE = "/admin/tiles"
 LOGIN = "/auth/login"
 
+#: What `conftest.client` presents as its peer — `test_audit_login_events.py`'s
+#: own constant and own reason.
+PEER = "127.0.0.1"
+
 #: `test_remove_tile.py`'s own technique, with its own figures: how long a
 #: concurrency test gives a second, deliberately racing thread a real chance
 #: to reach the point under contention before checking it has not gone past
@@ -135,6 +139,50 @@ def test_a_claimed_caller_submits_a_scan_against_an_empty_catalogue(
     assert response.status_code == 200, response.text
     assert response.json() == []
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_a_flagged_scan_still_returns_its_candidates(
+    client: TestClient,
+    conn: psycopg.Connection,
+    make_user: MakeUser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 3.7 / FR-22: a flag never blocks the submission that produced it.
+
+    `anomaly.check_and_flag` is forced `True` here rather than driven past a
+    real deviation — `test_anomaly_flagging.py` covers that module on its own
+    — so this test's claim is narrow and behavioral: the real route, wired to
+    a `True` result, still matches and answers exactly as an unflagged
+    submission would (here, against an empty catalogue), and writes one
+    `SCAN_VOLUME_ANOMALY_FLAGGED` entry alongside it.
+    """
+    from api import scan
+
+    monkeypatch.setattr(scan.anomaly, "check_and_flag", lambda *_args, **_kwargs: True)
+    account = make_user()
+    sign_in(client, account)
+
+    response = submit_scan(client)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+    rows = conn.execute(
+        "SELECT action, actor_user_id, actor_email, target_user_id, target_email, source_ip"
+        " FROM audit_log WHERE action = %s",
+        ("scan_volume_anomaly_flagged",),
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == account.id
+    assert rows[0]["actor_email"] == account.email
+    # A scan submission is a self-directed action with no separate subject —
+    # `api.scan`'s own `audit.record` call names no `target_id`/`target_email`
+    # for this signal, unlike the login flag, which names the same account
+    # twice (actor and target). Asserted explicitly rather than left
+    # unverified, `test_audit_login_events.py`'s own thoroughness for its
+    # equivalent flag.
+    assert rows[0]["target_user_id"] is None
+    assert rows[0]["target_email"] is None
+    assert rows[0]["source_ip"] == PEER
 
 
 # --- Story 3.5's persistence --------------------------------------------------

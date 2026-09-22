@@ -13,11 +13,15 @@
  * this row responds to a pointer, because nothing on it is interactive
  * (EXPERIENCE.md:75). A hover tint would promise a click that does not exist.
  *
- * **No accent token anywhere in this file, and that is enforceable.**
+ * **Exactly one accent token in this file, and it paints no control.**
  * DESIGN.md's rule is one accent-filled primary action per screen; this screen
- * has no primary action at all. Back, Try again and Load more are navigation,
- * and painting one of them orange would make "fetch more rows" the most
- * important thing on an Administrator's security surface.
+ * still has no primary *action* at all. Back, Flagged, Try again and Load more
+ * are all the navy outline family — painting any of them orange would make
+ * "fetch more rows" or "narrow the list" the most important thing on an
+ * Administrator's security surface. The one accent use is `.flagIndicator`
+ * below, DESIGN.md's `flagged-activity-row` token — a signal on a read-only
+ * word, never a control, `BulkUploadScreen.module.css`'s own `.flagged`
+ * precedent for accent-as-signal rather than accent-as-action.
  *
  * Every value here comes from src/styles/tokens.css. The 44px touch-target
  * floor and the accent focus ring are already on `button` in global.css and
@@ -60,6 +64,29 @@
   font-weight: var(--type-label-weight);
   line-height: var(--type-label-line);
   cursor: pointer;
+}
+
+/* Flagged (Story 3.7): the same navy-outline shape as Back at rest, so the
+ * toolbar reads as one family. `[aria-pressed='true']` is the "on" state —
+ * filled navy, white text, `UserListScreen.module.css`'s own `.roleAdmin`
+ * fill/foreground pair — never accent, which stays reserved for the per-row
+ * flag indicator below. */
+.flaggedFilter {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.flaggedFilter[aria-pressed='true'] {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
 }
 
 /* The in-flight lines, first page and appended page alike. Muted, never
@@ -176,6 +203,17 @@
   overflow-wrap: anywhere;
 }
 
+/* DESIGN.md's `flagged-activity-row`: `flag-indicator: {colors.accent}`. The
+ * row it sits in keeps `.row` unmodified — no background or border variant —
+ * this word is the *whole* of the distinction EXPERIENCE.md:76 asks for. A
+ * signal, not a control: nothing here is a tap target, so the accent reads as
+ * the exception DESIGN.md:214 and `BulkUploadScreen.module.css`'s `.flagged`
+ * already establish, not as this screen's one action suddenly appearing. */
+.flagIndicator {
+  color: var(--color-accent);
+  font-weight: var(--type-label-weight);
+}
+
 /* Load more: the navy outline, the third of three secondary controls. An
  * accent fill here would be the single loudest thing on a read-only record,
  * which is exactly backwards. */
@@ -203,6 +241,15 @@
  * document on every Load more press but the last. The screen states the
  * reasoning; this is the matching paint. */
 .more[aria-disabled='true'] {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
+
+/* Flagged (Story 3.7): the same dimmed-not-hidden treatment while the
+ * primary listing is loading, `.more[aria-disabled='true']`'s own reasoning.
+ * Applies whichever paint (outline or the pressed fill) the toggle's own
+ * state already carries — this only layers opacity on top. */
+.flaggedFilter[aria-disabled='true'] {
   opacity: var(--disabled-opacity);
   cursor: default;
 }

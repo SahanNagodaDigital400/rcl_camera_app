@@ -282,6 +282,11 @@ function rowForDetail(text: string): HTMLElement {
   return row as HTMLElement;
 }
 
+/** The Flagged filter's own toggle button (Story 3.7). */
+function flaggedButton(): HTMLElement {
+  return screen.getByRole('button', { name: /^flagged$/i });
+}
+
 // --- The request --------------------------------------------------------------
 
 describe('the request', () => {
@@ -1079,6 +1084,233 @@ describe('Load more', () => {
   });
 });
 
+// --- The Flagged filter (Story 3.7, FR-22) ------------------------------------
+
+describe('the Flagged filter', () => {
+  const FLAGGED = `${AUDIT}?flagged=true`;
+
+  /** A flagged entry — Story 3.7's own pair, either member serves this file. */
+  const LOGIN_FLAGGED: AuditLogEntry = {
+    ...SIGNED_IN,
+    id: '8081920a-b3c4-4d5e-96f7-081920a3b4c5',
+    created_at: '2026-09-23T09:00:00Z',
+    action: 'login_anomaly_flagged',
+    details: { window_count: 12, baseline_average: 3 },
+  };
+
+  it('is off by default, reading the unfiltered log unchanged', async () => {
+    stubPage([SIGNED_IN]);
+    renderScreen();
+
+    await screen.findByRole('table');
+
+    expect(flaggedButton().getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('requests the flagged log when pressed, and resets pagination', async () => {
+    const { calls } = stubFetch({
+      [AUDIT]: [{ status: 200, body: [SIGNED_IN] }],
+      [FLAGGED]: [{ status: 200, body: [LOGIN_FLAGGED] }],
+    });
+    renderScreen();
+
+    await screen.findByRole('table');
+    fireEvent.click(flaggedButton());
+
+    await waitFor(() => {
+      expect(calls.map(([path]) => path)).toEqual([AUDIT, FLAGGED]);
+    });
+    expect(flaggedButton().getAttribute('aria-pressed')).toBe('true');
+    expect(await screen.findByText(/login pattern deviated/i)).toBeTruthy();
+  });
+
+  it('returns to the unfiltered log when pressed again', async () => {
+    const { calls } = stubFetch({
+      [AUDIT]: [
+        { status: 200, body: [SIGNED_IN] },
+        { status: 200, body: [SIGNED_IN, EDITED] },
+      ],
+      [FLAGGED]: [{ status: 200, body: [LOGIN_FLAGGED] }],
+    });
+    renderScreen();
+
+    await screen.findByRole('table');
+    fireEvent.click(flaggedButton());
+    await screen.findByText(/login pattern deviated/i);
+
+    fireEvent.click(flaggedButton());
+
+    await waitFor(() => {
+      expect(calls.map(([path]) => path)).toEqual([AUDIT, FLAGGED, AUDIT]);
+    });
+    expect(flaggedButton().getAttribute('aria-pressed')).toBe('false');
+    expect(await screen.findByText('User edited')).toBeTruthy();
+  });
+
+  it('shows the loading state while switching, not the previous page', async () => {
+    const { settle } = stubDeferred();
+    renderScreen();
+
+    settle(0, { status: 200, body: [SIGNED_IN] });
+    await screen.findByRole('table');
+
+    fireEvent.click(flaggedButton());
+
+    expect(screen.getByRole('status').textContent).toMatch(/loading the audit log/i);
+    expect(screen.queryByRole('table')).toBeNull();
+
+    settle(1, { status: 200, body: [LOGIN_FLAGGED] });
+    await screen.findByRole('table');
+  });
+
+  it('marks itself aria-disabled while its own request is in flight, and clears it after', async () => {
+    // `Load more`'s own precedent: announced rather than silent, and never
+    // truly `disabled` — the button stays focusable and clickable throughout.
+    const { settle } = stubDeferred();
+    renderScreen();
+
+    settle(0, { status: 200, body: [SIGNED_IN] });
+    await screen.findByRole('table');
+    expect(flaggedButton().getAttribute('aria-disabled')).toBe('false');
+
+    fireEvent.click(flaggedButton());
+
+    expect(flaggedButton().getAttribute('aria-disabled')).toBe('true');
+
+    settle(1, { status: 200, body: [LOGIN_FLAGGED] });
+    await screen.findByRole('table');
+
+    expect(flaggedButton().getAttribute('aria-disabled')).toBe('false');
+  });
+
+  it('threads the filter through Load more', async () => {
+    const flaggedRun = run(AUDIT_PAGE_SIZE).map((entry) => ({
+      ...entry,
+      action: 'scan_volume_anomaly_flagged',
+    }));
+    const cursor = `${AUDIT}?before=${flaggedRun[AUDIT_PAGE_SIZE - 1]?.id ?? ''}&flagged=true`;
+    const { calls } = stubFetch({
+      [AUDIT]: [{ status: 200, body: [SIGNED_IN] }],
+      [FLAGGED]: [{ status: 200, body: flaggedRun }],
+      [cursor]: [{ status: 200, body: [] }],
+    });
+    renderScreen();
+
+    await screen.findByRole('table');
+    fireEvent.click(flaggedButton());
+    await screen.findByRole('button', { name: /^load more$/i });
+
+    fireEvent.click(screen.getByRole('button', { name: /^load more$/i }));
+
+    await waitFor(() => {
+      expect(calls.map(([path]) => path)).toEqual([AUDIT, FLAGGED, cursor]);
+    });
+  });
+
+  it('shows the ordinary empty state, not a new one, for an empty flagged log', async () => {
+    stubFetch({
+      [AUDIT]: [{ status: 200, body: [SIGNED_IN] }],
+      [FLAGGED]: [{ status: 200, body: [] }],
+    });
+    renderScreen();
+
+    await screen.findByRole('table');
+    fireEvent.click(flaggedButton());
+
+    expect(await screen.findByText(/^no entries\.$/i)).toBeTruthy();
+    expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  it('retries against the flagged log, not the unfiltered one, when Try again is pressed', async () => {
+    // Every other failure/retry permutation in this suite is against the
+    // unfiltered log; this is the one proving `retry()` keeps whatever
+    // filter was active rather than silently falling back to `AUDIT` — a
+    // plausible regression if `retry` ever stopped reading `load`'s current
+    // closure and captured the parameter at mount instead.
+    const { calls } = stubFetch({
+      [AUDIT]: [{ status: 200, body: [SIGNED_IN] }],
+      [FLAGGED]: [
+        { status: 500, body: { error: { code: 'internal_error', message: 'Something went wrong.' } } },
+        { status: 200, body: [LOGIN_FLAGGED] },
+      ],
+    });
+    renderScreen();
+
+    await screen.findByRole('table');
+    fireEvent.click(flaggedButton());
+    await screen.findByRole('alert');
+
+    fireEvent.click(screen.getByRole('button', { name: /^try again$/i }));
+
+    expect(await screen.findByRole('table')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText(/login pattern deviated/i)).toBeTruthy();
+    expect(calls.map(([path]) => path)).toEqual([AUDIT, FLAGGED, FLAGGED]);
+    // The toggle itself is unaffected by the failure and its retry.
+    expect(flaggedButton().getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('discards a stale unfiltered answer that lands after the filter is toggled on', async () => {
+    // `UserListScreen`'s own generation guard, exercised against a toggle
+    // rather than a refetch: `load`'s identity changes on every toggle, which
+    // re-fires the mount effect and bumps the generation exactly as an
+    // unmount does. A slow first answer that lands after must not overwrite
+    // the filtered page the toggle asked for.
+    const { settle } = stubDeferred();
+    renderScreen();
+
+    fireEvent.click(flaggedButton());
+    settle(1, { status: 200, body: [LOGIN_FLAGGED] });
+    await screen.findByRole('table');
+
+    settle(0, { status: 200, body: [SIGNED_IN] });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText(/login pattern deviated/i)).toBeTruthy();
+    expect(screen.queryByText('Signed in')).toBeNull();
+  });
+});
+
+// --- The flag indicator (Story 3.7, FR-22) ------------------------------------
+
+describe('a flagged entry', () => {
+  const LOGIN_FLAGGED: AuditLogEntry = {
+    ...SIGNED_IN,
+    id: '90a1b2c3-d4e5-4f60-a7b8-90a1b2c3d4e5',
+    action: 'login_anomaly_flagged',
+    details: {},
+  };
+
+  it('carries the accent flag indicator inline in the unfiltered view', async () => {
+    stubPage([SIGNED_IN, LOGIN_FLAGGED]);
+    renderScreen();
+
+    await screen.findByRole('table');
+
+    // `within` the table, and the exact separated text: the toolbar's own
+    // "Flagged" filter button (asserted elsewhere) carries the same word with
+    // no ` · ` prefix, and a looser query here would match both.
+    expect(within(screen.getByRole('table')).getByText('· Flagged')).toBeTruthy();
+    expect(screen.getByText(/login pattern deviated/i)).toBeTruthy();
+    // Signed in — the other, unflagged row — carries no such indicator.
+    expect(screen.getByText('Signed in').closest('td')?.textContent).toBe('Signed in');
+  });
+
+  it('keeps the same audit-log-row treatment as any other row', async () => {
+    // DESIGN.md's token: `flagged-activity-row` shares its background and
+    // border with `audit-log-row`; only the flag indicator differs. Asserted
+    // here at the class-name level — the actual colours are
+    // `styling-wiring.test.ts`'s claim.
+    stubPage([LOGIN_FLAGGED]);
+    renderScreen();
+
+    await screen.findByRole('table');
+    const row = screen.getAllByRole('row')[1];
+
+    expect(row?.className).toBe(styles.row);
+  });
+});
+
 // --- The controls -------------------------------------------------------------
 
 describe('the controls', () => {
@@ -1093,24 +1325,27 @@ describe('the controls', () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
-  it('carries Back and nothing else on a log that fits in one page', async () => {
+  it('carries Back, Flagged and nothing else on a log that fits in one page', async () => {
     // **The story's own clause, and the one nothing else can assert.**
     // EXPERIENCE.md:75 and FR-21: this is the one table in the product with
     // zero row-end actions, at any role. Asserted over the rendered control
     // names rather than by eye, so an edit, a delete, a row-end menu, a
-    // bulk-select column or a "resolve" verb added later fails here.
+    // bulk-select column or a "resolve" verb added later fails here. Story
+    // 3.7's Flagged filter is a toolbar-level control over the whole log,
+    // never a row-end action, and is named in the expected list rather than
+    // excluded from it.
     //
     // Three entries is a short page, so there is no Load more either — which
     // is what makes this the tightest version of the assertion: on the whole
-    // screen there is exactly one control, and it goes back.
+    // screen there are exactly two controls, and neither is a row action.
     stubPage([SIGNED_IN, EDITED, NO_ACTOR_ENTRY]);
     renderScreen();
 
     await screen.findByRole('table');
     const names = screen.getAllByRole('button').map((control) => control.textContent ?? '');
 
-    expect(names).toEqual(['Back']);
-    for (const verb of [/edit/i, /delete/i, /remove/i, /resolve/i, /dismiss/i, /flag/i, /export/i]) {
+    expect(names).toEqual(['Back', 'Flagged']);
+    for (const verb of [/edit/i, /delete/i, /remove/i, /resolve/i, /dismiss/i, /export/i]) {
       expect(screen.queryByRole('button', { name: verb })).toBeNull();
     }
     expect(screen.queryByRole('link')).toBeNull();
@@ -1132,16 +1367,17 @@ describe('the controls', () => {
     await screen.findByRole('table');
     const names = screen.getAllByRole('button').map((control) => control.textContent ?? '');
 
-    expect(names).toEqual(['Back', 'Load more']);
+    expect(names).toEqual(['Back', 'Flagged', 'Load more']);
     expect(screen.getByRole('table').querySelectorAll('button, a, input')).toHaveLength(0);
     expect(screen.queryByRole('checkbox')).toBeNull();
     expect(screen.queryByRole('menuitem')).toBeNull();
   });
 
-  it('offers no search box, sort control, filter or date range', async () => {
-    // FR-21 asks for the log, in order. FR-22's Flagged filter renders anomaly
-    // flagging, which is not in Epic 1 and has no column behind it — a control
-    // over a field that does not exist is a dead control.
+  it('offers no search box, sort control, date range or per-column filter', async () => {
+    // FR-21 asks for the log, in order, and Story 3.7's Flagged filter is
+    // exactly one toggle button over the whole log — never a search box, a
+    // combobox, a radio group, a switch or a per-column control. Those
+    // remain absent; the Flagged button itself is asserted separately.
     stubPage([SIGNED_IN, EDITED]);
     renderScreen();
 

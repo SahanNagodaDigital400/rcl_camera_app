@@ -7,6 +7,7 @@ plan can catch on its own.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from rocell_infra.migrate import (
     has_sql,
     python_step,
 )
+from shared_schema.audit import FLAGGED_AUDIT_ACTIONS
 
 
 def write_pair(
@@ -43,6 +45,8 @@ def test_the_repository_migrations_are_a_valid_plan() -> None:
         "20260921T1500_create_catalogue",
         "20260922T1900_create_scan",
         "20260922T2000_create_scan_rate_limit",
+        "20260923T1000_create_anomaly_baseline",
+        "20260923T1010_add_audit_log_flagged_index",
     ]
     assert all(migration.up_path.is_file() for migration in plan)
     assert all(migration.down_path.is_file() for migration in plan)
@@ -174,6 +178,24 @@ def test_the_seed_marker_carries_no_sql() -> None:
     body = (MIGRATIONS_DIR / "20260917T1210_seed_administrator.up.sql").read_text(encoding="utf-8")
 
     assert has_sql(body) is False
+
+
+def test_the_flagged_index_migration_targets_exactly_the_flagged_actions() -> None:
+    # DW-135 / Story 3.7: `audit_log_flagged_idx`'s `WHERE action IN (...)`
+    # hardcodes the two flag actions as SQL literals — the column itself
+    # carries no CHECK, so nothing in the database pins them to
+    # `shared_schema.audit.FLAGGED_AUDIT_ACTIONS`. Without this test, a third
+    # flag action added to that set later would silently fall outside this
+    # index, with nothing failing to say so.
+    body = (MIGRATIONS_DIR / "20260923T1010_add_audit_log_flagged_index.up.sql").read_text(
+        encoding="utf-8"
+    )
+
+    match = re.search(r"WHERE action IN \(([^)]*)\)", body)
+    assert match is not None, "the migration no longer names its predicate as WHERE action IN (...)"
+
+    literals = set(re.findall(r"'([^']+)'", match.group(1)))
+    assert literals == {action.value for action in FLAGGED_AUDIT_ACTIONS}
 
 
 # --- Comments are comments, and a marker names one step ----------------------

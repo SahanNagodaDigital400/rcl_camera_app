@@ -45,6 +45,7 @@ in its threadpool, where that cost cannot block the event loop.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from typing import Annotated, Any
 from uuid import UUID
@@ -57,7 +58,8 @@ from shared_schema.errors import ApiError
 from shared_schema.scan import HISTORY_PAGE_SIZE, ScanCandidate, ScanHistoryEntry
 from shared_schema.user import User
 
-from api import scan_throttle
+from api import anomaly, audit, scan_throttle
+from api.audit import AuditAction
 from api.catalogue import (
     IMAGE_TOO_LARGE,
     NOT_AN_IMAGE,
@@ -69,6 +71,10 @@ from api.catalogue import (
 )
 from api.db import get_connection
 from api.dependencies import NO_STORE, require_claimed_user
+
+#: `api.scan_throttle`'s own explicit-`rocell.`-prefix naming, so a deployment
+#: can filter or raise the level of every `rocell.*` logger with one rule.
+logger = logging.getLogger("rocell.api.scan")
 
 router = APIRouter(tags=["scan"])
 
@@ -147,6 +153,7 @@ def submit_scan(
     crop_width: Annotated[float, Form()],
     crop_height: Annotated[float, Form()],
     image: Annotated[UploadFile, File()],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
 ) -> list[ScanCandidate]:
     """Crop, gate on quality, match, and answer up to three ranked Candidates.
 
@@ -198,7 +205,41 @@ def submit_scan(
     # the quality gate and the inference lock. A throttled caller never pays
     # for any image work, and no `scan` row is written for this refusal, as
     # for every other pre-match refusal in this handler.
-    if scan_throttle.check_and_record(conn, user.id):
+    throttled = scan_throttle.check_and_record(conn, user.id)
+
+    # Story 3.7 / FR-22: independent of the throttle above and of this
+    # submission's own outcome — epic-3-context.md's "a burst can trip one
+    # without the other." Run unconditionally, before either can decide the
+    # response, so a throttled burst is still counted toward the volume
+    # baseline and a flagged-but-unthrottled burst still proceeds to matching.
+    # `anomaly.py` never writes the audit log itself; a `True` result here is
+    # turned into one flag entry, exactly as `scan_throttle`'s own boolean is
+    # turned into a refusal, by the caller and not by the module reporting it.
+    #
+    # **Guarded.** This is a purely additive, non-critical signal — epics.md's
+    # own "a flag never blocks the action that produced it" — so a transient
+    # fault computing or recording it must never sink an otherwise-valid
+    # submission. `conn` is autocommit here (AD-3, `api.db`), so a failure in
+    # either statement below commits nothing on its own and cannot poison any
+    # surrounding transaction; it is swallowed and logged rather than left to
+    # fail the request, `api.auth`'s own `record_failure` pattern for exactly
+    # this class of secondary-signal fault.
+    try:
+        if anomaly.check_and_flag(conn, user.id, "scan"):
+            audit.record(
+                conn,
+                action=AuditAction.SCAN_VOLUME_ANOMALY_FLAGGED,
+                actor_id=user.id,
+                actor_email=user.email,
+                source_ip=source_ip,
+            )
+    except psycopg.Error:
+        logger.warning(
+            "the anomaly check could not be completed; the submission itself stands",
+            exc_info=True,
+        )
+
+    if throttled:
         raise _refusal(
             SCAN_RATE_LIMITED, SCAN_RATE_LIMITED_MESSAGE, status.HTTP_429_TOO_MANY_REQUESTS
         )

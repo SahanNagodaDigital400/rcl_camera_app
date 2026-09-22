@@ -1078,7 +1078,8 @@ location: infra/migrations/20260921T1000_create_audit_log.up.sql
 source_spec: `spec-1-12-immutable-audit-log-write-path.md`
 severity: low
 reason: The index serves Story 1.13's chronological page. "Everything this Administrator did" filters `actor_user_id`, "everything that happened to this account" filters `target_user_id`, and FR-22's anomaly work filters `action` - all sequential scans today. Because nothing may prune this table, the index is only ever built against a monotonically growing relation, so deferring it gets strictly more expensive. Which indexes the read surface needs is Story 1.13's to decide, which is why this was not added here.
-status: open
+status: addressed
+resolution: Story 3.7 adds `audit_log_flagged_idx`, a partial index on `(created_at DESC, id DESC) WHERE action IN ('login_anomaly_flagged', 'scan_volume_anomaly_flagged')` (`infra/migrations/20260923T1010_add_audit_log_flagged_index.up.sql`), answering the `action` filter specifically — `GET /admin/audit?flagged=true`'s own predicate. The other two named filters (`actor_user_id`, `target_user_id`) remain unindexed; no story has added a read that filters on either yet.
 
 ### DW-136: The two Python AD-4 guards treat prose inconsistently, so the rule can be explained in a `#` comment but not in a docstring.
 origin: spec-deferred 88451ff34a05
@@ -1134,7 +1135,8 @@ location: apps/web/src/screens/AuditLogScreen.tsx
 source_spec: `spec-1-13-view-audit-log.md`
 severity: low
 reason: EXPERIENCE.md:38 describes this surface as "chronological account/catalogue history, with a Flagged filter surfacing FR-22 anomaly reviews", and :76 gives `flagged-activity-row` its own treatment (an audit row plus an accent flag glyph, DESIGN.md:117-121). FR-22 is Epic 3, the `audit_log` table has no flag column, and nothing in the product computes one - so the filter would be a control over a field that does not exist and the row variant would be a style nothing can ever carry. Building either now means inventing a data model for anomaly review ahead of the story that owns it. Re-read this entry when FR-22 lands: the filter is a `WHERE` on the read, which is the one thing the statement deliberately has none of today.
-status: open
+status: addressed
+resolution: Story 3.7 lands FR-22 as two new `AuditAction` members (`login_anomaly_flagged`, `scan_volume_anomaly_flagged`) rather than a column, so the filter is exactly the `WHERE` this entry predicted: `GET /admin/audit?flagged=true` (`api/audit.py`'s `_SELECT_LATEST_FLAGGED_ENTRIES`/`_SELECT_FLAGGED_ENTRIES_BEFORE`). `AuditLogScreen.tsx` now has the Flagged filter toggle and applies the `flagged-activity-row` treatment to any row whose `action` is in `FLAGGED_AUDIT_ACTIONS`, in both the filtered and unfiltered view.
 
 ### DW-143: The audit log offers no search, date range or source-IP filter over a table that only grows.
 origin: spec-deferred spec-1-13-view-audit-log
@@ -1799,7 +1801,8 @@ location: apps/api/api/throttle.py
 source_spec: `spec-3-6-scan-rate-limiting.md`
 severity: low
 reason: Confirmed by reading `apps/api/api/throttle.py`'s module docstring directly; this diff never touches that file, so the stale reference predates this story and is unrelated to the change it describes.
-status: open
+status: addressed
+resolution: Story 3.7 touches this same docstring line to add itself to the "Not here" list, and corrects "Epic 2's" to "Epic 3's" in the same edit, per its own spec's instruction to ride the fix along with a change already touching that line.
 
 ### DW-226: This migration's `.down.sql` restates `20260922T1900_create_scan.down.sql`'s own "Deploy the code first, then step this back" wording, which reads ambiguously about which direction "the code" refers
 origin: spec-deferred f641ab2e5ab8

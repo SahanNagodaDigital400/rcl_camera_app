@@ -5,7 +5,9 @@ import { ApiRequestError, MALFORMED_RESPONSE, apiRequest } from '../api/client';
 import styles from './AuditLogScreen.module.css';
 import {
   AUDIT_CURSOR_PARAM,
+  AUDIT_FLAGGED_PARAM,
   AUDIT_PAGE_SIZE,
+  FLAGGED_AUDIT_ACTIONS,
   isAuditAction,
   isAuditLogEntry,
 } from '@rocell/schema/audit';
@@ -14,10 +16,11 @@ import type { AuditAction, AuditLogEntry } from '@rocell/schema/audit';
 /**
  * The collection this screen reads.
  *
- * The one query parameter it ever sends is `AUDIT_CURSOR_PARAM`, which is not
- * spelled here: it is half of a wire contract and lives in the shared one, so
- * a rename on the server that this file does not follow fails a test rather
- * than silently re-fetching the first page on every Load more.
+ * The two query parameters it ever sends are `AUDIT_CURSOR_PARAM` and
+ * `AUDIT_FLAGGED_PARAM`, neither spelled here: both are half of a wire
+ * contract and live in the shared one, so a rename on the server that this
+ * file does not follow fails a test rather than silently re-fetching the
+ * wrong page or the wrong filter.
  */
 const AUDIT_PATH = '/admin/audit';
 
@@ -40,6 +43,29 @@ const NO_ENTRIES = 'No entries.';
 const BACK = 'Back';
 const TRY_AGAIN = 'Try again';
 const LOAD_MORE = 'Load more';
+
+/**
+ * The Flagged filter's own control (EXPERIENCE.md:38, Story 3.7).
+ *
+ * One word, doubling as its own state: pressed means "showing flagged
+ * entries only," unpressed means the ordinary unfiltered log. `aria-pressed`
+ * carries that state rather than a second label for each mode — a toggle,
+ * not a two-state button pretending to be two different controls.
+ */
+const FLAGGED_FILTER = 'Flagged';
+
+/**
+ * The per-row flag indicator (EXPERIENCE.md:76, DESIGN.md's
+ * `flagged-activity-row`).
+ *
+ * Deliberately not an icon: `BulkUploadScreen`'s own `outcomeIcon` pairs an
+ * icon with a word precisely because the word is what a screen reader
+ * announces, and this row already has no icon anywhere else to match. The
+ * word alone, accent-coloured, is the whole of the "visual flag indicator"
+ * EXPERIENCE.md asks for — never a resolve/dismiss control, which EXPERIENCE.md
+ * line 76 rules out explicitly.
+ */
+const FLAG_INDICATOR = 'Flagged';
 
 /** The six columns, in order. */
 const COLUMNS = ['When', 'Who', 'What', 'Target', 'Source IP', 'Details'] as const;
@@ -99,6 +125,13 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   // this renders: nothing can be fetched to explain the row, so the label and
   // the entry's own `details` are the whole record.
   catalogue_tile_removed: 'Tile removed',
+  // Story 3.7's pair. The label names what deviated, never a verdict
+  // ("Suspicious login") — the flag is informational (EXPERIENCE.md:76). The
+  // word "Flagged" itself lives once, in the `flagIndicator` span rendered
+  // beside every label (`isFlagged`) — EXPERIENCE.md:76's "visual flag
+  // indicator" — so neither label repeats it.
+  login_anomaly_flagged: 'Login pattern deviated',
+  scan_volume_anomaly_flagged: 'Scan volume deviated',
 };
 
 /**
@@ -124,6 +157,20 @@ const ACTION_LABELS: Record<AuditAction, string> = {
  */
 function actionLabel(action: string): string {
   return isAuditAction(action) ? ACTION_LABELS[action] : action;
+}
+
+/**
+ * Whether an entry's stored `action` is one of Story 3.7's two flag actions.
+ *
+ * Reads `FLAGGED_AUDIT_ACTIONS` rather than naming either action here — the
+ * single source both this screen's row-styling decision and the server's
+ * `?flagged=true` filter read from (`shared_schema/audit.py`'s own
+ * precedent for `PAGE_SIZE`/`AuditAction`). Compared against the raw string,
+ * `isAuditAction`'s own reason: an entry the build has never heard of is
+ * never a flag, but it must still render under `actionLabel`'s fallback.
+ */
+function isFlagged(action: string): boolean {
+  return (FLAGGED_AUDIT_ACTIONS as readonly string[]).includes(action);
 }
 
 /**
@@ -281,20 +328,27 @@ interface AuditLogScreenProps {
  * through `require_administrator`, which re-reads the role from Postgres on
  * every request (AD-3).
  *
+ * **The Flagged filter (Story 3.7, FR-22).** EXPERIENCE.md:38 and :76 put one
+ * on this surface; DW-142 deferred it until FR-22 landed with an `action`
+ * value to filter on. `showFlaggedOnly` threads `AUDIT_FLAGGED_PARAM=true`
+ * through both `load` and `loadMore`, resetting the listing to `loading` and
+ * starting a fresh generation on every toggle — `retry`'s own pattern, not a
+ * second one. Toggled off, every existing reader sees the unfiltered log
+ * unchanged. A flagged entry still renders inline in that unfiltered view too
+ * (`isFlagged`, the `flagIndicator` cell), never hidden unless the filter is
+ * on. There is still no "resolve"/"dismiss" affordance anywhere on a flagged
+ * row — EXPERIENCE.md:76 is explicit that reviewing a flag is not a workflow.
+ *
  * Deliberately absent:
  *
- * - **No Flagged filter.** EXPERIENCE.md:38 and :76 put one on this surface,
- *   and it renders FR-22's anomaly flagging — which is not in Epic 1, has no
- *   column behind it and no data to filter. A control over a field that does
- *   not exist is a dead control, so it is recorded as deferred instead.
  * - **No search, no date range, no source-IP filter, no sort control and no
- *   column filters.** None is in FR-21, and the order is the statement's
- *   (`ORDER BY created_at DESC, id DESC`); a second opinion here is how the
- *   two halves start disagreeing about what row three is.
+ *   column filters.** None is in FR-21 or FR-22, and the order is the
+ *   statement's (`ORDER BY created_at DESC, id DESC`); a second opinion here
+ *   is how the two halves start disagreeing about what row three is.
  * - **No client-chosen page size.** The server picks it. A caller-supplied
  *   limit is a denial-of-service knob on the one table nobody may prune.
- * - **No export.** Nothing in Epic 1 asks for one, and a CSV of the whole
- *   record is a copy of the log outside every protection the log has.
+ * - **No export.** Nothing in Epic 1 or Epic 3 asks for one, and a CSV of the
+ *   whole record is a copy of the log outside every protection the log has.
  *
  * Copy follows EXPERIENCE.md's tone rules: short, factual, no exclamation
  * marks.
@@ -302,6 +356,12 @@ interface AuditLogScreenProps {
 export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
   const titleId = useId();
   const [listing, setListing] = useState<Listing>({ kind: 'loading' });
+  /**
+   * The Flagged filter's own state (Story 3.7). `false` is the ordinary
+   * unfiltered log — the screen's default, and what every existing reader
+   * sees unchanged.
+   */
+  const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   /** Whether a Load more request is open. Also the re-entrancy guard's mirror. */
   const [appending, setAppending] = useState(false);
   /**
@@ -346,7 +406,16 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
     const mine = generation.current + 1;
     generation.current = mine;
 
-    apiRequest(AUDIT_PATH)
+    // `showFlaggedOnly` is a dependency of this callback (below), so toggling
+    // it gives `load` a new identity and the mount effect — whose dependency
+    // array is `[load]` — re-fires on its own: cleanup invalidates whatever
+    // was in flight, and the new `load` runs with the new filter. No second
+    // effect or manual reset is needed for the toggle itself; `toggleFlagged`
+    // below only has to move the *visible* state to `loading` synchronously,
+    // `retry`'s own reason.
+    const path = showFlaggedOnly ? `${AUDIT_PATH}?${AUDIT_FLAGGED_PARAM}=true` : AUDIT_PATH;
+
+    apiRequest(path)
       .then((body) => {
         if (generation.current !== mine) return;
         const entries = asEntries(body);
@@ -378,7 +447,7 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
           message: failure instanceof ApiRequestError ? failure.message : UNEXPECTED,
         });
       });
-  }, []);
+  }, [showFlaggedOnly]);
 
   useEffect(() => {
     load();
@@ -410,6 +479,18 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
     load();
   }
 
+  function toggleFlagged(): void {
+    // `retry`'s own reason: move the visible state to `loading` here, on the
+    // click, rather than leaving the previous page on screen for a frame (or
+    // relying on the effect below to do it, which `react/set-state-in-effect`
+    // forbids). Toggling `showFlaggedOnly` gives `load` a new identity, which
+    // is what actually re-fires the mount effect and issues the new request —
+    // see `load`'s own comment.
+    setAppendFailure(null);
+    setListing({ kind: 'loading' });
+    setShowFlaggedOnly((current) => !current);
+  }
+
   function loadMore(): void {
     // The guard that actually holds. See `inFlight`.
     if (inFlight.current) return;
@@ -431,7 +512,16 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
     // `encodeURIComponent` has nothing left to do today — it is here so the
     // safety is local to this line rather than conditional on a narrower two
     // files away staying exactly as strict as it is now.
-    apiRequest(`${AUDIT_PATH}?${AUDIT_CURSOR_PARAM}=${encodeURIComponent(oldest.id)}`)
+    //
+    // `showFlaggedOnly` carries through every appended page, not only the
+    // first — a Load more press while the Flagged filter is on must keep
+    // paging the flagged subset, never fall back to the unfiltered log.
+    const cursor = `${AUDIT_CURSOR_PARAM}=${encodeURIComponent(oldest.id)}`;
+    const path = showFlaggedOnly
+      ? `${AUDIT_PATH}?${cursor}&${AUDIT_FLAGGED_PARAM}=true`
+      : `${AUDIT_PATH}?${cursor}`;
+
+    apiRequest(path)
       .then((body) => {
         if (generation.current !== mine) return;
         const page = asEntries(body);
@@ -474,12 +564,11 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
         // guarded, because they write an *answer* that a newer read has
         // superseded — would leave the wait line up and the control inert
         // forever if a listing were ever invalidated while an append was open.
-        // This is not reachable today, because the only thing that bumps the
-        // counter mid-append is `retry`, which exists solely in the failed
-        // state where there is no control to press. "Unreachable because of
-        // where a button happens to be rendered" is not a property worth
-        // depending on, and clearing a flag nobody is waiting on costs
-        // nothing.
+        // Reachable since Story 3.7: `toggleFlagged` bumps the generation (via
+        // `load`'s changed identity re-firing the mount effect) exactly as a
+        // refetch would, and nothing stops an Administrator pressing Flagged
+        // while a Load more is still in flight. Clearing a flag nobody is
+        // waiting on costs nothing either way.
         inFlight.current = false;
         setAppending(false);
       });
@@ -492,12 +581,39 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
       </h1>
 
       <div className={styles.actions}>
-        {/* Back is the only control up here, and it is the navy outline. This
-            screen has no primary action: it is a record, and painting a
-            control accent-orange would make "fetch more rows" the most
-            important thing on an Administrator's security surface. */}
+        {/* Back and Flagged are both the navy family, never accent — this
+            screen has no primary action: it is a record, and painting either
+            control accent-orange would make "fetch more rows" or "narrow the
+            list" the most important thing on an Administrator's security
+            surface. Accent stays reserved for the per-row flag indicator
+            below, a signal rather than an action (DESIGN.md's
+            `flagged-activity-row` exception, `BulkUploadScreen`'s own
+            precedent). */}
         <button className={styles.back} type="button" onClick={onBack}>
           {BACK}
+        </button>
+        {/* EXPERIENCE.md:38's Flagged filter. `aria-pressed` carries the
+            on/off state — a toggle, not two controls pretending to be one —
+            and the filled/outline paint in the stylesheet follows it.
+
+            **`aria-disabled` while the primary listing is loading**, `Load
+            more`'s own precedent below — announced rather than silent, and
+            never `disabled`, for the same keyboard reason: a `disabled`
+            button leaves the tab order and a browser blurs it. Unlike `Load
+            more`'s `inFlight`, this is presentation only and refuses no
+            press: retoggling mid-request is already correct by design (the
+            generation counter discards whichever answer loses), so blocking
+            the second press here would add friction without fixing a bug —
+            it would only fight the robustness the "discards a stale answer"
+            test coverage already relies on. */}
+        <button
+          aria-disabled={listing.kind === 'loading'}
+          aria-pressed={showFlaggedOnly}
+          className={styles.flaggedFilter}
+          type="button"
+          onClick={toggleFlagged}
+        >
+          {FLAGGED_FILTER}
         </button>
       </div>
 
@@ -560,7 +676,17 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
                   <tr className={styles.row} key={entry.id}>
                     <td className={styles.cell}>{when(entry)}</td>
                     <td className={styles.cell}>{entry.actor_email ?? NO_ACTOR}</td>
-                    <td className={styles.cell}>{actionLabel(entry.action)}</td>
+                    <td className={styles.cell}>
+                      {actionLabel(entry.action)}
+                      {/* DESIGN.md's `flagged-activity-row`: the row itself
+                          keeps the exact `audit-log-row` treatment
+                          (`styles.row`, unchanged above) — only this
+                          accent-coloured word distinguishes a flagged entry,
+                          in both the filtered and the unfiltered view. */}
+                      {isFlagged(entry.action) && (
+                        <span className={styles.flagIndicator}> · {FLAG_INDICATOR}</span>
+                      )}
+                    </td>
                     <td className={styles.cell}>{entry.target_email ?? NO_TARGET}</td>
                     <td className={styles.cell}>{entry.source_ip ?? UNKNOWN_ADDRESS}</td>
                     {/* The one cell allowed to wrap: a `details` payload is a

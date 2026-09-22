@@ -37,7 +37,7 @@ inert: `login_attempts` decides, `users.locked_until` reports, and the
 enforcement path reads this table and nothing else.
 
 **Not here.** Scan rate limiting (FR-23) and the anomaly baseline (FR-22) are
-the other two AD-8 counters and are Epic 2's; they are not this module's
+the other two AD-8 counters and are Epic 3's; they are not this module's
 statements with a different table name, and no attempt is made to generalise
 one out of it before there is a second caller. `POST /auth/password` is not
 throttled either (DW-40) — epics.md scopes that story to login.

@@ -77,6 +77,9 @@ THROTTLE_HOME = REPO_ROOT / "apps" / "api" / "api" / "throttle.py"
 #: The one file allowed to *write* the `scan_rate_limit` table (AD-8, Story 3.6).
 SCAN_THROTTLE_HOME = REPO_ROOT / "apps" / "api" / "api" / "scan_throttle.py"
 
+#: The one file allowed to *write* the `anomaly_baseline` table (AD-8, Story 3.7).
+ANOMALY_HOME = REPO_ROOT / "apps" / "api" / "api" / "anomaly.py"
+
 #: The one file allowed to name the audit table at all (AD-4).
 #:
 #: Stricter than the three above, and deliberately: `sessions` and
@@ -92,6 +95,7 @@ _HASHER = "Password" + "Hasher"
 _SESSIONS = "sessions"
 _LOGIN_ATTEMPTS = "login_" + "attempts"
 _SCAN_RATE_LIMIT = "scan_rate_" + "limit"
+_ANOMALY_BASELINE = "anomaly_" + "baseline"
 _AUDIT_LOG = "audit_" + "log"
 
 #: The three verbs AD-4 forbids against the audit table, in the spellings SQL
@@ -210,6 +214,7 @@ def test_the_scan_reaches_the_files_it_claims_to() -> None:
         SESSIONS_HOME,
         THROTTLE_HOME,
         SCAN_THROTTLE_HOME,
+        ANOMALY_HOME,
         AUDIT_HOME,
         REPO_ROOT / "apps" / "api" / "api" / "db.py",
         # Story 1.8's provisioning write. Named for the same reason the four
@@ -366,6 +371,29 @@ def test_only_one_module_writes_the_scan_rate_limit_table() -> None:
     assert offenders == [], (
         f"A scan rate-limit counter write outside "
         f"{SCAN_THROTTLE_HOME.relative_to(REPO_ROOT)} (AD-8): " + ", ".join(offenders)
+    )
+
+
+def test_only_one_module_writes_the_anomaly_baseline_table() -> None:
+    # AD-8, Story 3.7: FR-22's anomaly baseline is mutated by ONE atomic
+    # increment-and-check, `test_only_one_module_writes_the_scan_rate_limit_
+    # table`'s exact shape. A second write anywhere else is the same
+    # lost-update risk that guard exists to stop.
+    pattern = re.compile(
+        r"\b(?:INSERT\s+INTO\s+|UPDATE\s+|DELETE\s+FROM\s+)" + _ANOMALY_BASELINE + r"\b",
+        re.IGNORECASE,
+    )
+    offenders = [
+        str(path.relative_to(REPO_ROOT))
+        for path in _sources()
+        if path not in (ANOMALY_HOME, SELF)
+        and "tests" not in path.parts
+        and pattern.search(path.read_text(encoding="utf-8"))
+    ]
+
+    assert offenders == [], (
+        f"An anomaly-baseline write outside "
+        f"{ANOMALY_HOME.relative_to(REPO_ROOT)} (AD-8): " + ", ".join(offenders)
     )
 
 

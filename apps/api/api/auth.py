@@ -108,7 +108,7 @@ from shared_schema.passwords import (
 )
 from shared_schema.user import User
 
-from api import audit
+from api import anomaly, audit
 from api.audit import AuditAction
 from api.db import get_connection, get_pool
 from api.dependencies import (
@@ -789,6 +789,42 @@ def _authenticate(
                 target_email=user_row["email"],
                 source_ip=source_ip,
             )
+            # Story 3.7 / FR-22: checked on every successful sign-in, in the
+            # same transaction as the sign-in it describes — a flag and the
+            # login it names commit or roll back together, `LOGIN_SUCCEEDED`'s
+            # own reasoning just above. Only a *successful* sign-in counts
+            # toward this baseline (a failed attempt or a lockout is FR-4's
+            # `throttle.py` mechanism, a different signal). `anomaly.py` never
+            # writes the audit log itself and never decides to refuse — a `True`
+            # here changes nothing about the session about to be issued; it
+            # only adds one more entry recording that it was.
+            #
+            # **Guarded, unlike `LOGIN_SUCCEEDED` above.** This is a purely
+            # additive, non-critical signal — epics.md's own "a flag never
+            # blocks the action that produced it" — so a transient fault
+            # computing or recording it must never sink an otherwise-valid,
+            # already-authenticated sign-in. `record_failure`'s own pattern:
+            # a nested `conn.transaction()` (a SAVEPOINT) so a failure here
+            # unwinds only this check, never the sign-in already committed to
+            # the outer transaction, and `psycopg.Error` is swallowed and
+            # logged rather than left to fail the request.
+            try:
+                with conn.transaction():
+                    if anomaly.check_and_flag(conn, user_row["id"], "login"):
+                        audit.record(
+                            conn,
+                            action=AuditAction.LOGIN_ANOMALY_FLAGGED,
+                            actor_id=user_row["id"],
+                            actor_email=user_row["email"],
+                            target_id=user_row["id"],
+                            target_email=user_row["email"],
+                            source_ip=source_ip,
+                        )
+            except psycopg.Error:
+                logger.warning(
+                    "the anomaly check could not be completed; the sign-in itself stands",
+                    exc_info=True,
+                )
             # The run of failures ends here, in the same transaction as the
             # sign-in that ended it: a session issued while the counter still
             # held nine failures would leave the next mistyped password locking

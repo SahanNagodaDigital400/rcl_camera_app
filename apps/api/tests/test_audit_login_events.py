@@ -147,6 +147,65 @@ def test_the_entry_is_written_in_the_same_transaction_as_the_session(
     assert len(audit_rows(conn)) == 1
 
 
+def test_a_flagged_sign_in_still_succeeds_and_carries_both_entries(
+    client: TestClient,
+    conn: psycopg.Connection,
+    make_user: MakeUser,
+    audit_rows: AuditRows,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 3.7 / FR-22: a flag never blocks the sign-in that produced it.
+
+    `anomaly.check_and_flag` is forced `True` here rather than driven past a
+    real deviation — `test_anomaly_flagging.py` already covers that module in
+    isolation — so this test's own claim is narrow and behavioral: the real
+    route, wired to a `True` result, still issues a session and writes both
+    `LOGIN_SUCCEEDED` and `LOGIN_ANOMALY_FLAGGED` in the one transaction.
+    """
+    monkeypatch.setattr(auth.anomaly, "check_and_flag", lambda *_args, **_kwargs: True)
+    account = make_user(name="Nadeesha Silva")
+
+    response = _sign_in(client, account.email, account.password)
+
+    assert response.status_code == 200
+    assert response.cookies.get(SESSION_COOKIE_NAME) is not None
+
+    rows = audit_rows(conn)
+    assert {row["action"] for row in rows} == {
+        AuditAction.LOGIN_SUCCEEDED,
+        AuditAction.LOGIN_ANOMALY_FLAGGED,
+    }
+    flagged = _only(rows, AuditAction.LOGIN_ANOMALY_FLAGGED)
+    assert flagged["actor_user_id"] == account.id
+    assert flagged["actor_email"] == account.email
+    assert flagged["target_user_id"] == account.id
+    assert flagged["target_email"] == account.email
+    assert flagged["source_ip"] == PEER
+
+
+def test_a_failed_sign_in_never_reaches_the_anomaly_check(
+    client: TestClient,
+    conn: psycopg.Connection,
+    make_user: MakeUser,
+    audit_rows: AuditRows,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a *successful* sign-in counts toward the login baseline (the
+    module docstring's own rule) — a wrong password must never even ask.
+    """
+
+    def _fail_the_test(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("anomaly.check_and_flag must not run on a failed sign-in")
+
+    monkeypatch.setattr(auth.anomaly, "check_and_flag", _fail_the_test)
+    account = make_user()
+
+    response = _sign_in(client, account.email, WRONG_PASSWORD)
+
+    assert response.status_code == 401
+    assert AuditAction.LOGIN_ANOMALY_FLAGGED not in {row["action"] for row in audit_rows(conn)}
+
+
 def test_a_second_sign_in_writes_a_second_entry(
     client: TestClient, conn: psycopg.Connection, make_user: MakeUser, audit_rows: AuditRows
 ) -> None:

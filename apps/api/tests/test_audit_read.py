@@ -40,7 +40,13 @@ from api.dependencies import (
 from api.sessions import SESSION_COOKIE_NAME
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
-from shared_schema.audit import CURSOR_PARAM, AuditAction, AuditLogEntry
+from shared_schema.audit import (
+    CURSOR_PARAM,
+    FLAGGED_AUDIT_ACTIONS,
+    FLAGGED_PARAM,
+    AuditAction,
+    AuditLogEntry,
+)
 from shared_schema.user import Role
 
 READ_AUDIT = "/admin/audit"
@@ -173,8 +179,15 @@ def _expected_order(conn: psycopg.Connection, audit_rows: AuditRows) -> list[str
     return [str(row["id"]) for row in reversed(audit_rows(conn))]
 
 
-def _read(client: TestClient, before: str | None = None) -> list[dict[str, Any]]:
-    path = READ_AUDIT if before is None else f"{READ_AUDIT}?before={before}"
+def _read(
+    client: TestClient, before: str | None = None, *, flagged: bool = False
+) -> list[dict[str, Any]]:
+    params = []
+    if before is not None:
+        params.append(f"before={before}")
+    if flagged:
+        params.append(f"{FLAGGED_PARAM}=true")
+    path = READ_AUDIT if not params else f"{READ_AUDIT}?{'&'.join(params)}"
     response = client.get(path)
     assert response.status_code == 200, response.text
     body = response.json()
@@ -612,6 +625,140 @@ def test_a_demotion_closes_the_surface_on_the_very_next_request(
     assert refused.json()["error"]["code"] == ADMINISTRATOR_REQUIRED
 
 
+# --- The Flagged filter (Story 3.7, FR-22) -------------------------------------
+
+
+def test_flagged_true_returns_only_the_two_flag_actions(
+    client: TestClient, conn: psycopg.Connection, administrator: Any
+) -> None:
+    _arrange(conn, 3, action=AuditAction.LOGIN_ANOMALY_FLAGGED.value)
+    _arrange(conn, 2, action=AuditAction.SCAN_VOLUME_ANOMALY_FLAGGED.value)
+    _arrange(conn, 5, action=AuditAction.USER_EDITED.value)
+
+    entries = _read(client, flagged=True)
+
+    assert len(entries) == 5
+    expected_actions = {member.value for member in FLAGGED_AUDIT_ACTIONS}
+    assert {entry["action"] for entry in entries} == expected_actions
+
+
+def test_flagged_true_orders_newest_first_like_the_unfiltered_read(
+    client: TestClient, conn: psycopg.Connection, administrator: Any
+) -> None:
+    written = _arrange(conn, 4, action=AuditAction.LOGIN_ANOMALY_FLAGGED.value)
+
+    entries = _read(client, flagged=True)
+
+    assert _ids(entries) == list(reversed(written))
+
+
+def test_flagged_true_pages_with_the_same_keyset_shape(
+    client: TestClient, conn: psycopg.Connection, administrator: Any
+) -> None:
+    written = _arrange(conn, PAGE_SIZE + 5, action=AuditAction.SCAN_VOLUME_ANOMALY_FLAGGED.value)
+    expected = list(reversed(written))
+
+    first = _ids(_read(client, flagged=True))
+    second = _ids(_read(client, before=first[-1], flagged=True))
+
+    assert first + second == expected
+    assert len(first) == PAGE_SIZE
+
+
+def test_flagged_true_with_no_flags_yet_is_an_empty_array(
+    client: TestClient, conn: psycopg.Connection, administrator: Any
+) -> None:
+    # The sign-in that authenticates `administrator` writes an ordinary
+    # `login_succeeded` row, never a flag — so the flagged log is empty even
+    # though the unfiltered one is not.
+    _arrange(conn, 3, action=AuditAction.USER_EDITED.value)
+
+    assert _read(client, flagged=True) == []
+    assert _read(client) != []
+
+
+def test_flagged_true_with_a_real_but_unflagged_cursor_and_no_flags_before_it_is_empty_not_404(
+    client: TestClient, conn: psycopg.Connection, administrator: Any
+) -> None:
+    # The cursor's existence check runs against the *whole* table
+    # (`_SELECT_ENTRY_EXISTS`), never the flagged subset — so a cursor naming
+    # a real, ordinary row with no flagged entries anywhere *before* it must
+    # answer `200 []` (exhausted), not a `404` (invented cursor). Narrowing
+    # that existence check to the flagged subset by mistake would turn this
+    # exact case into a wrongly-raised 404, and nothing else in this file
+    # exercises a `flagged=true` cursor against an unflagged row.
+    #
+    # A flagged entry does exist in the table — arranged *newer* than the
+    # cursor, so it never qualifies as "before" it — precisely so this case
+    # is not trivially satisfied by an empty flagged log altogether.
+    base = datetime.now(UTC) + timedelta(minutes=1)
+    written = _arrange(conn, 1, first_at=base, action=AuditAction.USER_EDITED.value)
+    cursor = written[0]
+    _arrange(
+        conn,
+        1,
+        first_at=base + timedelta(seconds=1),
+        action=AuditAction.LOGIN_ANOMALY_FLAGGED.value,
+    )
+
+    response = client.get(f"{READ_AUDIT}?before={cursor}&{FLAGGED_PARAM}=true")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_flagged_omitted_or_false_is_the_ordinary_unfiltered_read(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    _arrange(conn, 2, action=AuditAction.LOGIN_ANOMALY_FLAGGED.value)
+    _arrange(conn, 3, action=AuditAction.USER_EDITED.value)
+    expected = _expected_order(conn, audit_rows)
+
+    assert _ids(_read(client)) == expected
+    assert _ids(_read(client, flagged=False)) == expected
+    response = client.get(f"{READ_AUDIT}?{FLAGGED_PARAM}=false")
+    assert response.status_code == 200
+    assert _ids(response.json()) == expected
+
+
+def test_flagged_rows_still_appear_inline_in_the_default_unfiltered_read(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # EXPERIENCE.md's Flagged filter narrows what is *shown*; it is never the
+    # only place a flag entry is readable.
+    flagged_ids = set(_arrange(conn, 2, action=AuditAction.LOGIN_ANOMALY_FLAGGED.value))
+    _arrange(conn, 2, action=AuditAction.USER_EDITED.value)
+
+    entries = _read(client)
+
+    assert flagged_ids <= set(_ids(entries))
+    assert _ids(entries) == _expected_order(conn, audit_rows)
+
+
+def test_flagged_true_still_refuses_a_staff_caller(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    _arrange(conn, 1, action=AuditAction.LOGIN_ANOMALY_FLAGGED.value)
+    _sign_in(client, make_user(role=Role.STAFF))
+
+    response = client.get(f"{READ_AUDIT}?{FLAGGED_PARAM}=true")
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == ADMINISTRATOR_REQUIRED
+
+
+def test_the_route_reads_the_flagged_parameter_under_the_shared_name() -> None:
+    # `test_the_route_reads_the_cursor_under_the_shared_name`'s own reason: an
+    # unpinned rename here is a silent no-op, not a refusal — FastAPI ignores
+    # an unknown query parameter rather than raising, so the Flagged filter
+    # would quietly answer the unfiltered log to a request the screen believes
+    # is filtered.
+    signature = inspect.signature(audit.read_audit_log)
+
+    assert FLAGGED_PARAM in signature.parameters
+    assert signature.parameters[FLAGGED_PARAM].default is False
+
+
 # --- The statements themselves ------------------------------------------------
 #
 # Behavioural tests above can only fail on data a test happened to arrange: a
@@ -625,7 +772,18 @@ PAGE_STATEMENTS = (
     ("_SELECT_ENTRIES_BEFORE", audit._SELECT_ENTRIES_BEFORE),
 )
 
-ALL_STATEMENTS = (*PAGE_STATEMENTS, ("_SELECT_ENTRY_EXISTS", audit._SELECT_ENTRY_EXISTS))
+#: Story 3.7's Flagged pair — `test_both_page_statements_select_the_same_columns`
+#: stays a pairwise comparison over the *unfiltered* two, so this is its own
+#: tuple rather than folded into `PAGE_STATEMENTS`; `ALL_PAGE_STATEMENTS` below
+#: is what the shape tests that apply equally to all four are parametrized on.
+FLAGGED_PAGE_STATEMENTS = (
+    ("_SELECT_LATEST_FLAGGED_ENTRIES", audit._SELECT_LATEST_FLAGGED_ENTRIES),
+    ("_SELECT_FLAGGED_ENTRIES_BEFORE", audit._SELECT_FLAGGED_ENTRIES_BEFORE),
+)
+
+ALL_PAGE_STATEMENTS = (*PAGE_STATEMENTS, *FLAGGED_PAGE_STATEMENTS)
+
+ALL_STATEMENTS = (*ALL_PAGE_STATEMENTS, ("_SELECT_ENTRY_EXISTS", audit._SELECT_ENTRY_EXISTS))
 
 
 def _normalized(clause: str) -> str:
@@ -642,13 +800,13 @@ def _selected(statement: str) -> str:
     return _normalized(columns)
 
 
-@pytest.mark.parametrize(("name", "statement"), PAGE_STATEMENTS)
+@pytest.mark.parametrize(("name", "statement"), ALL_PAGE_STATEMENTS)
 def test_the_selected_columns_name_exactly_the_contract(name: str, statement: str) -> None:
     # Parsed from the module's own source rather than retyped, so a column
     # added to the table and not to `AuditLogEntry` fails at collection time
-    # instead of reaching the wire as an extra key. The two page statements
+    # instead of reaching the wire as an extra key. All four page statements
     # carry the same list, which is what keeps a change to one from quietly
-    # applying to only the first page.
+    # applying to only some of them.
     columns = {column.strip() for column in _selected(statement).split(",")}
 
     assert columns == set(AuditLogEntry.model_fields), name
@@ -660,7 +818,29 @@ def test_both_page_statements_select_the_same_columns() -> None:
     assert latest == before
 
 
-@pytest.mark.parametrize(("name", "statement"), PAGE_STATEMENTS)
+def test_the_flagged_pair_selects_the_same_columns_as_the_unfiltered_pair() -> None:
+    columns = {_selected(statement) for _, statement in ALL_PAGE_STATEMENTS}
+
+    assert len(columns) == 1
+
+
+def test_the_flagged_statements_add_exactly_one_predicate_and_nothing_else() -> None:
+    # Never a dynamically assembled `WHERE`: the flagged pair is the
+    # unfiltered pair's own text, with exactly one parameterized predicate
+    # added, and nothing about the order, the limit or the column list
+    # changed.
+    latest_without_predicate = _normalized(audit._SELECT_LATEST_FLAGGED_ENTRIES).replace(
+        "WHERE action = ANY(%s) ", ""
+    )
+    assert latest_without_predicate == _normalized(audit._SELECT_LATEST_ENTRIES)
+
+    before_without_predicate = _normalized(audit._SELECT_FLAGGED_ENTRIES_BEFORE).replace(
+        " AND action = ANY(%s)", ""
+    )
+    assert before_without_predicate == _normalized(audit._SELECT_ENTRIES_BEFORE)
+
+
+@pytest.mark.parametrize(("name", "statement"), ALL_PAGE_STATEMENTS)
 def test_the_order_and_its_tiebreaker_are_stated_by_the_statement(
     name: str, statement: str
 ) -> None:
@@ -669,7 +849,7 @@ def test_the_order_and_its_tiebreaker_are_stated_by_the_statement(
     assert "ORDER BY created_at DESC, id DESC" in _normalized(statement), name
 
 
-@pytest.mark.parametrize(("name", "statement"), PAGE_STATEMENTS)
+@pytest.mark.parametrize(("name", "statement"), ALL_PAGE_STATEMENTS)
 def test_the_page_size_is_a_parameter_and_not_a_number(name: str, statement: str) -> None:
     # `LIMIT %s`, never `LIMIT 50` formatted in. `PAGE_SIZE` is ours and could
     # safely be interpolated; interpolating it would be the habit

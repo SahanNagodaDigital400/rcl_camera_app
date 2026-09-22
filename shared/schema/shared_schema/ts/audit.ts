@@ -40,6 +40,17 @@ export const AUDIT_PAGE_SIZE = 50;
  */
 export const AUDIT_CURSOR_PARAM = 'before';
 
+/**
+ * The query parameter selecting the Flagged filter — the twin of
+ * `shared_schema/audit.py`'s `FLAGGED_PARAM`, pinned to it by
+ * `tests/test_audit.py`.
+ *
+ * `GET /admin/audit?flagged=true` returns only the two `FLAGGED_AUDIT_ACTIONS`
+ * entries; the parameter is omitted (never sent as `false`) for the
+ * unfiltered read, `AUDIT_CURSOR_PARAM`'s own omit-when-absent shape.
+ */
+export const AUDIT_FLAGGED_PARAM = 'flagged';
+
 export type AuditAction =
   | 'login_succeeded'
   | 'login_failed'
@@ -56,7 +67,9 @@ export type AuditAction =
   | 'user_deleted'
   | 'catalogue_tile_added'
   | 'catalogue_tile_edited'
-  | 'catalogue_tile_removed';
+  | 'catalogue_tile_removed'
+  | 'login_anomaly_flagged'
+  | 'scan_volume_anomaly_flagged';
 
 /**
  * Every action the product records today. Iterable, so a label map cannot miss
@@ -79,6 +92,19 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   'catalogue_tile_added',
   'catalogue_tile_edited',
   'catalogue_tile_removed',
+  'login_anomaly_flagged',
+  'scan_volume_anomaly_flagged',
+];
+
+/**
+ * The two Story 3.7 flag actions — the twin of `shared_schema/audit.py`'s
+ * `FLAGGED_AUDIT_ACTIONS`, pinned to it by `tests/test_audit.py`.
+ * `AuditLogScreen.tsx`'s row-styling decision (`flagged-activity-row`,
+ * DESIGN.md) reads from this array rather than restating the two strings.
+ */
+export const FLAGGED_AUDIT_ACTIONS: readonly AuditAction[] = [
+  'login_anomaly_flagged',
+  'scan_volume_anomaly_flagged',
 ];
 
 export interface AuditLogEntry {

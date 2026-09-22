@@ -7,7 +7,7 @@ table adds the actor and target snapshot pair AD-10 requires.
 
 `AuditAction` lives here rather than in `apps/api` because it is no longer only
 a writer's vocabulary: the read surface labels an entry from it, and
-`apps/web`'s twin has to hold the same thirteen values. `api.audit` re-imports
+`apps/web`'s twin has to hold the same eighteen values. `api.audit` re-imports
 it, so every existing call site is unchanged. `PAGE_SIZE` is here for the same
 reason — see its own comment below.
 
@@ -83,6 +83,15 @@ PAGE_SIZE = 50
 #: `apps/api/tests/test_audit_read.py` pins the route's parameter name to it.
 CURSOR_PARAM = "before"
 
+#: The name of the query parameter selecting the Flagged filter (Story 3.7) —
+#: `GET /admin/audit?flagged=true`.
+#:
+#: `CURSOR_PARAM`'s own precedent and own reason: the server's spelling is the
+#: name of `read_audit_log`'s parameter, the client's spelling is
+#: `AUDIT_FLAGGED_PARAM` in `ts/audit.ts`, and nothing at build time crosses
+#: between them. `tests/test_audit.py` pins the two spellings to one value.
+FLAGGED_PARAM = "flagged"
+
 
 class AuditAction(StrEnum):
     """Every action this product records, and the whole vocabulary of `action`.
@@ -142,6 +151,34 @@ class AuditAction(StrEnum):
     # and a reader following a Tile through the log needs the last thing that
     # happened to it to be readable as the end of the trail.
     CATALOGUE_TILE_REMOVED = "catalogue_tile_removed"
+    # Story 3.7 / FR-22, Epic 3's first pair that names an anomaly rather than
+    # an ordinary action. The flag *is* these two members — no new column, no
+    # `UPDATE` of any existing row (AD-4, `test_nothing_mutates_the_audit_table`
+    # holds here unchanged): a detected deviation is one ordinary, append-only
+    # row whose `action` is one of these two, written through the same
+    # `audit.record()` every other entry goes through. `apps/api/api/anomaly.py`
+    # decides *whether* to flag; it never writes the audit log itself and never
+    # imports this name — the caller (`api.auth`, `api.scan`) does, exactly as
+    # `scan_throttle.check_and_record`'s boolean is turned into a refusal by
+    # its caller rather than by `scan_throttle` itself. A flag never blocks the
+    # login or scan submission that produced it (epics.md: "distinct from and
+    # in addition to" Story 3.6's hard throttle) — it is recorded for later
+    # Administrator review and nothing else.
+    LOGIN_ANOMALY_FLAGGED = "login_anomaly_flagged"
+    SCAN_VOLUME_ANOMALY_FLAGGED = "scan_volume_anomaly_flagged"
+
+
+#: The two flag actions Story 3.7 adds, as a set rather than a pair of loose
+#: names — `GET /admin/audit?flagged=true`'s `WHERE action = ANY(...)` and
+#: `AuditLogScreen.tsx`'s row-styling decision both read from this one place,
+#: `PAGE_SIZE`/`CURSOR_PARAM`'s own twin precedent for a value both halves
+#: need and neither may restate independently.
+#:
+#: `frozenset`, not `set`: this is a fixed vocabulary, not a collection either
+#: half ever mutates.
+FLAGGED_AUDIT_ACTIONS: frozenset[AuditAction] = frozenset(
+    {AuditAction.LOGIN_ANOMALY_FLAGGED, AuditAction.SCAN_VOLUME_ANOMALY_FLAGGED}
+)
 
 
 class AuditLogEntry(BaseModel):

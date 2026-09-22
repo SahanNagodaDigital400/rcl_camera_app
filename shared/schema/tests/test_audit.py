@@ -25,7 +25,14 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-from shared_schema.audit import CURSOR_PARAM, PAGE_SIZE, AuditAction, AuditLogEntry
+from shared_schema.audit import (
+    CURSOR_PARAM,
+    FLAGGED_AUDIT_ACTIONS,
+    FLAGGED_PARAM,
+    PAGE_SIZE,
+    AuditAction,
+    AuditLogEntry,
+)
 
 EXPECTED_FIELDS = {
     "id",
@@ -130,11 +137,12 @@ def test_a_password_digest_has_nowhere_to_go() -> None:
         AuditLogEntry.model_validate(an_entry_body(password_hash="$argon2id$..."))
 
 
-def test_the_vocabulary_is_the_sixteen_actions_the_product_writes() -> None:
-    # Thirteen from Epic 1 and three from Epic 2's catalogue writes — the add
-    # (Story 2.1), the edit (Story 2.2) and the removal (Story 2.3). The name
-    # of this test carries the count on purpose: an addition has to be a
-    # deliberate edit here, not a set that quietly grew.
+def test_the_vocabulary_is_the_eighteen_actions_the_product_writes() -> None:
+    # Thirteen from Epic 1, three from Epic 2's catalogue writes (the add,
+    # Story 2.1; the edit, Story 2.2; the removal, Story 2.3) and two from
+    # Story 3.7's anomaly flags. The name of this test carries the count on
+    # purpose: an addition has to be a deliberate edit here, not a set that
+    # quietly grew.
     assert {member.value for member in AuditAction} == {
         "login_succeeded",
         "login_failed",
@@ -152,6 +160,15 @@ def test_the_vocabulary_is_the_sixteen_actions_the_product_writes() -> None:
         "catalogue_tile_added",
         "catalogue_tile_edited",
         "catalogue_tile_removed",
+        "login_anomaly_flagged",
+        "scan_volume_anomaly_flagged",
+    }
+
+
+def test_the_flagged_actions_are_exactly_the_two_anomaly_flags() -> None:
+    assert FLAGGED_AUDIT_ACTIONS == {
+        AuditAction.LOGIN_ANOMALY_FLAGGED,
+        AuditAction.SCAN_VOLUME_ANOMALY_FLAGGED,
     }
 
 
@@ -251,6 +268,24 @@ def test_the_cursor_parameter_is_the_same_name_in_both_languages() -> None:
     assert match is not None, "AUDIT_CURSOR_PARAM is no longer a literal string in audit.ts"
 
     assert match.group(1) == CURSOR_PARAM
+
+
+def test_the_flagged_parameter_is_the_same_name_in_both_languages() -> None:
+    # `CURSOR_PARAM`'s own precedent: an unpinned rename here leaves the
+    # Flagged filter silently ignored by the server, which would answer the
+    # *unfiltered* log to a request the screen believes is filtered.
+    match = re.search(
+        r"^export const AUDIT_FLAGGED_PARAM = '([^']+)';$", _ts_source(), re.MULTILINE
+    )
+    assert match is not None, "AUDIT_FLAGGED_PARAM is no longer a literal string in audit.ts"
+
+    assert match.group(1) == FLAGGED_PARAM
+
+
+def test_the_twins_flagged_actions_list_matches_the_python_set() -> None:
+    listed = _ts_action_literals(r"export const FLAGGED_AUDIT_ACTIONS[^=]*=\s*\[(.*?)\];")
+
+    assert listed == {member.value for member in FLAGGED_AUDIT_ACTIONS}
 
 
 def test_the_page_size_is_a_usable_page() -> None:
