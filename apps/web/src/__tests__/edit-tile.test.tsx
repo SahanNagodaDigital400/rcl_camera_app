@@ -164,6 +164,17 @@ function renderScreen(onBack: () => void = (): void => undefined): void {
   render(<EditTileScreen onBack={onBack} />);
 }
 
+/** The screen as a Catalogue row opens it: a `Tile` handed over, nothing to type. */
+function withTile(tile: Tile = FOUND, onRemoved?: () => void): void {
+  render(
+    <EditTileScreen
+      onBack={(): void => undefined}
+      onRemoved={onRemoved ?? ((): void => undefined)}
+      tile={tile}
+    />,
+  );
+}
+
 function aFile(name = 'reference.jpg', type = 'image/jpeg'): File {
   return new File([new Uint8Array([1, 2, 3, 4])], name, { type });
 }
@@ -1644,7 +1655,122 @@ describe('the screen’s controls', () => {
   });
 });
 
-describe('the door on the home panel', () => {
+describe('a tile handed over by a Catalogue row', () => {
+  // Story 2.5's one change to this screen: it accepts a `Tile` and adopts it as
+  // the starting tile, so a row opens straight onto the edit form. The code
+  // lookup stage is untouched and is proved still to work below — it is the
+  // door for a tile nobody handed over.
+  it('opens on the edit form, pre-filled, with no request made', async () => {
+    // Adopted as the *initial* state rather than through an effect: an effect
+    // would paint the empty stage for one frame and replace it on the next,
+    // which is a flash of a form the Administrator never asked for. And nothing
+    // is fetched — the row already carried the whole tile, which is why the
+    // product serves no `GET /admin/tiles/{tile_id}`.
+    const { calls } = stubFetch({});
+    withTile();
+
+    expect((await screen.findByLabelText(/^code$/i)).getAttribute('value')).toBe(CODE);
+    expect(screen.getByLabelText(/^size$/i).getAttribute('value')).toBe(FOUND.size);
+    expect(screen.getByLabelText(/^category$/i).getAttribute('value')).toBe(FOUND.category);
+    expect(calls).toEqual([]);
+  });
+
+  it('shows the tile’s reference images without looking them up', async () => {
+    stubFetch({});
+    withTile();
+
+    await screen.findByLabelText(/^code$/i);
+
+    for (const [index, image] of FOUND.reference_images.entries()) {
+      const thumbnail = screen.getByAltText(`Reference image ${index + 1} of ${CODE}`);
+      expect(thumbnail.getAttribute('src')).toBe(
+        `/api/admin/tiles/${TILE_ID}/images/${image.id}`,
+      );
+    }
+  });
+
+  it('saves that tile by its own id, with no code typed anywhere', async () => {
+    // The end-to-end claim: a row opens the screen and the very next action is
+    // a save against the right tile. Nothing was transcribed and nothing was
+    // looked up.
+    const { calls } = stubFetch({ [`PATCH ${SAVE}`]: [{ status: 200, body: SAVED_TILE }] });
+    withTile();
+
+    await screen.findByLabelText(/^code$/i);
+    save();
+
+    await screen.findByText(/^saved\.$/i);
+    const writes = calls.filter(([, init]) => init.method === 'PATCH');
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.[0]).toBe(SAVE);
+    expect(calls.some(([path]) => path.includes('/lookup'))).toBe(false);
+  });
+
+  it('leaves for the surface that opened it once a removal is confirmed', async () => {
+    // A confirmed removal ends the tile this screen is about, and this screen
+    // was opened *about that tile* — so it has nothing left to show. Staying
+    // would re-render as a code-entry stage for a Code that no longer names
+    // anything, with `Back` as the only way out; the Catalogue's refetch on
+    // mount is what makes the row's absence visible instead.
+    const onRemoved = vi.fn();
+    stubFetch({ [`DELETE ${REMOVE}`]: [{ status: 204 }] });
+    withTile(FOUND, onRemoved);
+
+    await screen.findByLabelText(/^code$/i);
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    await waitFor(() => {
+      expect(onRemoved).toHaveBeenCalledTimes(1);
+    });
+    // And the announcement that belongs to the lookup stage is **not** left
+    // standing: the screen is leaving, not returning to a stage it never came
+    // from.
+    expect(screen.queryByText(`${CODE} removed.`)).toBeNull();
+  });
+
+  it('stays put and says why when the removal is refused', async () => {
+    // A refusal is not a removal. The screen keeps the Administrator where the
+    // alert is readable rather than leaving for a surface that would show the
+    // tile still there with no explanation.
+    const onRemoved = vi.fn();
+    stubFetch({
+      [`DELETE ${REMOVE}`]: [refusal('internal_error', 'Something went wrong.', 500)],
+    });
+    withTile(FOUND, onRemoved);
+
+    await screen.findByLabelText(/^code$/i);
+    fireEvent.click(removeControl());
+    confirmRemoval();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('Something went wrong.');
+    expect(onRemoved).not.toHaveBeenCalled();
+  });
+
+  it('still offers the code lookup when no tile was handed over', async () => {
+    // The stage Story 2.5 deliberately did not weaken. It is what a tile
+    // nobody handed the screen still needs, Story 2.2's authorization clause
+    // names the route it calls, and deleting a tested route inside a search
+    // story would be a separate decision.
+    stubFetch({ [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }] });
+    renderScreen();
+
+    // Nothing is loaded until a Code is entered and Find is pressed.
+    expect(screen.queryByLabelText(/^code$/i)).toBeNull();
+
+    lookUp();
+
+    expect((await screen.findByLabelText(/^code$/i)).getAttribute('value')).toBe(CODE);
+  });
+});
+
+describe('the route from the Catalogue', () => {
+  // Retargeted by Story 2.5 rather than deleted. This screen had a door of its
+  // own on the home panel while there was no Catalogue to reach it from;
+  // EXPERIENCE.md line 36 always reached Edit Tile from a Catalogue *row*, and
+  // that surface now exists — so the entry is a row-end control there and the
+  // home panel carries one Catalogue door instead of three tile ones.
   function stubSession(user: User | null): { calls: [string, RequestInit][] } {
     return stubFetch({
       'GET /api/auth/session': [
@@ -1652,20 +1778,41 @@ describe('the door on the home panel', () => {
           ? { status: 401, body: { error: { code: 'unauthorized', message: 'Not signed in.' } } }
           : { status: 200, body: user },
       ],
+      // The Catalogue's own browse, answering with the tile whose row this
+      // block presses Edit on.
+      'GET /api/admin/tiles?q=': [{ status: 200, body: [FOUND] }],
       [`GET ${LOOKUP}`]: [{ status: 200, body: FOUND }],
     });
   }
 
-  it('is offered to an Administrator and opens the screen', async () => {
+  it('is reached from a Catalogue row by an Administrator', async () => {
     stubSession(ADMIN);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^edit tile$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^catalogue$/i }));
+    await screen.findByRole('table');
+
+    fireEvent.click(screen.getByRole('button', { name: `Edit ${CODE}` }));
 
     expect(await screen.findByRole('heading', { name: /^edit tile$/i })).toBeTruthy();
+    // On the edit form already, because the row handed the tile over.
+    expect((await screen.findByLabelText(/^code$/i)).getAttribute('value')).toBe(CODE);
   });
 
-  it('is not offered to a Staff user at all', async () => {
+  it('has no door of its own on the home panel any more', async () => {
+    // Two ways to reach one screen is the thing Story 2.5 removed — and this
+    // was the least defensible of the three doors, since EXPERIENCE.md line 36
+    // reaches Edit Tile from a row and from nowhere else.
+    stubSession(ADMIN);
+    render(<App />);
+
+    await screen.findByText(/signed in as nadeesha silva/i);
+
+    expect(screen.queryByRole('button', { name: /^edit tile$/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /^catalogue$/i })).toBeTruthy();
+  });
+
+  it('is not reachable by a Staff user at all', async () => {
     // EXPERIENCE.md line 18: the nav is role-conditional, not a menu with
     // disabled items. The server refuses them regardless (AGENTS.md Policy);
     // this is the courtesy on top of the control.
@@ -1674,18 +1821,24 @@ describe('the door on the home panel', () => {
 
     await screen.findByText(/signed in as kasun perera/i);
 
+    expect(screen.queryByRole('button', { name: /^catalogue$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^edit tile$/i })).toBeNull();
   });
 
-  it('returns to the home panel from Back', async () => {
+  it('returns to the Catalogue from Back, not to the home panel', async () => {
+    // The row is where Edit was pressed, and `CatalogueScreen` refetches on
+    // mount — so returning to it shows the row as it was just saved.
     stubSession(ADMIN);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^edit tile$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^catalogue$/i }));
+    await screen.findByRole('table');
+    fireEvent.click(screen.getByRole('button', { name: `Edit ${CODE}` }));
     await screen.findByRole('heading', { name: /^edit tile$/i });
 
     fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
 
-    expect(await screen.findByText(/signed in as nadeesha silva/i)).toBeTruthy();
+    expect(await screen.findByRole('table')).toBeTruthy();
+    expect(screen.queryByText(/signed in as nadeesha silva/i)).toBeNull();
   });
 });

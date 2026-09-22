@@ -161,6 +161,40 @@ def clean_code(value: str) -> str:
     return stripped
 
 
+def clean_query(value: str) -> str:
+    """A catalogue search as it will be matched, or a `ValueError` naming the rule.
+
+    **A query is not a Code**, and the two differences are the whole of why this
+    is a function of its own rather than `clean_code` with a flag:
+
+    * **It is never uppercased.** Neither is a Code — but the reason here is the
+      opposite one. `clean_code` preserves case because the case *is* part of the
+      identity (`1Jk` is not `1JK`); this preserves it because folding it would
+      be pointless work, since the match is case-insensitive at the database and
+      a fragment typed in either case finds the same Tiles (FR-18).
+    * **It is never required.** A blank query is legal and means *browse the
+      whole catalogue* — EXPERIENCE.md:35 is "Search/**browse** Tiles", and the
+      Catalogue screen opens on the full list and narrows from there. Refusing
+      `""` the way `clean_code` refuses it would make the screen's own first
+      request an error.
+
+    What it keeps is the two bounds that are about the *column* rather than about
+    the search: `MAX_CODE_LENGTH`, because a query longer than any Code can be
+    matches nothing and there is no reason to send it to Postgres, and the
+    control-character gate, because a NUL cannot cross psycopg at all and would
+    surface as a `500` where every other refused input gets a `422`.
+
+    Lives here, beside `clean_code`, because the Code's rules live in one module
+    and a rule about searching Codes is one of them.
+    """
+    stripped = value.strip()
+    if len(stripped) > MAX_CODE_LENGTH:
+        raise ValueError(f"A search must be at most {MAX_CODE_LENGTH} characters.")
+    if _has_control_character(stripped):
+        raise ValueError("A search must not contain control characters.")
+    return stripped
+
+
 def clean_size(value: str) -> str:
     """The Size as it will be resolved, normalized, or a `ValueError`."""
     normalized = normalize_label(value)

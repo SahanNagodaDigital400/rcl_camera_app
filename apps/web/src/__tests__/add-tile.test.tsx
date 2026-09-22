@@ -638,7 +638,14 @@ describe('the screen’s controls', () => {
   });
 });
 
-describe('the door on the home panel', () => {
+describe('the route from the Catalogue', () => {
+  // Retargeted by Story 2.5 rather than deleted. This screen had a door of its
+  // own on the home panel while there was no Catalogue to reach it from;
+  // EXPERIENCE.md line 36 always reached Add Tile from "+ Add Tile" on the
+  // Catalogue or from a row, and that surface now exists — so the entry is a
+  // control there and the home panel carries one Catalogue door instead of
+  // three tile ones. What this block still proves is the same two things: an
+  // Administrator can get here, and a Staff user cannot.
   function stubSession(user: User | null): { calls: [string, RequestInit][] } {
     return stubFetch({
       'GET /api/auth/session': [
@@ -646,21 +653,40 @@ describe('the door on the home panel', () => {
           ? { status: 401, body: { error: { code: 'unauthorized', message: 'Not signed in.' } } }
           : { status: 200, body: user },
       ],
+      // The Catalogue's own browse, so the screen this is reached *through*
+      // paints rather than sitting on its failure state. An empty catalogue is
+      // enough: "+ Add Tile" is in the actions row, not in the table.
+      'GET /api/admin/tiles?q=': [{ status: 200, body: [] }],
       'POST /api/admin/tiles': [{ status: 201, body: CREATED }],
     });
   }
 
-  it('is offered to an Administrator and opens the screen', async () => {
+  it('is reached from the Catalogue by an Administrator', async () => {
     stubSession(ADMIN);
     render(<App />);
 
-    const door = await screen.findByRole('button', { name: /^add tile$/i });
-    fireEvent.click(door);
+    fireEvent.click(await screen.findByRole('button', { name: /^catalogue$/i }));
+    await screen.findByRole('heading', { name: /^catalogue$/i });
+
+    fireEvent.click(screen.getByRole('button', { name: /add tile/i }));
 
     expect(await screen.findByRole('heading', { name: /^add tile$/i })).toBeTruthy();
   });
 
-  it('is not offered to a Staff user at all', async () => {
+  it('has no door of its own on the home panel any more', async () => {
+    // Two ways to reach one screen is the thing Story 2.5 removed. Leaving the
+    // old door beside the Catalogue's "+ Add Tile" would also contradict
+    // EXPERIENCE.md line 36, which names the Catalogue as the only way in.
+    stubSession(ADMIN);
+    render(<App />);
+
+    await screen.findByText(/signed in as nadeesha silva/i);
+
+    expect(screen.queryByRole('button', { name: /^add tile$/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /^catalogue$/i })).toBeTruthy();
+  });
+
+  it('is not reachable by a Staff user at all', async () => {
     // EXPERIENCE.md line 18: the nav is role-conditional, not a menu with
     // disabled items — a Staff user should never see an entry they cannot use.
     // The server refuses them regardless (AGENTS.md Policy); this is the
@@ -670,18 +696,25 @@ describe('the door on the home panel', () => {
 
     await screen.findByText(/signed in as kasun perera/i);
 
-    expect(screen.queryByRole('button', { name: /^add tile$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^catalogue$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /add tile/i })).toBeNull();
   });
 
-  it('returns to the home panel from Back', async () => {
+  it('returns to the Catalogue from Back, not to the home panel', async () => {
+    // The Catalogue is where "+ Add Tile" was pressed, and where the new tile
+    // belongs — and `CatalogueScreen` refetches on mount, so returning to it
+    // lists the tile just added.
     stubSession(ADMIN);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^add tile$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^catalogue$/i }));
+    await screen.findByRole('heading', { name: /^catalogue$/i });
+    fireEvent.click(screen.getByRole('button', { name: /add tile/i }));
     await screen.findByRole('heading', { name: /^add tile$/i });
 
     fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
 
-    expect(await screen.findByText(/signed in as nadeesha silva/i)).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^catalogue$/i })).toBeTruthy();
+    expect(screen.queryByText(/signed in as nadeesha silva/i)).toBeNull();
   });
 });

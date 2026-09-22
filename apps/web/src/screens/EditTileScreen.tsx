@@ -35,14 +35,23 @@ import type { Tile } from '@rocell/schema/tile';
  * indicator — because an Administrator moving between the two catalogue forms
  * should not read them as two different applications.
  *
- * **Two stages, one screen.** EXPERIENCE.md line 36 opens Edit Tile from a
- * Catalogue row, and the Catalogue list is Story 2.5's — so until it exists
- * this screen has to find its own tile. The first stage is a Code lookup
- * against `GET /admin/tiles/lookup`, which is an **exact** match by design: a
- * partial Code finds nothing here, and searching is the thing 2.5 builds. The
- * second stage is the edit form, which only exists once a tile has been found.
- * Exactly one of the two primary actions is on screen at a time, so the screen
- * still has exactly one accent control (DESIGN.md).
+ * **Two stages, one screen, and nothing in the app opens the first any more.**
+ * EXPERIENCE.md line 36 opens Edit Tile from a Catalogue row, and Story 2.5
+ * built that surface: a row hands this screen the whole `Tile` it already
+ * holds, so the form is on screen from the first render with no Code to type
+ * and no request made. `App` renders this screen only with a tile — its
+ * `currentScreen` answers `'catalogue'` for an `'edit-tile'` section holding
+ * none — so the Code lookup stage is **not an entry point**.
+ *
+ * It is the state this screen falls back to, and it is still reachable: a save
+ * or a removal refused `404` (the tile was renamed or removed from under the
+ * form) clears the tile and leaves the Administrator here with the refusal and
+ * a way to find another one, and the screen rendered on its own without a
+ * `tile` prop starts here too. It is a plain `GET` against
+ * `/admin/tiles/lookup`, an **exact** match by design, so a partial Code finds
+ * nothing here and substring searching is the Catalogue's. Exactly one of the
+ * two primary actions is on screen at a time, so the screen still has exactly
+ * one accent control (DESIGN.md).
  *
  * **The Code is the tile's identity** (AD-18), and the vocabulary follows:
  * Tile, Code, Size, Category, Reference image. `Product` and `Face` are retired
@@ -69,14 +78,18 @@ import type { Tile } from '@rocell/schema/tile';
  * server's own words rather than restating a rule it does not own.
  *
  * **The tile itself can be removed here too** (FR-16), and this is the only
- * door that reaches one until Story 2.5's Catalogue list ships — which is also
- * what closes the loop the last-image refusal opens, since its own sentence
- * tells the Administrator to "remove the tile instead". The control is
+ * door in the product that reaches one — deliberately not a verb on a
+ * Catalogue row, where one mis-click on a dense list would take out an entry
+ * nobody can restore. It is also what closes the loop the last-image refusal
+ * opens, since its own sentence tells the Administrator to "remove the tile
+ * instead". The control is
  * destructive-filled and carries the word, never the accent: Save is this
  * screen's one accent action once a tile is loaded. It confirms in the same
- * `ConfirmDialog`, and a confirmed removal returns the screen to its lookup
- * stage with the removal announced, because there is no longer a tile for the
- * form to be about. There is no undo, no restore and no trash state — the
+ * `ConfirmDialog`, and where a confirmed removal leaves depends on how the
+ * screen was opened: a tile handed over by a Catalogue row has nowhere to stay,
+ * so the screen leaves through `onRemoved`; a tile this screen found for itself
+ * returns to the lookup stage with the removal announced, because that is where
+ * it came from. There is no undo, no restore and no trash state — the
  * confirmation is the safeguard.
  *
  * **Reference images are proxied, never linked** (AD-9). Each thumbnail's `src`
@@ -95,8 +108,10 @@ import type { Tile } from '@rocell/schema/tile';
  * Deliberately absent:
  *
  * - **No similarity value, in any form** (AD-20).
- * - **No catalogue list and no substring search.** Story 2.5's, and the lookup
- *   above is deliberately not the beginning of one.
+ * - **No catalogue list and no substring search.** `CatalogueScreen` is that
+ *   surface, and the lookup here is deliberately not a second, narrower copy
+ *   of it: it answers one exact Code, and a prefix match returning "the" tile
+ *   would hand the Administrator whichever row sorted first to edit.
  * - **No undo after a removal**, and no restore, trash state or grace period.
  *   The confirmation is the safeguard; a tile that should come back is added
  *   again.
@@ -244,7 +259,33 @@ function asTile(body: unknown, status: number): Tile {
   return body;
 }
 
-export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element {
+/**
+ * `onBack` returns to whatever opened this screen — the Catalogue, when a row
+ * did.
+ *
+ * `tile` is the Tile a Catalogue row handed over. Read **once**, at mount, as
+ * the initial state and never reconciled: `App` keys this element on `tile.id`,
+ * so swapping one tile for another remounts the screen rather than re-seeding a
+ * form that may be half-edited. That is `EditUserScreen`'s own arrangement for
+ * the same reason.
+ *
+ * `onRemoved` is where a **confirmed removal** leaves for, and it is only ever
+ * called when a `tile` was handed over. That case has nowhere to stay: the
+ * screen was opened about one tile, that tile is gone, and re-rendering as a
+ * code-entry stage would leave an Administrator looking at a box for a Code
+ * that no longer names anything with `Back` as the only way out. A screen that
+ * found its own tile keeps the existing behaviour — it returns to its lookup
+ * stage with the removal announced, because the lookup is where it came from.
+ */
+export function EditTileScreen({
+  onBack,
+  onRemoved,
+  tile: opened,
+}: {
+  onBack: () => void;
+  onRemoved?: () => void;
+  tile?: Tile;
+}): JSX.Element {
   const lookupId = useId();
   const codeId = useId();
   const sizeId = useId();
@@ -260,10 +301,21 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
   const removalHintId = useId();
 
   const [lookupCode, setLookupCode] = useState('');
-  const [tile, setTile] = useState<Tile | null>(null);
-  const [code, setCode] = useState('');
-  const [size, setSize] = useState('');
-  const [category, setCategory] = useState('');
+  /**
+   * The tile being edited, seeded from the prop when a Catalogue row opened
+   * this screen.
+   *
+   * `opened ?? null` rather than an effect that adopts it: an effect would
+   * paint the code-entry stage for one frame and replace it on the next, which
+   * is a flash of a form the Administrator never asked for — and would move
+   * focus and state around after the commit. As the initial value there is no
+   * such frame, and a row's tile is on the edit stage from the first render
+   * with nothing to look up and no request made.
+   */
+  const [tile, setTile] = useState<Tile | null>(opened ?? null);
+  const [code, setCode] = useState(opened?.code ?? '');
+  const [size, setSize] = useState(opened?.size ?? '');
+  const [category, setCategory] = useState(opened?.category ?? '');
   /** The ids marked for removal. Nothing is removed until the save lands. */
   const [marked, setMarked] = useState<readonly string[]>([]);
   const [files, setFiles] = useState<File[]>([]);
@@ -542,6 +594,20 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
       setMarked([]);
       setFiles([]);
       if (imagesRef.current) imagesRef.current.value = '';
+      if (opened !== undefined && onRemoved !== undefined) {
+        // Handed a tile by a Catalogue row, and that tile no longer exists —
+        // so this screen has nothing left to be about and leaves. The
+        // Catalogue's refetch on mount is what shows the row gone; staying
+        // would render a code-entry stage for a Code that names nothing, with
+        // `Back` as the only way out of it.
+        //
+        // The state above is still cleared first, and not only for tidiness:
+        // `onRemoved` is a request to the gate, not a guarantee of an unmount,
+        // and a `File` staged for a tile that is gone must not survive either
+        // way.
+        onRemoved();
+        return;
+      }
       setRemoved(`${removedCode} removed.`);
       lookupRef.current?.focus();
     } catch (failure) {
@@ -669,8 +735,9 @@ export function EditTileScreen({ onBack }: { onBack: () => void }): JSX.Element 
           />
           {/* The match is exact, and saying so is what stops an Administrator
               reading a `404` as "the tile is gone" when it is "that is not the
-              whole code". Browsing by partial code is the Catalogue's, which is
-              a later story. */}
+              whole code". Browsing and searching by partial code is the
+              Catalogue's, and a row there opens this screen with its tile
+              already loaded — so this stage is the fallback, not the way in. */}
           <p className={styles.hint} id={lookupHintId}>
             The whole code, exactly as it is filed.
           </p>

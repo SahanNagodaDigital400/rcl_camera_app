@@ -92,73 +92,28 @@
   cursor: pointer;
 }
 
-/* The door to Add tile, beside Users and the Audit log and on the same terms:
- * role-conditional, and the same secondary treatment. Written out rather than
- * composed from `.auditLog` for the reason that rule gives about `.userList` —
- * a class named for the audit log carried by the catalogue entry is a rule
- * nobody can read.
+/* The door to the Catalogue, beside Users and the Audit log and on the same
+ * terms: role-conditional, and the same secondary treatment. Written out rather
+ * than composed from `.auditLog` for the reason that rule gives about
+ * `.userList` — a class named for the audit log carried by the catalogue entry
+ * is a rule nobody can read.
  *
- * Deliberately not the accent, although this one is the closest call of the
- * three: "+ Add Tile" *is* the primary action on the Catalogue surface
- * (EXPERIENCE.md line 36), and it will take the accent when Story 2.5 builds
- * that surface and this door moves onto it. Here it is a nav entry on a panel
- * whose job is neither catalogue management nor user management, and a screen
- * with three orange buttons has no primary action at all.
- */
-.addTile {
-  align-self: flex-start;
-  justify-content: center;
-  margin-top: var(--space-3);
-  padding: var(--space-3) var(--space-5);
-  border: var(--border-hairline) solid var(--color-primary);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-primary);
-  font-size: var(--type-label-size);
-  font-weight: var(--type-label-weight);
-  line-height: var(--type-label-line);
-  cursor: pointer;
-}
-
-/* The door to Edit tile, beside Add tile and on the same terms. Written out
- * rather than composed from `.addTile` for the reason the rules above give: a
- * class named for one entry carried by another is a rule nobody can read.
+ * **This one rule replaced three.** Add tile, Edit tile and Bulk upload each
+ * had a door here while there was no Catalogue to reach them from, and each of
+ * their rules said in its own comment what Story 2.5 does with it: "+ Add Tile"
+ * takes the accent on the Catalogue surface, Edit tile becomes a row-end
+ * control there, and Bulk upload stands beside "+ Add Tile" as a secondary.
+ * They are controls on `CatalogueScreen` now, and this is the one entry that
+ * reaches all three — EXPERIENCE.md line 35 is the nav entry, lines 36-37 are
+ * the controls on it.
  *
- * Secondary like its three neighbours, and the case is easier than Add tile's:
- * EXPERIENCE.md line 36 reaches Edit Tile from a Catalogue *row*, never from a
- * primary control, so when Story 2.5 builds that surface this entry becomes a
- * row-end control there rather than an accent button anywhere.
+ * Deliberately not the accent, and the case is the same one every door here
+ * makes: the home panel has no primary action, and an orange button reading
+ * "Catalogue" would make browsing the catalogue the loudest thing on a screen
+ * whose job is scanning tiles. The accent belongs to "+ Add Tile" *on the
+ * Catalogue*, which is why this file still holds zero `--color-accent`.
  */
-.editTile {
-  align-self: flex-start;
-  justify-content: center;
-  margin-top: var(--space-3);
-  padding: var(--space-3) var(--space-5);
-  border: var(--border-hairline) solid var(--color-primary);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-primary);
-  font-size: var(--type-label-size);
-  font-weight: var(--type-label-weight);
-  line-height: var(--type-label-line);
-  cursor: pointer;
-}
-
-/* The door to Bulk upload, beside its three neighbours and on the same terms.
- * Written out rather than composed from `.addTile` for the reason the rules
- * above give: a class named for one entry carried by another is a rule nobody
- * can read.
- *
- * Secondary, and this one is not a close call at all. The screen it opens is
- * the one place in the product where the accent is also a *status* colour
- * (DESIGN.md:144-149) — an orange door leading to it would be the same hue
- * meaning "press this" here and "review this row" one click later. It is also a
- * sub-surface: EXPERIENCE.md line 37 reaches Bulk Upload from the Catalogue,
- * never from the nav, so when Story 2.5 builds that surface this entry moves
- * onto it as a secondary control beside "+ Add Tile" — which is the entry that
- * takes the accent there.
- */
-.bulkUpload {
+.catalogue {
   align-self: flex-start;
   justify-content: center;
   margin-top: var(--space-3);

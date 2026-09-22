@@ -46,6 +46,7 @@ import {
   INVALID_EMAIL,
   INVALID_IMAGE,
   INVALID_MANIFEST,
+  INVALID_QUERY,
   INVALID_SIZE,
   LAST_ADMINISTRATOR,
   LAST_REFERENCE_IMAGE,
@@ -134,11 +135,18 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   email_already_exists: { file: 'users.py', name: 'EMAIL_ALREADY_EXISTS' },
   user_not_found: { file: 'users.py', name: 'USER_NOT_FOUND' },
   last_administrator: { file: 'users.py', name: 'LAST_ADMINISTRATOR' },
-  // Epic 2's catalogue routes. Eighteen codes rather than one generic
+  // Epic 2's catalogue routes. Nineteen codes rather than one generic
   // `validation_error`, because the screen decides which of its controls to
   // mark from the code alone — eleven from Story 2.1's add and image read, two
-  // more from Story 2.2's edit and lookup, and five from Story 2.4's bulk
-  // upload.
+  // more from Story 2.2's edit and lookup, five from Story 2.4's bulk upload,
+  // and one from Story 2.5's catalogue search.
+  //
+  // Story 2.5's `invalid_query` is deliberately *not* `invalid_code` reused: a
+  // query is not a Code, a blank one browses the whole catalogue rather than
+  // being refused, and a screen marking its search box from the add form's
+  // code refusal would be marking it for a rule it does not have. The search
+  // adds no numeric bound of its own, so there is no `BOUNDS` row below for
+  // it — `q` is bounded by `MAX_CODE_LENGTH`, which already has one.
   //
   // Story 2.4's five are not all the same kind of thing, and the map
   // deliberately does not distinguish them: `invalid_manifest` and
@@ -150,6 +158,7 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   // carries it.
   invalid_code: { file: 'catalogue.py', name: 'INVALID_CODE' },
   invalid_size: { file: 'catalogue.py', name: 'INVALID_SIZE' },
+  invalid_query: { file: 'catalogue.py', name: 'INVALID_QUERY' },
   invalid_category: { file: 'catalogue.py', name: 'INVALID_CATEGORY' },
   invalid_image: { file: 'catalogue.py', name: 'INVALID_IMAGE' },
   unreadable_image: { file: 'catalogue.py', name: 'UNREADABLE_IMAGE' },
@@ -182,6 +191,7 @@ const TYPESCRIPT: Record<string, string> = {
   last_administrator: LAST_ADMINISTRATOR,
   invalid_code: INVALID_CODE,
   invalid_size: INVALID_SIZE,
+  invalid_query: INVALID_QUERY,
   invalid_category: INVALID_CATEGORY,
   invalid_image: INVALID_IMAGE,
   unreadable_image: UNREADABLE_IMAGE,
