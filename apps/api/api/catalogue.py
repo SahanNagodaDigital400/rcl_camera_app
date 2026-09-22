@@ -1,6 +1,6 @@
-"""`/admin/tiles` — the Catalogue's write path, and the query that proves it worked.
+"""`/admin/tiles` — the Catalogue's write path, its read door, and the query that proves it worked.
 
-Six routes and one function that is not a route:
+Seven routes and one function that is not a route:
 
 * `POST /admin/tiles` (FR-14) takes a Code, a Size, an optional Category and
   one to eight reference images, and creates a Tile that a Scan can return in
@@ -16,9 +16,15 @@ Six routes and one function that is not a route:
 * `DELETE /admin/tiles/{tile_id}` (FR-16) withdraws one outright — the Tile,
   its Reference Images and every embedding those images produced leave the
   searchable graph in one statement, by the migration's own cascades.
-* `GET /admin/tiles/lookup?code=` finds one Tile by an **exact** Code, which is
-  the whole door the edit screen has until Story 2.5 ships the Catalogue list.
-  Not a search: no substring, no listing, no pagination.
+* `GET /admin/tiles?q=` (FR-18) is the Catalogue itself: every Tile whose Code
+  contains `q`, case-insensitively and anywhere in the string, ordered by Code,
+  with its Size, its Category and its Reference Images. A blank `q` browses the
+  whole Catalogue. Substrings of the **Code** and nothing else — Size and
+  Category are displayed and never filtered on.
+* `GET /admin/tiles/lookup?code=` finds one Tile by an **exact** Code. Not a
+  search: no substring, no listing, no pagination. The list above is what the
+  Catalogue screen opens Edit Tile from; this is what Edit Tile uses when
+  nobody handed it a Tile.
 * `GET /admin/tiles/{tile_id}/images/{image_id}` serves AD-17's capped
   derivative, and only that — the retained source asset has no route at all.
 * `find_candidates` is the max-over-views search. It lives here, with the
@@ -108,8 +114,20 @@ authorization, the manifest, the row cap, the missing model artifact and
 AD-14's stamp — is checked while a real envelope under a 4xx or 5xx is still
 possible. After that the status is `200` and every outcome is a row.
 
-Not here, deliberately: the catalogue **list and substring search** (2.5),
-Epic 3's scan endpoint, and any crop step — AD-11 resolved that one explicitly
+**The read is the write's own contract, unchanged** (2.5). The search answers
+the same closed `Tile` model the four writes answer, in a bare array with no
+envelope, no cursor and no cap — so a row of the Catalogue and a Tile just
+saved are the same shape, and the screen hands one straight to Edit Tile. It
+matches substrings of the **Code** only: Size and Category are groupings
+(AD-18), they are displayed on every row, and nothing filters, facets or groups
+by them. And it records nothing, for `lookup_tile`'s reason — a read changes
+nothing, and FR-20 covers changes.
+
+Not here, deliberately: a `GET /admin/tiles/{tile_id}` detail route (the list
+carries the whole Tile), a Size or Category filter or picker — Epic 3's
+proposed scan-side Size pre-filter is `[PROPOSED, PRD OQ-15]` and not adopted —
+a staff-facing lookup (`SPEC.md:94` leaves that open), Epic 3's scan endpoint,
+and any crop step — AD-11 resolved that one explicitly
 as *no* for admin uploads. Nor any way back from a removal: no restore, no
 undo, no trash state and no grace period. The confirmation on the screen is the
 safeguard, and a Tile that should come back is added again. Nor a job table, a
@@ -149,6 +167,7 @@ from shared_schema.tile import (
     Tile,
     clean_category,
     clean_code,
+    clean_query,
     clean_size,
     face_number,
 )
@@ -178,6 +197,12 @@ router = APIRouter(tags=["catalogue"])
 
 INVALID_CODE = "invalid_code"
 INVALID_SIZE = "invalid_size"
+# Story 2.5's one. Separate from `INVALID_CODE` because a query is not a Code
+# (`shared_schema.tile.clean_query`): a blank one is legal and browses the whole
+# Catalogue, so the two refusals do not describe the same input and a screen
+# marking its search box from `invalid_code` would mark it for a Code somebody
+# typed into a different form.
+INVALID_QUERY = "invalid_query"
 INVALID_CATEGORY = "invalid_category"
 INVALID_IMAGE = "invalid_image"
 UNREADABLE_IMAGE = "unreadable_image"
@@ -253,6 +278,19 @@ LAST_IMAGE = (
     "A tile must keep at least one reference image. "
     "Add the replacement in the same save, or remove the tile instead."
 )
+
+#: What a query the search will not run is told, after the rule it broke.
+#:
+#: `_invalid_manifest`'s shape: `clean_query` names the defect — longer than any
+#: Code can be, or carrying a character Postgres text cannot hold — and this
+#: names the way through, in that order. The fix is worth stating because the
+#: obvious reading of "too long" is that the search box is broken, when in fact
+#: a **fragment** is what this route wants.
+#:
+#: It names clearing the box deliberately: a blank `q` is not a refusal here, it
+#: browses the whole Catalogue (EXPERIENCE.md:35), and an Administrator who has
+#: just been refused is exactly the person who needs to know that.
+BAD_QUERY = "Search for part of a code, or clear the box to browse the whole catalogue."
 
 #: The unique index the 409 is built from, by name. Postgres reports it as
 #: `constraint_name` on the `UniqueViolation`, and this handler answers
@@ -528,6 +566,46 @@ SELECT t.id, t.code, t.face_number, t.created_at, t.updated_at,
  WHERE t.code = %s
 """
 
+#: FR-18's search: **substrings of the Code, case-insensitively, and nothing
+#: else.** The sibling of the equality match above, join shape for join shape,
+#: so the two cannot come to disagree about what a row of the Catalogue is.
+#:
+#: **The pattern is the parameter, never the statement.** The text below is a
+#: constant carrying one `%s`; the `%`-wrapping and the escaping of `\`, `%` and
+#: `_` happen on the Python value in `_pattern`. That is what makes `?q=%` mean
+#: the *character* rather than "everything", and it is what keeps
+#: `tests/test_source_guards.py`'s interpolation guard satisfied — psycopg's
+#: `%s` is not string formatting and never becomes part of the statement.
+#:
+#: **A sequential scan, deliberately.** The only index on `tile.code` is the
+#: unique btree from the migration, and an unanchored pattern cannot use it in
+#: any collation. The alternative is a trigram index, which means
+#: `CREATE EXTENSION pg_trgm` in a new migration — a new database dependency
+#: for a table holding 381 rows today and a few hundred at the scale the whole
+#: index is sized for. CLAUDE.md says measure before reaching for a bigger
+#: mechanism; this is the measurement not yet being needed.
+#:
+#: **No `WHERE` on Size or Category, and no `LIMIT`.** Size and Category are
+#: *displayed* (AD-18): they are groupings, never the identity, and a
+#: `size + category` filter is the one query shape CLAUDE.md forbids outright
+#: because it hides the very row somebody is looking for. A `LIMIT` would
+#: answer "which tiles match" with "some of them", which is `api.users`'
+#: argument for `_SELECT_USERS` on a table two orders of magnitude smaller
+#: again; a caller-settable one is the DoS knob `api.audit` refuses.
+#:
+#: **`ORDER BY t.code`**, because the Code is what a reader is scanning for and
+#: it is the table's only unique non-opaque column — so the order is total and a
+#: test can assert it. A blank query orders the whole Catalogue the same way.
+_SEARCH_TILES = """
+SELECT t.id, t.code, t.face_number, t.created_at, t.updated_at,
+       s.name AS size, c.name AS category
+  FROM tile t
+  JOIN tile_size s ON s.id = t.size_id
+  LEFT JOIN tile_category c ON c.id = t.category_id
+ WHERE t.code ILIKE %s
+ ORDER BY t.code
+"""
+
 #: One Tile's Reference Images, in the `ReferenceImage` contract's own shape —
 #: no storage key, no byte count of the original (AD-9). Ordered so that the
 #: screen renders them the same way twice.
@@ -536,6 +614,31 @@ SELECT id, width, height, featureless, created_at
   FROM reference_image
  WHERE tile_id = %s
  ORDER BY created_at, id
+"""
+
+#: **Many** Tiles' Reference Images, in one statement.
+#:
+#: The sibling of the single-Tile read above, and it exists because the two
+#: obvious alternatives are both wrong at list scale. Calling
+#: `_reference_images` once per row is a few hundred round trips on one pooled
+#: connection for a screen that paints one table. Joining the images onto
+#: `_SEARCH_TILES` returns one row per *image* with every Tile column repeated,
+#: which then has to be un-repeated in Python — the same grouping this does,
+#: over more bytes and with the Tile's identity smeared across rows.
+#:
+#: `tile_id` is selected here and nowhere else, because it is what the grouping
+#: is keyed on. `ReferenceImage` is `extra="forbid"`, so it comes off the row
+#: before `model_validate` sees it (`_search_images`).
+#:
+#: `ORDER BY tile_id, created_at, id` — the same `created_at, id` order the
+#: single-Tile read states, so one Tile's images appear in the same order
+#: whether they were reached from the Catalogue or from the lookup, with
+#: `tile_id` leading so the grouping walk is over contiguous rows.
+_SEARCH_TILE_IMAGES = """
+SELECT tile_id, id, width, height, featureless, created_at
+  FROM reference_image
+ WHERE tile_id = ANY(%s)
+ ORDER BY tile_id, created_at, id
 """
 
 #: **`updated_at` is set by hand.** This schema carries no BEFORE UPDATE trigger
@@ -2089,6 +2192,160 @@ def _removals(
     return wanted
 
 
+#: The three characters `ILIKE` reads as syntax, and what each becomes.
+#:
+#: A `str.translate` table rather than three chained `str.replace` calls,
+#: because the chain has a correctness trap the table does not: it has to
+#: escape `\` *first*, or the second and third replacements re-escape the
+#: backslashes the first one just added and `%` arrives as `\\%` — a literal
+#: backslash followed by a wildcard. `translate` walks the string once and
+#: never re-reads what it wrote.
+#:
+#: `\` is the escape character `LIKE`/`ILIKE` use by default in PostgreSQL, so
+#: no `ESCAPE` clause is needed and none is written — adding one would be a
+#: second statement of the same fact for the reader to keep in step.
+_PATTERN_ESCAPES = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
+
+
+def _pattern(query: str) -> str:
+    """`query` as an unanchored `ILIKE` pattern that matches it **literally**.
+
+    Two things happen here and both are about the *value*, never the statement
+    (`_SEARCH_TILES` says why): the query is wrapped in `%` so it matches
+    anywhere in a Code, and the three characters the pattern language owns are
+    escaped so a Code is the only thing they can match.
+
+    Without the escaping, `?q=%` would be "every tile" and `?q=_` would be
+    "every tile whose Code is at least one character" — both of which read as a
+    working search returning nonsense rather than as the empty answer they
+    should be. `?q=\\` would be worse: a trailing lone backslash is a malformed
+    pattern and Postgres raises on it, which would leave a `500` behind a
+    character somebody can type by accident.
+
+    A blank query becomes `%%`, which matches every Code including the empty
+    string — there are none, since `clean_code` refuses a blank Code — so
+    browsing the whole Catalogue needs no second statement and no branch.
+    """
+    return f"%{query.translate(_PATTERN_ESCAPES)}%"
+
+
+def _search_images(
+    conn: psycopg.Connection, tile_ids: list[UUID]
+) -> dict[UUID, list[ReferenceImage]]:
+    """Every named Tile's Reference Images, grouped by Tile, in one statement.
+
+    **`tile_id` is popped off the row before validation.** `ReferenceImage` is
+    `extra="forbid"`, so leaving it on would fail every row — which is the
+    contract doing its job: the key is how this function finds the Tile, and it
+    is not a field of the image the client is handed.
+
+    **The empty case short-circuits and does not run the statement.** An empty
+    Python list has no element type for psycopg to infer, so `ANY(%s)` on it is
+    a driver error rather than an empty answer — and there is nothing to ask
+    about anyway when no Tile matched.
+
+    A Tile with no surviving image is simply absent from the answer, and the
+    caller reads it out with a default rather than indexing: nothing in the
+    schema guarantees a row here, and a `KeyError` on the list would take the
+    whole Catalogue screen down over one Tile.
+    """
+    if not tile_ids:
+        return {}
+
+    grouped: dict[UUID, list[ReferenceImage]] = {}
+    for row in conn.execute(_SEARCH_TILE_IMAGES, (tile_ids,)).fetchall():
+        grouped.setdefault(row.pop("tile_id"), []).append(ReferenceImage.model_validate(row))
+    return grouped
+
+
+@router.get("/admin/tiles", response_model=list[Tile])
+def search_tiles(
+    response: Response,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    q: str = "",
+) -> list[Tile]:
+    """FR-18 — the Catalogue, and the substring search that narrows it.
+
+    **Substrings of the Code, case-insensitively, and nothing else.** `q=CMA`
+    answers every Tile whose Code contains `CMA` anywhere, in either case;
+    `q=cma` answers the same ones. Size and Category are **displayed** on every
+    row and consulted by nothing: they are groupings rather than the identity
+    (AD-18), and a `size + category` filter is the one query shape CLAUDE.md
+    forbids outright, because two Tiles sharing both are two different tiles and
+    filtering on them hides the row somebody opened the screen to find.
+
+    **A blank `q` browses the whole Catalogue.** EXPERIENCE.md:35 is
+    "Search/**browse** Tiles" — the screen opens on the full list and narrows
+    from there — so an absent or empty query is the ordinary case and not a
+    refusal. `_pattern` turns it into `%%` and the same statement serves both.
+
+    **No match is `200` and an empty array, never a `404`.** "Nothing matches
+    that fragment" is an answer; `lookup_tile`'s `404` is for an exact Code that
+    names no Tile, which is a different question.
+
+    **A bare JSON array, with no cursor, total, page or cap.** `api.users`'
+    `list_users` argues this on a table of tens of rows; the argument is the
+    same here and the numbers are still small — 381 files today, and the whole
+    index is sized at ~10k vectors, which is a few hundred Tiles at sixteen
+    views each. So the largest answer this route can give is a few hundred rows
+    of short text plus their image ids. A cap would need a number, a TypeScript
+    twin, a `BOUNDS` parity row and a "showing the first N" sentence that stops
+    being true the moment somebody narrows the search; a caller-settable
+    `limit` is the DoS knob `api.audit` refuses. If the Catalogue ever outgrows
+    this, both halves of the contract change together — and measure first
+    (CLAUDE.md).
+
+    **Two statements, not a join and not one read per row.** `_SEARCH_TILES`
+    answers the Tiles and `_SEARCH_TILE_IMAGES` answers their images by
+    `tile_id = ANY(...)`; `_search_images` says why that shape beats both
+    alternatives.
+
+    **No storage key and no URL crosses the wire** (AD-9). The `Tile` contract
+    has nowhere to put one and this route emits none: a row's image is fetched
+    from `GET /admin/tiles/{tile_id}/images/{image_id}`, which re-checks the
+    Administrator role on every request. No similarity value either (AD-20) —
+    this route does not rank anything.
+
+    The `administrator` parameter is unread: on this route the dependency is the
+    whole of its job. And **nothing is recorded** — `lookup_tile`'s own
+    argument, and FR-20 covers *changes*: a read changes nothing, and an entry
+    per search would bury the entries the log exists for.
+
+    Deliberately absent: a `GET /admin/tiles/{tile_id}` detail route. The list
+    already carries the whole `Tile`, and the Catalogue row hands it to Edit
+    Tile the way the user list hands a `User` to Edit User — a second route
+    fetching by id would serve nothing and would have to be ordered around the
+    `lookup` segment.
+    """
+    response.headers.update(NO_STORE)
+
+    try:
+        wanted = clean_query(q)
+    except ValueError as invalid:
+        raise _refusal(
+            INVALID_QUERY, f"{invalid} {BAD_QUERY}", status.HTTP_422_UNPROCESSABLE_CONTENT
+        ) from invalid
+
+    rows = conn.execute(_SEARCH_TILES, (_pattern(wanted),)).fetchall()
+    images = _search_images(conn, [row["id"] for row in rows])
+
+    return [
+        Tile(
+            id=row["id"],
+            code=row["code"],
+            size=row["size"],
+            category=row["category"],
+            face_number=row["face_number"],
+            # `.get` with a default, never `[...]`: see `_search_images`.
+            reference_images=images.get(row["id"], []),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+        for row in rows
+    ]
+
+
 @router.get("/admin/tiles/lookup", response_model=Tile)
 def lookup_tile(
     response: Response,
@@ -2096,17 +2353,32 @@ def lookup_tile(
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
     code: str = "",
 ) -> Tile:
-    """One Tile by an **exact** Code. The edit screen's only door until 2.5.
+    """One Tile by an **exact** Code. The API's exact-code door.
 
-    **This is not Story 2.5's catalogue search and must not become it.**
-    EXPERIENCE.md reaches Edit Tile from a Catalogue row, and that list — with
-    its substring matching, its filtering and its pagination — is 2.5's whole
-    surface. Without *some* door this story would ship a screen nothing can
-    open, so this is the smallest thing that makes it usable: an equality match
-    returning one Tile or nothing. `?code=RP.CMA` answers `404` while
-    `RP.CMA.0001DJ.SM.0T` exists, and that is the behaviour, not a gap in it.
-    When the list arrives it opens the same screen by id, and this route can
-    stay or go.
+    **This is not the catalogue search and must not become it.** `search_tiles`
+    above is FR-18's substring match over the whole Catalogue, and the
+    Catalogue screen is where EXPERIENCE.md reaches Edit Tile from — a row
+    hands that screen the whole `Tile` it already holds. This route answers a
+    different question: one Code, exactly, and the Tile it names or nothing.
+    `?code=RP.CMA` answers `404` while `RP.CMA.0001DJ.SM.0T` exists, and that
+    is the behaviour rather than a gap in it — a prefix match returning "the"
+    Tile would answer one of several and the Administrator would edit whichever
+    row sorted first.
+
+    **`apps/web` no longer opens a screen with it, and that is not why it
+    stays.** Since Story 2.5, `EditTileScreen` is only ever rendered with a
+    Tile a Catalogue row handed it, so its code-entry stage is a *fallback*
+    rather than an entry point: it is what that screen falls back to when a save
+    is refused `404` because the Tile was renamed or removed from under the
+    form, and it calls this route from there.
+
+    It stays because the API owes the lookup independently of which screen
+    happens to call it. Story 2.2's authorization acceptance clause names it,
+    `tests/test_tile_lookup.py` is the suite that holds the exact-match rule to
+    account, and "look up one Code" is a question a client can reasonably ask
+    without reading the whole Catalogue to find the answer. Deleting a tested
+    route inside a search story would be a separate decision with its own
+    review.
 
     **The Code is cleaned the same way the writes clean it**, so a Code pasted
     with a trailing space finds its Tile rather than missing by a character

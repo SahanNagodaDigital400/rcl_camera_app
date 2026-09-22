@@ -3,10 +3,17 @@
 `tests/test_admin_authorization.py` proves the *rule* over the route table —
 every route under `/admin/` declares `require_administrator`, and every route
 declaring it is under `/admin/`, with Story 2.1's two, Story 2.2's two, Story
-2.3's one and Story 2.4's one now in its expected set. This file proves the
-*behaviour* on those six routes specifically, and the one thing the table guard
-cannot see: that a refused caller leaves the database and the object store
-untouched.
+2.3's one, Story 2.4's one and Story 2.5's one now in its expected set. This
+file proves the *behaviour* on those seven routes specifically, and the one
+thing the table guard cannot see: that a refused caller leaves the database and
+the object store untouched.
+
+Story 2.5's catalogue list inverts that last claim in the way that matters
+most for a read: there is nothing for it to write, and what has to hold is that
+*nothing was disclosed*. A blank query on it browses the whole Catalogue, so a
+guard that ran a moment too late would answer a Staff caller with every row the
+product holds — which is the exfiltration AGENTS.md names as the primary
+commercial threat, in one request.
 
 The bulk route is worth a line of its own here, because it is the first in the
 product whose success is a **stream**. Its refusal therefore has to arrive as
@@ -119,6 +126,57 @@ def lookup_tile(client: TestClient) -> Any:
     return client.get(f"{ADD_TILE}/lookup", params={"code": REFUSED_FIELDS["code"]})
 
 
+def search_tiles(client: TestClient) -> Any:
+    """Story 2.5's catalogue list (FR-18), with a `q` that matches `SEEDED_CODE`."""
+    return client.get(ADD_TILE, params={"q": "CMA"})
+
+
+def browse_tiles(client: TestClient) -> Any:
+    """The same route with no `q` at all — the whole Catalogue in one answer.
+
+    Separate from `search_tiles` because it is the shape that would leak most:
+    a blank query browses everything (EXPERIENCE.md:35), so a guard that ran
+    only when a query was present would hand a Staff caller the entire
+    Catalogue, which is precisely this product's primary commercial threat.
+    """
+    return client.get(ADD_TILE)
+
+
+#: A Tile the refused caller must not be told about, seeded **without** an
+#: embedding.
+#:
+#: The point is that "nothing was disclosed" is a real claim. Against an empty
+#: catalogue a handler that ran would answer `[]`, and every body assertion
+#: below would pass with `require_administrator` deleted — the status would be
+#: the only thing still pinning the guard. With a row in the table a handler
+#: that ran answers that row, and the Code is in the response text.
+#:
+#: Two literal statements rather than `post_tile`, because the add path runs
+#: sixteen forward passes and would put `@needs_model` on an authorization test
+#: — which is the one kind of test that must never be skipped on a machine
+#: missing a model artifact.
+SEEDED_CODE = "RP.CMA.0001DJ.SM.0T"
+
+_SEED_SIZE = """
+INSERT INTO tile_size (name) VALUES (%s)
+ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+RETURNING id
+"""
+
+_SEED_TILE = """
+INSERT INTO tile (code, size_id) VALUES (%s, %s)
+"""
+
+
+@pytest.fixture
+def a_seeded_tile(conn: psycopg.Connection) -> str:
+    """One Tile in the catalogue, by Code. See `SEEDED_CODE`."""
+    row = conn.execute(_SEED_SIZE, ("45X90",)).fetchone()
+    assert row is not None
+    conn.execute(_SEED_TILE, (SEEDED_CODE, row["id"]))
+    return SEEDED_CODE
+
+
 def delete_tile(client: TestClient, tile_id: str | None = None) -> Any:
     """Story 2.3's removal.
 
@@ -222,6 +280,40 @@ def test_a_staff_caller_is_refused_the_bulk_upload_and_writes_nothing(
     assert [r for r in audit_rows(conn) if r["action"] == "catalogue_tile_added"] == []
 
 
+def test_a_staff_caller_is_refused_the_catalogue_and_is_told_nothing(
+    client: TestClient, make_user: MakeUser, a_seeded_tile: str
+) -> None:
+    # A read, and the one most worth refusing: this route answers the whole
+    # Catalogue in one body. Catalogue exfiltration through a compromised
+    # account is this product's primary commercial threat (AGENTS.md Policy),
+    # and the Catalogue screen's door being role-conditional is a courtesy on
+    # top of this, never the control.
+    #
+    # **There is a Tile in the table when the refused call arrives**
+    # (`a_seeded_tile`), which is what makes every assertion below say
+    # something: against an empty catalogue a handler that ran would answer
+    # `[]`, and the body checks would pass with the dependency deleted.
+    sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
+
+    for send in (search_tiles, browse_tiles):
+        response = send(client)
+
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "administrator_required"
+        # The seeded Code is the assertion that actually pins the guard: a
+        # handler that ran would have put it in this body, under either shape
+        # of the request.
+        assert a_seeded_tile not in response.text
+        # Not "the array is empty" — the body is an envelope and carries no
+        # array at all.
+        assert set(response.json()) == {"error"}
+        # The `Tile` contract's own field names, minus `code`, which the
+        # envelope carries as a key of its own. Any of them in the body would
+        # mean a row had been serialized.
+        for leaked in ("size", "category", "reference_images", "face_number"):
+            assert leaked not in response.text, leaked
+
+
 def test_a_staff_caller_is_refused_the_lookup(client: TestClient, make_user: MakeUser) -> None:
     # A read, and still Administrator-only: catalogue exfiltration through a
     # compromised account is this product's primary commercial threat, and a
@@ -319,6 +411,23 @@ def test_a_signed_out_caller_is_refused_the_bulk_upload_and_writes_nothing(
     nothing_was_written(conn, storage_root)
 
 
+def test_a_signed_out_caller_is_refused_the_catalogue_and_is_told_nothing(
+    client: TestClient, a_seeded_tile: str
+) -> None:
+    # The same non-vacuity as the staff twin above: there is a Tile to disclose,
+    # so "nothing was disclosed" is a claim about the guard rather than about an
+    # empty table.
+    for send in (search_tiles, browse_tiles):
+        response = send(client)
+
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "unauthorized"
+        assert a_seeded_tile not in response.text
+        assert set(response.json()) == {"error"}
+        for leaked in ("size", "category", "reference_images", "face_number"):
+            assert leaked not in response.text, leaked
+
+
 def test_a_signed_out_caller_is_refused_the_lookup(client: TestClient) -> None:
     response = lookup_tile(client)
 
@@ -379,7 +488,8 @@ def test_an_administrator_demoted_mid_session_is_refused_on_the_next_request(
 
 
 @pytest.mark.parametrize(
-    "send", [post_tile, get_image, patch_tile, lookup_tile, delete_tile, post_bulk]
+    "send",
+    [post_tile, get_image, patch_tile, lookup_tile, delete_tile, post_bulk, search_tiles],
 )
 def test_every_refusal_is_uncacheable(
     client: TestClient, make_user: MakeUser, send: Callable[[TestClient], Any]

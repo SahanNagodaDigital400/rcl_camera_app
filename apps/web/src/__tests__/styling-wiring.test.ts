@@ -379,6 +379,10 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     ['UserListScreen', join('screens', 'UserListScreen.tsx'), 'error'],
     ['AddTileScreen', join('screens', 'AddTileScreen.tsx'), 'error'],
     ['BulkUploadScreen', join('screens', 'BulkUploadScreen.tsx'), 'error'],
+    // Story 2.5's Catalogue. One alert slot, carrying the server's own
+    // sentence — a refused `q`, a demotion between two requests, a dead
+    // network — with no table rendered beside it.
+    ['CatalogueScreen', join('screens', 'CatalogueScreen.tsx'), 'error'],
     // Widened past `screens/` by Story 1.11: the confirmation dialog is a
     // component, and its refusal state is the one alert in the product that is
     // not on a screen at all. Its alert class is `body` rather than `error`
@@ -1057,22 +1061,29 @@ describe('the home panel\'s admin entries', () => {
   it('are outlined, never filled', () => {
     // A door on the home panel is a secondary control: the shell's landing
     // surface has no primary action, and an accent button there would be the one
-    // orange thing on a screen that is for neither user management nor audit.
-    // Since Story 1.9 the first entry is Users — EXPERIENCE.md line 33's nav
-    // entry, with Create user reached from its "+ Add user" (line 34) — since
-    // Story 1.13 the second is the Audit log, line 38's, since Stories 2.1
-    // and 2.2 the third and fourth are Add tile and Edit tile, both line 36's,
-    // and since Story 2.4 the fifth is Bulk upload, line 37's.
-    // Add tile is the closest call of the five: "+ Add Tile" *is* the primary
-    // action on the Catalogue surface and will take the accent there, but here
-    // it is a door on a panel that is for none of them. Bulk upload is the
-    // least close: the screen behind it is the one place in the product where
-    // the accent is also a *status* colour (DESIGN.md:144-149), so an orange
-    // door onto it would be the same hue meaning two different things one
-    // click apart.
+    // orange thing on a screen that is for neither user management nor the
+    // catalogue. Since Story 1.9 the first entry is Users — EXPERIENCE.md line
+    // 33's nav entry, with Create user reached from its "+ Add user" (line 34)
+    // — since Story 1.13 the second is the Audit log, line 38's, and since
+    // Story 2.5 the third is the Catalogue, line 35's.
+    //
+    // **Story 2.5 replaced three entries with one, and that is the change this
+    // list records.** Add tile, Edit tile and Bulk upload each had a door here
+    // while there was nothing to reach them from; EXPERIENCE.md never put any
+    // of them on the nav — line 36 reaches Add Tile from "+ Add Tile" or a row,
+    // Edit Tile from a row alone, and line 37 reaches Bulk Upload from the
+    // Catalogue. They are controls on `CatalogueScreen` now, and the accent
+    // moved with the first of them: "+ Add Tile" is that screen's one filled
+    // primary, which is asserted in its own block below. Keeping a door here
+    // as well would ship two ways to reach one screen.
+    //
+    // The Catalogue door stays outlined for the reason the Audit log's does:
+    // the home panel has no primary action, and an orange button reading
+    // "Catalogue" would make browsing it the loudest thing on a screen whose
+    // job is scanning tiles.
     const app = read(join(SRC, 'App.module.css'));
 
-    for (const name of ['.userList', '.auditLog', '.addTile', '.editTile', '.bulkUpload']) {
+    for (const name of ['.userList', '.auditLog', '.catalogue']) {
       const entry = rule(app, name);
 
       expect(declaration(entry, 'background'), name).toBe('transparent');
@@ -1215,6 +1226,111 @@ describe('adding a user is the one action on the user list', () => {
     // in the document and the page scrolls sideways on the phone this product is
     // built for.
     expect(declaration(rule(css(), '.scroller'), 'overflow-x')).toBe('auto');
+  });
+});
+
+describe('adding a tile is the one action on the catalogue', () => {
+  // DESIGN.md's "exactly one per screen" for the accent-filled primary, on the
+  // surface Story 2.5 moved three home-panel doors onto: "+ Add Tile" takes the
+  // accent, and Bulk upload, Search, Back, Try again and the row-end Edit are
+  // all the navy outline. Nothing else in the suite can see any of this —
+  // `vite.config.ts` sets `css: false`, so jsdom applies no stylesheet and
+  // there is no computed style to read.
+  const css = (): string => read(join(SRC, 'screens', 'CatalogueScreen.module.css'));
+
+  it('fills the add control with the accent and writes on it in navy', () => {
+    // EXPERIENCE.md line 36 makes "+ Add Tile" the Catalogue's primary action,
+    // and `App.module.css`'s old `.addTile` door said so in its own comment
+    // while standing outlined on a panel that was for none of it. This is where
+    // that accent landed. Never white on orange — 2.63:1, the one contrast pair
+    // DESIGN.md bans.
+    const add = rule(css(), '.add');
+
+    expect(declaration(add, 'background')).toBe('var(--color-accent)');
+    expect(declaration(add, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('leaves every other control the navy outline', () => {
+    // Bulk upload is the one worth naming: the screen behind it is the one
+    // place in the product where the accent is also a *status* colour
+    // (DESIGN.md:144-149), so an orange control leading to it would be the same
+    // hue meaning "press this" here and "review this row" one click later.
+    // Search is the next closest call — narrowing a list is not what this
+    // screen is for — and the row-end Edit would be one orange control per
+    // tile, as many as there are rows.
+    for (const name of ['.bulk', '.back', '.submit', '.retry', '.edit']) {
+      const control = rule(css(), name);
+
+      expect(declaration(control, 'background'), name).toBe('transparent');
+      expect(declaration(control, 'color'), name).toBe('var(--color-primary)');
+      expect(declaration(control, 'border'), name).toBe(
+        'var(--border-hairline) solid var(--color-primary)',
+      );
+    }
+  });
+
+  it('paints nothing else with the accent', () => {
+    // Counted over the whole stylesheet rather than rule by rule, so a new rule
+    // cannot introduce a second orange thing unseen.
+    expect([...css().matchAll(/var\(--color-accent\)/g)]).toHaveLength(1);
+  });
+
+  it('uses the destructive colour for the refusal and for nothing else', () => {
+    // Red is destructive-or-failed in this system and nothing else
+    // (DESIGN.md:167). This screen has no destructive action at all — removal
+    // lives on Edit tile, behind a confirmation — so the failure sentence is
+    // the only place it may appear.
+    expect(declaration(rule(css(), '.error'), 'color')).toBe('var(--color-destructive)');
+    expect([...css().matchAll(/var\(--color-destructive\)/g)]).toHaveLength(1);
+  });
+
+  it('gives the rows DESIGN.md\'s data-table-row treatment', () => {
+    // Surface background, a hairline `{colors.border}` between rows and
+    // `{colors.background}` on hover — a table, not a stack of cards, and no
+    // shadow anywhere on it (DESIGN.md:107,212).
+    const row = rule(css(), '.row');
+
+    expect(declaration(row, 'background')).toBe('var(--color-surface)');
+    expect(declaration(row, 'border-top')).toBe(
+      'var(--border-hairline) solid var(--color-border)',
+    );
+    expect(declaration(rule(css(), '.row:hover'), 'background')).toBe('var(--color-background)');
+    expect(css()).not.toContain('box-shadow');
+  });
+
+  it('keeps the cells at the admin density tier', () => {
+    // DESIGN.md:190's one deliberate density split: `{spacing.2}`-`{spacing.3}`
+    // within an admin table row, not the generous mobile spacing of the scan
+    // flow. A render test reads the text and cannot see this.
+    expect(declaration(rule(css(), '.cell'), 'padding')).toBe('var(--space-2) var(--space-3)');
+  });
+
+  it('keeps the table itself scrolling instead of the page', () => {
+    // The 375px case, and the one regression a render test cannot see: jsdom
+    // performs no layout, so with the overflow rule deleted every cell is still
+    // in the document and the page scrolls sideways.
+    expect(declaration(rule(css(), '.scroller'), 'overflow-x')).toBe('auto');
+  });
+
+  it('sizes the row thumbnail from the token and never crops it', () => {
+    // `contain` rather than `cover`, and this is the one assertion that
+    // protects it: a tile face cropped to fill a square is a tile face an
+    // Administrator can no longer tell from its neighbour, which is the whole
+    // job of the reference image on this row (FR-7).
+    const image = rule(css(), '.image');
+
+    expect(declaration(image, 'width')).toBe('var(--thumbnail-size)');
+    expect(declaration(image, 'object-fit')).toBe('contain');
+  });
+
+  it('sets the code in the monospace role', () => {
+    // DESIGN.md reserves `{typography.code}` for a value read character by
+    // character. The Code is transcribed from a physical tile and read back to
+    // a customer, so 0/O and 1/I must not be confusable — in the search box and
+    // in the cell alike.
+    for (const name of ['.code', '.codeCell']) {
+      expect(declaration(rule(css(), name), 'font-family'), name).toBe('var(--font-mono)');
+    }
   });
 });
 

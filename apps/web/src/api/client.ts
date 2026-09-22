@@ -187,6 +187,22 @@ export const INVALID_CODE = 'invalid_code';
 export const INVALID_SIZE = 'invalid_size';
 
 /**
+ * The envelope code for a catalogue search `GET /admin/tiles` will not run.
+ *
+ * A `422`, and **not** `INVALID_CODE`: a query is not a Code. A blank one is
+ * legal and browses the whole catalogue (EXPERIENCE.md line 35), so the only
+ * two ways to earn this are a query longer than any Code can be or one
+ * carrying a control character — the second of which would otherwise surface
+ * as a `500` from the driver rather than as a refusal.
+ *
+ * Rendered by `CatalogueScreen` in the server's own words, in its one alert
+ * slot, beside `Try again`. The client runs no length or character check of
+ * its own: the server owns the rule, and a second copy here would be a second
+ * set of answers about what a search is.
+ */
+export const INVALID_QUERY = 'invalid_query';
+
+/**
  * The envelope code for a Category the endpoint will not store.
  *
  * Only ever a length or a control character: an *absent* Category is not an

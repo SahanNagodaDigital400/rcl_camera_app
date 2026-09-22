@@ -173,11 +173,16 @@ function stubFetch(reply: {
 }
 
 /**
- * Answer the session probe with `user`, and every other request with a 404.
+ * Answer the session probe with `user`, the Catalogue's browse with an empty
+ * catalogue, and every other request with a 404.
  *
- * Only the gate's own request matters in this describe: the door is rendered
- * from the cached `User` and pressing it opens a screen that asks the server
- * nothing until a batch is submitted.
+ * Two requests matter in this describe since Story 2.5: the gate's own, and the
+ * Catalogue's — this screen is reached *through* that surface now, so a browse
+ * left answering 404 would put the Catalogue on its failure state and the
+ * control this test presses would still be there (it is in the actions row, not
+ * in the table) but the test would be driving a screen in the wrong state.
+ * Pressing the control opens a screen that asks the server nothing until a
+ * batch is submitted.
  */
 function stubSession(user: User | null): void {
   vi.stubGlobal('fetch', (input: string, init: RequestInit = {}) => {
@@ -190,6 +195,13 @@ function stubSession(user: User | null): void {
           Promise.resolve(
             user === null ? { error: { code: 'unauthorized', message: 'Not signed in.' } } : user,
           ),
+      } as unknown as Response);
+    }
+    if (key === 'GET /api/admin/tiles?q=') {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve([]),
       } as unknown as Response);
     }
     return Promise.resolve({
@@ -843,17 +855,41 @@ describe('the screen’s controls', () => {
   });
 });
 
-describe('the door on the home panel', () => {
-  it('is offered to an Administrator and opens the screen', async () => {
+describe('the route from the Catalogue', () => {
+  // Retargeted by Story 2.5 rather than deleted. This screen had a door of its
+  // own on the home panel while there was no Catalogue to reach it from;
+  // EXPERIENCE.md line 37 always reached Bulk Upload *from* the Catalogue, and
+  // that surface now exists — so it is an outlined control beside "+ Add Tile"
+  // there, and the home panel carries one Catalogue door instead of three tile
+  // ones. What this block still proves is the same two things: an
+  // Administrator can get here, and a Staff user cannot.
+  it('is reached from the Catalogue by an Administrator', async () => {
     stubSession(ADMIN);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^bulk upload$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^catalogue$/i }));
+    await screen.findByRole('heading', { name: /^catalogue$/i });
+
+    fireEvent.click(screen.getByRole('button', { name: /^bulk upload$/i }));
 
     expect(await screen.findByRole('heading', { name: /^bulk upload$/i })).toBeTruthy();
   });
 
-  it('is not offered to a Staff user at all', async () => {
+  it('has no door of its own on the home panel any more', async () => {
+    // Two ways to reach one screen is the thing Story 2.5 removed — and an
+    // orange door onto *this* screen was the least defensible of the three,
+    // since it is the one place in the product where the accent is also a
+    // status colour (DESIGN.md:144-149).
+    stubSession(ADMIN);
+    render(<App />);
+
+    await screen.findByText(/signed in as nadeesha silva/i);
+
+    expect(screen.queryByRole('button', { name: /^bulk upload$/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /^catalogue$/i })).toBeTruthy();
+  });
+
+  it('is not reachable by a Staff user at all', async () => {
     // EXPERIENCE.md line 18: the nav is role-conditional, not a menu with
     // disabled items — a Staff user should never see an entry they cannot use.
     // The server refuses them regardless (AGENTS.md Policy); this is the
@@ -863,19 +899,26 @@ describe('the door on the home panel', () => {
 
     await screen.findByText(/signed in as kasun perera/i);
 
+    expect(screen.queryByRole('button', { name: /^catalogue$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^bulk upload$/i })).toBeNull();
   });
 
-  it('returns to the home panel from Back', async () => {
+  it('returns to the Catalogue from Back, not to the home panel', async () => {
+    // The Catalogue is where the control was pressed, and `CatalogueScreen`
+    // refetches on mount — so returning to it lists the whole batch that just
+    // landed.
     stubSession(ADMIN);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^bulk upload$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^catalogue$/i }));
+    await screen.findByRole('heading', { name: /^catalogue$/i });
+    fireEvent.click(screen.getByRole('button', { name: /^bulk upload$/i }));
     await screen.findByRole('heading', { name: /^bulk upload$/i });
 
     fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
 
-    expect(await screen.findByText(/signed in as nadeesha silva/i)).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^catalogue$/i })).toBeTruthy();
+    expect(screen.queryByText(/signed in as nadeesha silva/i)).toBeNull();
   });
 });
 
@@ -1120,6 +1163,16 @@ describe('what the report says when things go wrong around it', () => {
             ),
         } as unknown as Response);
       }
+      // The Catalogue is the route to this screen since Story 2.5, and its
+      // browse has to succeed or the app drops to the login screen before the
+      // batch this test is about is ever submitted.
+      if (key === 'GET /api/admin/tiles?q=') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve([]),
+        } as unknown as Response);
+      }
       return Promise.resolve({
         ok: false,
         status: 401,
@@ -1131,7 +1184,9 @@ describe('what the report says when things go wrong around it', () => {
     });
 
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: /^bulk upload$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^catalogue$/i }));
+    await screen.findByRole('heading', { name: /^catalogue$/i });
+    fireEvent.click(screen.getByRole('button', { name: /^bulk upload$/i }));
     await screen.findByRole('heading', { name: /^bulk upload$/i });
 
     chooseSheet();

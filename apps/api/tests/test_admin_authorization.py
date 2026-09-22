@@ -103,6 +103,11 @@ TILE_IMAGE = "/admin/tiles/{tile_id}/images/{image_id}"
 EDIT_TILE = "/admin/tiles/{tile_id}"
 TILE_LOOKUP = "/admin/tiles/lookup"
 
+#: Story 2.5's one (FR-18) is a `GET` on `ADD_TILE` above rather than a path of
+#: its own: the Catalogue *is* the collection, and a list at
+#: `/admin/tiles/search` would be a second path naming the same set of rows.
+#: It takes no path parameter, so it cannot shadow either literal segment below.
+
 #: Story 2.4's one (FR-17). A second literal segment under the collection, for
 #: `TILE_LOOKUP`'s reason and with one addition of its own: it is the first
 #: route in the product whose response is a *stream*, so every refusal it can
@@ -543,7 +548,7 @@ def test_the_admin_route_table_is_not_empty() -> None:
     assert _admin_routes(create_app()) != []
 
 
-def test_the_admin_route_table_is_the_thirteen_routes_the_product_serves() -> None:
+def test_the_admin_route_table_is_the_fourteen_routes_the_product_serves() -> None:
     # The stricter half, separated from the vacuity guard above because it is a
     # different claim with a different lifetime: this one is *meant* to fail the
     # moment a story adds a route under `/admin/` — Story 1.9 added
@@ -553,12 +558,15 @@ def test_the_admin_route_table_is_the_thirteen_routes_the_product_serves() -> No
     # `GET /admin/tiles/{tile_id}/images/{image_id}`, and Story 2.2 added
     # `PATCH /admin/tiles/{tile_id}` and `GET /admin/tiles/lookup`, and Story
     # 2.3 added `DELETE /admin/tiles/{tile_id}`, and Story 2.4 added
-    # `POST /admin/tiles/bulk` — and its failure means "update this list", not
-    # "the guards above stopped guarding".
+    # `POST /admin/tiles/bulk`, and Story 2.5 added `GET /admin/tiles` — and its
+    # failure means "update this list", not "the guards above stopped guarding".
     #
     # The comparison is over `f"{method} {path}"`, so the removal is a *twelfth*
-    # entry rather than a second method on a path already listed, and the bulk
-    # upload a *thirteenth* rather than a second POST on `/admin/tiles`.
+    # entry rather than a second method on a path already listed, the bulk
+    # upload a *thirteenth* rather than a second POST on `/admin/tiles`, and
+    # Story 2.5's catalogue search a *fourteenth* rather than a second entry for
+    # the path `POST /admin/tiles` already occupies — it is a `GET` on the
+    # collection, which is the only method that path had left.
     #
     # The count is in the name on purpose, the same way `test_audit.py` names
     # its vocabulary size: a story that adds a route has to change the name as
@@ -590,6 +598,7 @@ def test_the_admin_route_table_is_the_thirteen_routes_the_product_serves() -> No
             f"DELETE {EDIT_TILE}",
             f"GET {TILE_LOOKUP}",
             f"POST {BULK_UPLOAD}",
+            f"GET {ADD_TILE}",
         ]
     )
 
@@ -602,6 +611,14 @@ def test_the_lookup_segment_resolves_to_the_lookup_handler() -> None:
     # this one, Starlette matches in registration order and `lookup` becomes a
     # tile id that fails to parse as a UUID — and every route-table test in this
     # file compares path *sets*, so none of them would notice.
+    #
+    # Story 2.5 added `GET /admin/tiles` and deliberately **not** that route:
+    # the catalogue list carries the whole `Tile` on every row, so the screen
+    # hands one to Edit Tile rather than fetching it again by id. A route with
+    # no path parameter at all cannot shadow a literal segment whatever order
+    # it is registered in, which is why this test stays green without being
+    # touched — and why the absence is worth stating here rather than leaving
+    # the next reader to re-derive it from the collector below.
     #
     # Asserted on registration *order*, not on the declared path. A dict keyed
     # by `route.path` still holds ("GET", "/admin/tiles/lookup") after a

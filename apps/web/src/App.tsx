@@ -10,12 +10,14 @@ import { AccountSettingsScreen } from './screens/AccountSettingsScreen';
 import { AddTileScreen } from './screens/AddTileScreen';
 import { AuditLogScreen } from './screens/AuditLogScreen';
 import { BulkUploadScreen } from './screens/BulkUploadScreen';
+import { CatalogueScreen } from './screens/CatalogueScreen';
 import { CreateUserScreen } from './screens/CreateUserScreen';
 import { EditTileScreen } from './screens/EditTileScreen';
 import { EditUserScreen } from './screens/EditUserScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
 import { LoginScreen } from './screens/LoginScreen';
 import { UserListScreen } from './screens/UserListScreen';
+import type { Tile } from '@rocell/schema/tile';
 import type { Role, User } from '@rocell/schema/user';
 
 /** Shown when signing out fails as something other than an `ApiRequestError`. */
@@ -24,24 +26,24 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 /**
  * Which surface inside the shell is showing.
  *
- * Nine values because nine surfaces exist. This is not a router and is not the
+ * Ten values because ten surfaces exist. This is not a router and is not the
  * beginning of one: EXPERIENCE.md's nav is role-conditional, spans six
  * top-level surfaces and changes shape at a breakpoint, and three of those six
- * do not exist yet. Five sections have a door of their own on the home panel:
+ * do not exist yet. Three sections have a door of their own on the home panel:
  * `'users'` is EXPERIENCE.md line 33's User List, `'audit'` is line 38's Audit
- * Log, `'add-tile'` and `'edit-tile'` are the two halves of line 36's Add/Edit
- * Tile, and `'bulk-upload'` is line 37's Bulk Upload — all standing on the home
+ * Log, and `'catalogue'` is line 35's Catalogue — all standing on the home
  * panel until there is a nav to hold them. Create user is not a door: line 34
  * reaches it from the list's "+ Add user", and `'edit-user'` from a row's own
  * Edit control on the same line.
  *
- * **All three catalogue surfaces stand on the home panel rather than behind a
- * Catalogue list** because line 36 reaches Add Tile from "+ Add Tile" *or* from
- * a Catalogue row, Edit Tile from a row alone, and line 37 reaches Bulk Upload
- * from the Catalogue — and the Catalogue surface is Story 2.5's. Until it
- * exists, Edit tile finds its own tile by an exact Code; when the list arrives
- * it opens the same screen from a row, which is a prop to pass rather than a
- * screen to rebuild, and Bulk Upload moves onto it unchanged.
+ * **The three catalogue surfaces are reached from the Catalogue, not from the
+ * home panel** — which is what line 36 and line 37 always said, and what
+ * Stories 2.1, 2.2 and 2.4 stood their doors on the panel *in lieu of* until
+ * this surface existed. `'add-tile'` is line 36's "+ Add Tile", the Catalogue's
+ * one accent control; `'edit-tile'` is line 36's other half, opened from a row
+ * with the whole `Tile` that row already holds; `'bulk-upload'` is line 37's,
+ * an outlined control beside "+ Add Tile". Back from any of the three returns
+ * to the Catalogue, because that is where each was pressed.
  */
 type Section =
   | 'home'
@@ -50,21 +52,22 @@ type Section =
   | 'users'
   | 'edit-user'
   | 'audit'
+  | 'catalogue'
   | 'add-tile'
   | 'edit-tile'
   | 'bulk-upload';
 
 /**
- * Which of the twelve screens the session state selects.
+ * Which of the thirteen screens the session state selects.
  *
  * Named separately from `SessionStatus` because the two are not the same shape:
  * `'signed-in'` covers the forced-change screen, the shell, Account Settings,
- * Users, Create user, Edit user, the Audit log, Add tile, Edit tile and Bulk
- * upload, and the moves between them are screen swaps that the status cannot
- * see. Focus management keys off this, not off the status — which is why the
- * section is folded in here rather than handled beside it: swapping the home
- * panel for another surface unmounts whatever had focus exactly as the other
- * swaps do.
+ * Users, Create user, Edit user, the Audit log, the Catalogue, Add tile, Edit
+ * tile and Bulk upload, and the moves between them are screen swaps that the
+ * status cannot see. Focus management keys off this, not off the status — which
+ * is why the section is folded in here rather than handled beside it: swapping
+ * the home panel for another surface unmounts whatever had focus exactly as the
+ * other swaps do.
  */
 type Screen =
   | 'loading'
@@ -76,6 +79,7 @@ type Screen =
   | 'users'
   | 'edit-user'
   | 'audit'
+  | 'catalogue'
   | 'add-tile'
   | 'edit-tile'
   | 'bulk-upload';
@@ -97,6 +101,7 @@ function reachableBy(section: Section, role: Role | null): boolean {
     section === 'users' ||
     section === 'edit-user' ||
     section === 'audit' ||
+    section === 'catalogue' ||
     section === 'add-tile' ||
     section === 'edit-tile' ||
     section === 'bulk-upload'
@@ -111,6 +116,7 @@ function currentScreen(
   user: User | null,
   section: Section,
   editing: User | null,
+  editingTile: Tile | null,
 ): Screen {
   if (status === 'loading') return 'loading';
   if (status === 'signed-out' || user === null) return 'login';
@@ -127,13 +133,30 @@ function currentScreen(
   // It is a convenience, not the control: the cached `User` is a render cache
   // and never an authorization decision (AGENTS.md Policy), and the server
   // refuses a Staff caller at every route under `/admin/` whatever this
-  // returns — the two collection reads these sections open, the five account
-  // writes reached from them (provision, edit, delete, deactivate, activate)
-  // and the four catalogue ones (add, edit, remove, bulk).
+  // returns — the three collection reads these sections open (the user list,
+  // the audit log and the catalogue), the five account writes reached from
+  // them (provision, edit, delete, deactivate, activate) and the five
+  // catalogue routes (search, add, edit, remove, bulk).
   if (section === 'users') return reachableBy(section, user.role) ? 'users' : 'shell';
   if (section === 'audit') return reachableBy(section, user.role) ? 'audit' : 'shell';
+  if (section === 'catalogue') return reachableBy(section, user.role) ? 'catalogue' : 'shell';
   if (section === 'add-tile') return reachableBy(section, user.role) ? 'add-tile' : 'shell';
-  if (section === 'edit-tile') return reachableBy(section, user.role) ? 'edit-tile' : 'shell';
+  if (section === 'edit-tile') {
+    // The tile being edited is read here for the reason `'edit-user'` below
+    // reads its row: a section that says `'edit-tile'` with nothing being
+    // edited answers the **Catalogue** instead, which is where the
+    // Administrator pressed Edit and where they can press it again.
+    //
+    // `null` is not the dead end it is for Edit user, though, and that is why
+    // this falls back rather than defending inside the screen: Edit tile keeps
+    // its Code lookup stage for exactly this case. Falling back to the
+    // Catalogue is still the better answer — a list with the tile on it beats a
+    // box to retype its Code into — and it is the one path by which this
+    // section can hold no tile at all, since `showEditTile` sets the tile
+    // first.
+    if (!reachableBy(section, user.role)) return 'shell';
+    return editingTile === null ? 'catalogue' : 'edit-tile';
+  }
   if (section === 'bulk-upload') return reachableBy(section, user.role) ? 'bulk-upload' : 'shell';
   if (section === 'create-user') return reachableBy(section, user.role) ? 'create-user' : 'shell';
   if (section === 'edit-user') {
@@ -182,6 +205,36 @@ function Gate(): JSX.Element {
    * `'edit-user'` section renders later.
    */
   const [editing, setEditing] = useState<User | null>(null);
+  /**
+   * The Catalogue row the edit screen is editing, or `null`.
+   *
+   * `editing`'s twin, one surface over, and held for the same reason: the
+   * screen needs the whole `Tile` — the Catalogue's answer already carries it,
+   * images and all — and a second `GET /admin/tiles/{id}` to fetch what is in
+   * hand would be a route the product does not serve. Cleared by `showSection`
+   * on every move, so it can never be a stale tile an `'edit-tile'` section
+   * renders later.
+   */
+  const [editingTile, setEditingTile] = useState<Tile | null>(null);
+  /**
+   * The Catalogue's last submitted search, held here so it outlives the screen.
+   *
+   * `CatalogueScreen` is unmounted the moment a row, "+ Add Tile" or Bulk
+   * upload is pressed — this gate swaps the surface rather than stacking one —
+   * so a query held inside it would be gone by the time `Back` brought the
+   * screen home. The acceptance clause is that `Back` returns to the Catalogue
+   * *with the search still in place*, and an Administrator working through a
+   * range of twenty tiles would otherwise retype the fragment twenty times.
+   *
+   * **Deliberately not cleared by `showSection`**, unlike the two selections
+   * above, and the difference is what each one is: `editing` and `editingTile`
+   * are a person's record and a catalogue row, which have no business
+   * surviving a move to another surface, while this is a view preference —
+   * where the reader had got to in a list. It *is* cleared on sign-out, below,
+   * because on a shared shop-floor handset even a Code fragment is catalogue
+   * data the next person did not type.
+   */
+  const [catalogueQuery, setCatalogueQuery] = useState('');
   const [lastStatus, setLastStatus] = useState<SessionStatus>(status);
   const [lastRole, setLastRole] = useState<Role | null>(user?.role ?? null);
 
@@ -213,6 +266,15 @@ function Gate(): JSX.Element {
     if (status !== 'signed-in') {
       setSection('home');
       setEditing(null);
+      // The tile goes with the row, and for a weaker version of the same
+      // reason: a Code and a Size are not somebody's name and address, but
+      // they are catalogue data, and catalogue exfiltration through a shared
+      // handset is what AGENTS.md names as the primary commercial threat.
+      setEditingTile(null);
+      // And the search with them, for the same reason one step smaller: a
+      // fragment of a Code is still something the next person on the handset
+      // did not type.
+      setCatalogueQuery('');
     }
   }
 
@@ -252,10 +314,18 @@ function Gate(): JSX.Element {
     if (!reachableBy(section, user?.role ?? null)) {
       setSection('home');
       setEditing(null);
+      setEditingTile(null);
+      // And the search, for the reason the sign-out reconciler above clears it:
+      // a fragment of a Code is catalogue data, and a demotion is the moment
+      // the Catalogue stops being this person's to read. Leaving it in state
+      // would also hand it straight back — a demotion and a promotion within
+      // one shift is two clicks since Story 1.10 — so the Catalogue would
+      // reopen narrowed by a search made under a role that no longer applies.
+      setCatalogueQuery('');
     }
   }
 
-  const screen = currentScreen(status, user, section, editing);
+  const screen = currentScreen(status, user, section, editing, editingTile);
   const previous = useRef<Screen>('loading');
 
   useEffect(() => {
@@ -363,7 +433,31 @@ function Gate(): JSX.Element {
     // ago. `showEditUser` below is the one path that sets it, and it sets the
     // row before the section.
     setEditing(null);
+    // The tile being edited belongs to the edit screen and to nothing else,
+    // exactly as the row above does. Cleared on every move away from it, so a
+    // later `'edit-tile'` section can never render a tile the Administrator
+    // looked at minutes ago — which on this surface would be an edit form
+    // pre-filled with one tile's Code under another tile's picture.
+    setEditingTile(null);
     setSection(next);
+  }
+
+  function showEditTile(target: Tile): void {
+    // The tile first, then the section, for `showEditUser`'s reason:
+    // `currentScreen` reads both, and setting the section first would give it
+    // one render with `'edit-tile'` and no tile — which it answers with the
+    // Catalogue, so the screen would flicker back to where it came from. React
+    // batches these two, and the order says why it may not be relied on to.
+    setSignOutError(null);
+    // The *other* selection goes, exactly as `showSection` clears both: these
+    // two functions are the only paths that set one, so without this a row
+    // opened on the user list survives a move to Edit tile and back, and
+    // `showSection`'s stated invariant — that neither selection outlives the
+    // screen it belongs to — would be true of one path and not of the two that
+    // matter.
+    setEditing(null);
+    setEditingTile(target);
+    setSection('edit-tile');
   }
 
   function showEditUser(target: User): void {
@@ -373,6 +467,8 @@ function Gate(): JSX.Element {
     // it came from. React batches these two, and the order says why it may not
     // be relied on to.
     setSignOutError(null);
+    // See `showEditTile`: the other selection goes with the move.
+    setEditingTile(null);
     setEditing(target);
     setSection('edit-user');
   }
@@ -423,32 +519,87 @@ function Gate(): JSX.Element {
     );
   }
 
-  if (screen === 'add-tile') {
+  if (screen === 'catalogue') {
     // Inside the shell, in place of the home panel, exactly as Users and the
     // Audit log are: the app bar stays, so Sign out stays, and the screen
-    // supplies its own way back. It renders no `<main>` of its own — `AppShell`
-    // provides the one the focus effect above moves focus to.
+    // supplies its own way back. It renders no `<main>` of its own —
+    // `AppShell` provides the one the focus effect above moves focus to.
     //
-    // Back goes to the home panel rather than to a list, because the Catalogue
-    // list is Story 2.5's and there is nowhere else this was opened from.
+    // Back goes to the home panel: this is a top-level nav entry of its own
+    // (EXPERIENCE.md line 35), not a surface reached from another one. The
+    // three surfaces *it* reaches are below, and each of them goes back here.
     return (
       <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
         {signOutFailure}
-        <AddTileScreen onBack={() => showSection('home')} />
+        <CatalogueScreen
+          onAddTile={() => showSection('add-tile')}
+          onBack={() => showSection('home')}
+          onBulkUpload={() => showSection('bulk-upload')}
+          onEditTile={showEditTile}
+          // Told on every submit, so the query survives this screen being
+          // unmounted by the very controls it renders. Not keyed on it: the
+          // screen reads it once at mount, and remounting on each keystroke
+          // would throw the table away.
+          onSearch={setCatalogueQuery}
+          query={catalogueQuery}
+        />
       </AppShell>
     );
   }
 
-  if (screen === 'edit-tile') {
-    // Inside the shell, in place of the home panel, exactly as Add tile is.
+  if (screen === 'add-tile') {
+    // Inside the shell, in place of the home panel, exactly as the Catalogue
+    // is. It renders no `<main>` of its own — `AppShell` provides the one the
+    // focus effect above moves focus to.
     //
-    // Back goes to the home panel rather than to a list, because the Catalogue
-    // list is Story 2.5's and there is nowhere else this was opened from. When
-    // that list arrives it opens this screen from a row and Back returns to it.
+    // Back goes to the Catalogue, not to the home panel: the Catalogue is
+    // where "+ Add Tile" was pressed (EXPERIENCE.md line 36), and it is where
+    // the new tile belongs. `CatalogueScreen` refetches on mount, so returning
+    // to it lists the catalogue as it now stands — under whatever search was
+    // in place, which is the point of keeping it: an Administrator adding a
+    // run of `RP.CMA.*` tiles comes back to that run rather than to all 381.
+    // A tile whose Code does not contain the fragment is therefore not on
+    // screen; emptying the box lists it.
     return (
       <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
         {signOutFailure}
-        <EditTileScreen onBack={() => showSection('home')} />
+        <AddTileScreen onBack={() => showSection('catalogue')} />
+      </AppShell>
+    );
+  }
+
+  if (screen === 'edit-tile' && editingTile !== null) {
+    // **The false branch is what is unreachable**: `currentScreen` already
+    // answers `'catalogue'` for an `'edit-tile'` section with no tile, so this
+    // condition never fails at runtime. It is written anyway because it is
+    // what narrows `editingTile` for the prop below — removing it as redundant
+    // breaks the build, so it says why.
+    //
+    // Back goes to the Catalogue, not to the home panel: a row is where Edit
+    // was pressed, and `CatalogueScreen` refetches on mount, so returning to
+    // it shows the row as it was just saved.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <EditTileScreen
+          // Keyed on the tile, because the screen seeds its form from `tile`
+          // at mount and never reconciles the prop — `EditUserScreen`'s own
+          // arrangement, and for the same reason. Today nothing can swap one
+          // tile for another without a trip through the Catalogue, which
+          // unmounts it, but that is a property of `showSection` rather than
+          // of this screen, and a keyless element would turn a later change
+          // there into a form showing one tile's Code under another's picture.
+          key={editingTile.id}
+          onBack={() => showSection('catalogue')}
+          // A confirmed removal ends the tile this screen is about, and this
+          // screen was opened *about that tile* — so there is nothing left for
+          // it to show. It leaves for the Catalogue, whose refetch on mount is
+          // what makes the row's absence visible; staying would re-render as a
+          // code-entry stage for a Code that no longer names anything, with
+          // Back as the only way out.
+          onRemoved={() => showSection('catalogue')}
+          tile={editingTile}
+        />
       </AppShell>
     );
   }
@@ -458,14 +609,15 @@ function Gate(): JSX.Element {
     // Edit tile are. It renders no `<main>` of its own — `AppShell` provides
     // the one the focus effect above moves focus to.
     //
-    // Back goes to the home panel rather than to a list, because the Catalogue
-    // list is Story 2.5's and there is nowhere else this was opened from.
-    // EXPERIENCE.md line 37 reaches Bulk Upload *from* the Catalogue, so when
-    // that surface arrives this door moves onto it and Back returns there.
+    // Back goes to the Catalogue: EXPERIENCE.md line 37 reaches Bulk Upload
+    // *from* the Catalogue, so that is where its control lives and where Back
+    // returns to — and the Catalogue refetches on mount, so the batch is on
+    // screen on arrival, narrowed by whatever search was in place. A batch
+    // wider than the search is listed in full by emptying the box.
     return (
       <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
         {signOutFailure}
-        <BulkUploadScreen onBack={() => showSection('home')} />
+        <BulkUploadScreen onBack={() => showSection('catalogue')} />
       </AppShell>
     );
   }
@@ -550,36 +702,37 @@ function Gate(): JSX.Element {
       </p>
       {/* The doors to the admin surfaces, role-conditional as EXPERIENCE.md
           line 18 requires: a Staff user never sees an entry they cannot use.
-          These are the admin surfaces that exist. Two are nav entries of their
-          own — line 33's User List and line 38's Audit Log — and three are
-          reached from the Catalogue in EXPERIENCE.md: both halves of line 36's
-          Add/Edit Tile and line 37's Bulk Upload. All five stand on this panel
-          in place of a nav that does not exist yet; the surfaces the rest of
-          that nav would hold do not exist either. Create user is reached from
-          the list's "+ Add user", which is where line 34 reaches it from, and
-          Edit user from a row's own control, so neither is a door here.
+          Three doors, one per admin nav entry the spine's own IA names and this
+          product has built: line 33's User List, line 38's Audit Log and line
+          35's Catalogue. All three stand on this panel in place of a nav that
+          does not exist yet; the surfaces the rest of that nav would hold do
+          not exist either.
 
-          The three catalogue entries are doors rather than controls on a
-          Catalogue list because that list is Story 2.5's; line 36 reaches Add
-          Tile from "+ Add Tile" as well as from a row, Edit Tile from a row
-          alone, and line 37 reaches Bulk Upload from the Catalogue — so until
-          the list exists Edit tile finds its own tile by an exact Code, and
-          these are the entries that reach all three.
+          **Story 2.5 replaced three doors with one.** Add tile, Edit tile and
+          Bulk upload each stood here while there was no Catalogue to reach them
+          from — and EXPERIENCE.md never put them on the nav: line 36 reaches
+          Add Tile from "+ Add Tile" or a row, Edit Tile from a row alone, and
+          line 37 reaches Bulk Upload from the Catalogue. They are now controls
+          on that surface. Leaving them here beside a fourth Catalogue door
+          would ship two ways to reach one screen and a panel that contradicts
+          lines 36-37. Create user and Edit user were never doors here for the
+          same reason, one surface over.
 
           A convenience only. The server refuses a Staff caller at
-          `GET /admin/users`, `GET /admin/audit`, `POST /admin/tiles`,
-          `GET /admin/tiles/lookup`, `PATCH /admin/tiles/{id}`,
-          `DELETE /admin/tiles/{id}` and `POST /admin/tiles/bulk` regardless of
-          what this renders (AGENTS.md Policy: authorization is never gated by
-          what the UI hides), and the cached `user` read here is a render cache
-          and never a decision. */}
+          `GET /admin/users`, `GET /admin/audit`, `GET /admin/tiles`,
+          `POST /admin/tiles`, `GET /admin/tiles/lookup`,
+          `PATCH /admin/tiles/{id}`, `DELETE /admin/tiles/{id}` and
+          `POST /admin/tiles/bulk` regardless of what this renders (AGENTS.md
+          Policy: authorization is never gated by what the UI hides), and the
+          cached `user` read here is a render cache and never a decision. */}
       {user.role === 'admin' && (
         // One guard for the whole group, not one each: the role rule is a
         // property of the group rather than of any one button, and two copies
         // of it are two places a further entry could be added under the wrong
-        // condition. Story 2.1 added the third entry under it, Story 2.2 the
-        // fourth and Story 2.4 the fifth, none needing a second condition,
-        // which is the argument holding. It is also the seam the real nav
+        // condition. Story 2.1 added a third entry under it, Story 2.2 a
+        // fourth and Story 2.4 a fifth, none needing a second condition, and
+        // Story 2.5 replaced those three with one — all without touching this
+        // line, which is the argument holding. It is also the seam the real nav
         // replaces — the fragment becomes that nav's children, and the
         // condition becomes whether the Admin section is rendered at all.
         <>
@@ -589,22 +742,12 @@ function Gate(): JSX.Element {
           <button className={styles.auditLog} type="button" onClick={() => showSection('audit')}>
             Audit log
           </button>
-          <button className={styles.addTile} type="button" onClick={() => showSection('add-tile')}>
-            Add tile
-          </button>
           <button
-            className={styles.editTile}
+            className={styles.catalogue}
             type="button"
-            onClick={() => showSection('edit-tile')}
+            onClick={() => showSection('catalogue')}
           >
-            Edit tile
-          </button>
-          <button
-            className={styles.bulkUpload}
-            type="button"
-            onClick={() => showSection('bulk-upload')}
-          >
-            Bulk upload
+            Catalogue
           </button>
         </>
       )}

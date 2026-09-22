@@ -30,6 +30,7 @@ from shared_schema.tile import (
     Tile,
     clean_category,
     clean_code,
+    clean_query,
     clean_size,
     face_number,
     normalize_label,
@@ -96,6 +97,60 @@ def test_the_code_keeps_its_case_where_a_size_does_not() -> None:
 def test_a_code_the_product_will_not_store_is_refused(value: str) -> None:
     with pytest.raises(ValueError):
         clean_code(value)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # A blank query is the Catalogue screen's own first request: the screen
+        # opens on the whole list and narrows from there (EXPERIENCE.md:35,
+        # "Search/**browse** Tiles"). Refusing it the way `clean_code` refuses a
+        # blank Code would make browsing an error.
+        ("", ""),
+        ("   ", ""),
+        # Trimmed at the ends, and nowhere else: the real catalogue holds
+        # `6LD.MA Quarry Stone Natural`, so an interior space is part of what
+        # somebody may be searching for.
+        ("  cma  ", "cma"),
+        ("6LD.MA Quarry", "6LD.MA Quarry"),
+        # A query as long as a Code may be is still a query.
+        ("x" * MAX_CODE_LENGTH, "x" * MAX_CODE_LENGTH),
+    ],
+)
+def test_a_query_is_trimmed_and_a_blank_one_browses(raw: str, expected: str) -> None:
+    assert clean_query(raw) == expected
+
+
+def test_a_query_is_never_case_folded() -> None:
+    # Neither uppercased nor lowercased. The match is case-insensitive at the
+    # database (FR-18), so folding here would be work that changes nothing —
+    # and a function that returned `CMA` for `cma` would read as though the
+    # stored Code had been folded too, which is the one thing `clean_code`
+    # exists to say never happens (AD-18).
+    assert clean_query("cma") == "cma"
+    assert clean_query("CMA") == "CMA"
+    assert clean_query("1Jk") == "1Jk"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # One character over the bound, not ten: an off-by-one here is a `500`
+        # from psycopg or a scan nothing needed, and only the boundary case
+        # fails on it.
+        "x" * (MAX_CODE_LENGTH + 1),
+        # The case that would otherwise surface as a `500` rather than a `422`:
+        # a C string cannot carry a NUL, so Postgres text cannot hold one and
+        # psycopg raises before the statement is sent.
+        "cma\x00",
+        "\x00",
+        "cma\x7f",
+        "cma\nma",
+    ],
+)
+def test_a_query_the_search_will_not_run_is_refused(value: str) -> None:
+    with pytest.raises(ValueError):
+        clean_query(value)
 
 
 @pytest.mark.parametrize("value", [None, "", "   "])

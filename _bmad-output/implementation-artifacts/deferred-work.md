@@ -1624,3 +1624,67 @@ source_spec: `spec-2-4-bulk-upload.md`
 severity: low
 reason: `EditTileScreen.module.css:200` sets `list-style: none` under a comment claiming "the list is still a list to a screen reader, which is what makes 'three reference images' audible" — the exact claim this story disproved on its own report list and corrected there with an explicit `role="list"`. Safari and VoiceOver drop list semantics from a marker-less list, so on that pairing the gallery announces neither "list, 3 items" nor "image 2 of 3". Pre-existing since Story 2.2; nothing in this change touches that screen, and no test in `edit-tile.test.tsx` asserts the role or the item count.
 status: open
+
+### DW-204: Every Catalogue row downloads a full 1280px display derivative to fill a 96px thumbnail, so browsing the whole catalogue is tens of megabytes.
+origin: spec-deferred 13da2e4e0efc
+location: apps/web/src/screens/CatalogueScreen.tsx thumbnails; shared/vision display_derivative
+source_spec: `spec-2-5-catalogue-search.md`
+severity: medium
+reason: AD-17 generates one capped derivative (~1280px, ~300KB) at write time and forbids rendering anything on demand, and the list is deliberately uncapped, so a browse of a few hundred Tiles fetches a few hundred full-size derivatives. `loading="lazy"` defers the offscreen ones and nothing more. The size of that one derivative was chosen by Story 2.1 for the Edit Tile gallery; this story is the first surface that shows hundreds of them at 96px. A list-sized variant or a `?size=` parameter on the image route is an AD-17 decision, not a patch this story could make.
+status: open
+
+### DW-205: The one route that can export the whole catalogue in a single request is neither rate-limited nor recorded.
+origin: spec-deferred 028253f900da
+location: apps/api/api/catalogue.py search_tiles
+source_spec: `spec-2-5-catalogue-search.md`
+severity: medium
+reason: `GET /admin/tiles` with a blank `q` answers every Tile's Code, Size and Category in one body. AGENTS.md names catalogue exfiltration through a compromised account as the primary commercial threat and mandates throttling on login and on scanning, but says nothing about admin reads, and FR-20 covers changes rather than reads -- which is why this story deliberately records nothing. Whether an Administrator's catalogue reads deserve the scan throttle, or an audit entry of their own, is a product and security decision worth settling before the pen test that gates rollout.
+status: open
+
+### DW-206: Two Administrators editing the same Tile silently overwrite each other -- the edit path carries no optimistic-concurrency check.
+origin: spec-deferred 450215ccedc3
+location: apps/api/api/catalogue.py edit_tile
+source_spec: `spec-2-5-catalogue-search.md`
+severity: medium
+reason: A Tile handed over by a Catalogue row is as old as the listing, and `PATCH /admin/tiles/{tile_id}` writes every column unconditionally with no `updated_at` precondition, so the second save wins and the first is lost with no warning. Pre-existing since Story 2.2 -- the lookup stage had the same staleness -- and surfaced here only because a row makes the gap between reading and saving longer and more ordinary.
+status: open
+
+### DW-207: Edit Tile's code-entry form can replace an in-progress edit without warning, dropping typed changes, queued files and pending removals.
+origin: spec-deferred 9ccfa33889fa
+location: apps/web/src/screens/EditTileScreen.tsx lookup form
+source_spec: `spec-2-5-catalogue-search.md`
+severity: medium
+reason: The lookup form is rendered above the edit form at all times, and a successful Find replaces the adopted Tile and every field with no confirmation. EXPERIENCE.md:90 says never to drop an in-progress catalogue edit silently. Pre-existing since Story 2.2, when the stage was the only entry point; this story did not change that behaviour.
+status: open
+
+### DW-208: `session-expiry.test.tsx`'s 401 tests flake under CPU contention because they rely on the default 1000ms `findBy` timeout.
+origin: spec-deferred 445f93576411
+location: apps/web/src/__tests__/session-expiry.test.tsx
+source_spec: `spec-2-5-catalogue-search.md`
+severity: low
+reason: Reproduced by running two full web suites concurrently: one of the two tests in `describe('a 401 from any request drops the app to the login screen')` times out at ~1015ms waiting for the login screen's password label. The same failure, in the same file, reproduces at baseline revision 87d032c74169146906de0059b26a4b5cf34cdada in a worktree built from that commit, so it predates this story. Fifteen consecutive standalone runs of that file pass, as do eight consecutive runs of the whole suite when nothing competes with it.
+status: open
+
+### DW-209: The three session-state authorization claims on the Catalogue are pinned on the add alone, so no other catalogue route proves them.
+origin: spec-deferred b4d6ed2c5f5b
+location: apps/api/tests/test_catalogue_authorization.py:441-487
+source_spec: `spec-2-5-catalogue-search.md`
+severity: low
+reason: `test_an_administrator_on_an_unclaimed_temporary_credential_is_refused`, `..._deactivated_mid_session_is_refused_as_unauthenticated` and `..._demoted_mid_session_is_refused_on_the_next_request` all send `post_tile` and nothing else, while the file's own `test_every_refusal_is_uncacheable` is parametrized across all seven routes. The claims hold today because `require_administrator` is one shared dependency, but that is the thing being asserted -- a route that ever declared its guard itself would be caught on the add and nowhere else, and `GET /admin/tiles` is the route where a stale role discloses the whole catalogue in one body. Pre-existing since Story 2.1; Story 2.5 added the seventh route to the parametrized test and left these three unchanged, which is where the asymmetry became visible.
+status: open
+
+### DW-210: A row's thumbnail that fails to load renders the browser's broken-image glyph instead of the deliberate "No image" state beside it.
+origin: spec-deferred af3ee9f0898e
+location: apps/web/src/screens/CatalogueScreen.tsx row thumbnail; apps/web/src/screens/EditTileScreen.tsx gallery
+source_spec: `spec-2-5-catalogue-search.md`
+severity: low
+reason: `CatalogueScreen` renders `<img>` with no `onError`, so a `404` from a derivative that never got written, a `403` or a dropped connection paints a broken glyph in a 96px cell -- next to rows whose genuinely imageless tiles say "No image" in words. CLAUDE.md makes the reference image the thing that makes a candidate verifiable, so the two failures reading differently matters. `EditTileScreen`'s gallery (Story 2.2) has the same gap and established the convention, which is why this story inherited it rather than introduced it; fixing one without the other would leave the product saying two things.
+status: open
+
+### DW-211: Every return to the Catalogue re-downloads every visible thumbnail, because the image route is `no-store` and the screen refetches on mount.
+origin: spec-deferred 15f2027ddd9a
+location: apps/api/api/catalogue.py tile image route; apps/web/src/screens/CatalogueScreen.tsx mount refetch
+source_spec: `spec-2-5-catalogue-search.md`
+severity: medium
+reason: `GET /admin/tiles/{tile_id}/images/{image_id}` answers with `{**NO_STORE, **NO_SNIFF}` (Story 2.1), so no thumbnail is ever cached by the browser, and the Catalogue's refetch on mount is deliberate -- a tile just added, renamed or removed has to show up. Together they mean that Back from Add tile, Edit tile or Bulk upload re-requests the list *and* every row's image through an authenticated, role-rechecking, DB-reading route. This compounds the oversized-derivative entry above rather than duplicating it: that one is about the size of one fetch, this one is about how many times it happens. Whether a catalogue thumbnail may be privately cached is an AD-17 / AGENTS.md decision about how much catalogue data may sit in a shared handset's disk cache, not a patch this story could make.
+status: open
