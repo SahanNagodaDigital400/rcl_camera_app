@@ -1704,3 +1704,67 @@ source_spec: `spec-3-1-capture-or-upload-a-scan.md`
 severity: low
 reason: If the OS/browser revokes camera access or the hardware disconnects while `cameraState` is `'granted'`, the viewfinder would show a frozen/black frame with no state change and no user-facing message. EXPERIENCE.md's State Patterns table doesn't call for this case, and it's rare in practice.
 status: open
+
+### DW-214: `POST /scans` computes the server-side crop via `crop_to_rect` purely to validate it, then discards the cropped image — no consumer exists until Story 3.3/3.4.
+origin: spec-deferred 79b14eea4615
+location: apps/api/api/scan.py
+source_spec: `spec-3-2-crop-before-submit.md`
+severity: low
+reason: `apps/api/api/scan.py`'s `submit_scan` calls `shared_vision.crop_to_rect(...)` and never assigns or uses the returned `Image`. Every valid request pays for a real PIL crop of a decoded, up-to-2048px-capped image with the result thrown away. Deliberate per this story's own scope (no persistence, no matching yet), but worth revisiting once 3.3/3.4 give the result a consumer.
+status: open
+
+### DW-215: Sign Out is not disabled while a scan submission is in flight, so a tap could unmount `CropScreen` mid-request.
+origin: spec-deferred eeec5e8d3ec7
+location: apps/web/src/screens/CropScreen.tsx
+source_spec: `spec-3-2-crop-before-submit.md`
+severity: low
+reason: `AppShell`'s Sign Out control is not told about `CropScreen`'s `confirming` state. This mirrors a pre-existing pattern across other in-flight admin actions in the app (none of them disable Sign Out either), so it is not unique to this story.
+status: open
+
+### DW-216: `apiRequest`'s widened `204 || 202` no-body handling is global rather than scoped to `/scans`.
+origin: spec-deferred 0379bde2347c
+location: apps/web/src/api/client.ts
+source_spec: `spec-3-2-crop-before-submit.md`
+severity: low
+reason: A future endpoint that legitimately returns `202` with a real JSON body would have that body silently discarded by `apiRequest`. The only current `202` caller (`POST /scans`) is genuinely bodyless, so there is no live bug today.
+status: open
+
+### DW-217: `apps/api/api/scan.py` imports `catalogue._read_upload`, a leading-underscore "module-private" helper, across module boundaries.
+origin: spec-deferred adba0a133f48
+location: apps/api/api/scan.py
+source_spec: `spec-3-2-crop-before-submit.md`
+severity: low
+reason: Reuse is well-motivated (avoids a second read-bytes implementation) and was the spec's own suggested approach, but the naming still signals "not for external use" and invites future drift; a public, unprefixed helper would match the intent better.
+status: open
+
+### DW-218: `scan.test.tsx`'s `stubFetchWithCalls` duplicates most of the existing `stubFetch` helper's shape (queue draining, default-404 fallback, response shape) instead of extending it to optionally capture
+origin: spec-deferred 0144d8a07bfa
+location: apps/web/src/__tests__/scan.test.tsx
+source_spec: `spec-3-2-crop-before-submit.md`
+severity: low
+reason: Two near-identical fetch stubs now exist in the same test file and can drift out of sync with each other over time. Low risk, test-code only.
+status: open
+
+### DW-219: `CropScreen`'s `rect` state is not reset in response to the `image` prop changing, and no `key` is passed to force a remount.
+origin: spec-deferred 62946672e8d4
+location: apps/web/src/screens/CropScreen.tsx
+source_spec: `spec-3-2-crop-before-submit.md`
+severity: low
+reason: Currently safe only because `App.tsx` always fully unmounts and remounts `CropScreen` between photos (no code path holds it mounted across two different `image` values), but nothing in `CropScreen` itself guards against that assumption changing later.
+status: open
+
+### DW-220: `onDragMove` does not stop an already-active drag when a submission begins mid-gesture, only `beginDrag` checks `confirming`.
+origin: spec-deferred e4cee0d7a7a0
+location: apps/web/src/screens/CropScreen.tsx
+source_spec: `spec-3-2-crop-before-submit.md`
+severity: low
+reason: A very tight multi-touch race (one finger still dragging while another taps Confirm) could let `rect` keep changing after submission starts. Low probability and low impact — the submitted rect is read once at confirm time, not re-read after.
+status: open
+
+### DW-221: The crop selector's drag handles have no keyboard alternative (no `tabIndex`/`role`/arrow-key nudging) for a Staff/Admin user who cannot use touch or a mouse drag.
+origin: spec-deferred 424fde35890e
+location: apps/web/src/screens/CropScreen.tsx
+source_spec: `spec-3-2-crop-before-submit.md`
+severity: low
+reason: Verified against the source of truth: epics.md's UX-DR17 scopes "visible focus states with a keyboard path" explicitly to "all admin surfaces," not the mobile-first Scan/Crop flow — the touch-target-size half of the same accessibility floor (which this screen does meet) is the only part stated for mobile surfaces. This is a legitimate future accessibility improvement, not a violation of a stated AC.
+status: open

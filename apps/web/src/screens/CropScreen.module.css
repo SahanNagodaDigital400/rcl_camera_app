@@ -1,6 +1,8 @@
-/* Crop — the inert placeholder (Story 3.1). One preview, one secondary Back
- * control, no accent button — see the screen's own module comment for why.
- * Every value here comes from src/styles/tokens.css. */
+/* Crop — the real crop editor (Story 3.2). Every value here comes from
+ * src/styles/tokens.css. The 44px touch-target floor and the accent focus
+ * ring are already on `button` in global.css and are deliberately not
+ * restated for the two buttons below; the eight drag handles are `<div>`s,
+ * not buttons, so their own floor is stated on `.handle`. */
 
 .screen {
   display: flex;
@@ -16,34 +18,167 @@
   color: var(--color-text);
 }
 
-.preview {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+/* The crop surface's outer frame. `min-height` is a floor only, so a short
+ * image (or no image loaded yet) never collapses this to a sliver — and
+ * that is the *only* thing it does. It is deliberately not `position:
+ * relative` and not the box `.selection` is positioned against: once the
+ * image is shorter than the floor, this box and the image's own rendered box
+ * are no longer the same rect, and `.frame` below is what carries that
+ * distinction rather than papering over it. See the screen's own module
+ * comment. */
+.stage {
   min-height: var(--viewfinder-min-height);
+  overflow: hidden;
   border-radius: var(--radius-lg);
   background: var(--color-primary);
-  overflow: hidden;
 }
 
-/* `contain`, not `cover`: this is the whole frame the shutter captured, and
- * cropping it to fill the box would hide the very thing Story 3.2's crop
- * editor exists to let the user adjust. */
-.image {
+/* The image's own positioning parent, and nothing wider. `position:
+ * relative` so `.selection` and its handles layer on top of the image rather
+ * than stacking in the document; carries no `min-height` and no other sizing
+ * of its own, so with the `<img>` as its only normal-flow child (`.selection`
+ * is `position: absolute` and contributes nothing to auto height) this box's
+ * height is exactly the image's rendered height — never `.stage`'s taller
+ * floor. That equality is what makes measuring pointer positions against the
+ * `<img>` element (`normalizedPoint`) the same as measuring against this
+ * element: either one is the image's real box. */
+.frame {
+  position: relative;
   width: 100%;
-  height: 100%;
-  object-fit: contain;
+}
+
+.image {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* The selection box. The scrim over the deselected area is the mockup's own
+ * punched-hole trick: a `box-shadow` spread far wider than the stage could
+ * ever be, painted *outward* from this box's own edge, rather than four
+ * separate overlay panels that would have to be kept in sync with the
+ * rectangle on every drag. `touch-action: none` stops a touch drag from also
+ * panning or scrolling the page underneath it. */
+.selection {
+  position: absolute;
+  border: var(--crop-border-width) solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 var(--crop-scrim-spread) var(--scrim);
+  touch-action: none;
+  cursor: move;
+}
+
+/* One rule for all eight handles: DESIGN.md's white fill and accent border,
+ * sized to the 44px touch-target floor (Accessibility Floor) rather than the
+ * mockup's smaller illustrative dots — see the story's own Design Notes on
+ * why the mockup's exact pixels are not the contract. Centred on its anchor
+ * point by the translate, so `data-pos` below only has to say *where* that
+ * point sits on the selection's own box. */
+.handle {
+  position: absolute;
+  width: var(--touch-target-min);
+  height: var(--touch-target-min);
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  border: var(--crop-border-width) solid var(--color-accent);
+  transform: translate(var(--crop-handle-offset), var(--crop-handle-offset));
+  touch-action: none;
+}
+
+.handle[data-pos='tl'] {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.handle[data-pos='tr'] {
+  top: 0;
+  left: 100%;
+  cursor: nesw-resize;
+}
+
+.handle[data-pos='bl'] {
+  top: 100%;
+  left: 0;
+  cursor: nesw-resize;
+}
+
+.handle[data-pos='br'] {
+  top: 100%;
+  left: 100%;
+  cursor: nwse-resize;
+}
+
+.handle[data-pos='tm'] {
+  top: 0;
+  left: var(--crop-handle-mid);
+  cursor: ns-resize;
+}
+
+.handle[data-pos='bm'] {
+  top: 100%;
+  left: var(--crop-handle-mid);
+  cursor: ns-resize;
+}
+
+.handle[data-pos='lm'] {
+  top: var(--crop-handle-mid);
+  left: 0;
+  cursor: ew-resize;
+}
+
+.handle[data-pos='rm'] {
+  top: var(--crop-handle-mid);
+  left: 100%;
+  cursor: ew-resize;
+}
+
+.hint {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  text-align: center;
+}
+
+/* A failed submission. Red is destructive-or-failed in this system and
+ * nothing else, and it is never the only signal: the text says what
+ * happened, and Confirm re-enables beside it for another try. */
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
 }
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-4);
 }
 
+/* The screen's one accent control (DESIGN.md: exactly one per screen).
+ * `ScanScreen`'s `.primary` treatment, renamed for what this one does. */
+.confirm {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.confirm:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
 /* DESIGN.md's secondary button — navy outline, navy text, transparent fill.
- * The only control on this screen, so it is never in competition with an
- * accent one. */
+ * Matches every other screen's Back control exactly (Scan, Audit,
+ * Catalogue). */
 .back {
   justify-content: center;
   padding: var(--space-3) var(--space-5);
@@ -55,4 +190,9 @@
   font-weight: var(--type-label-weight);
   line-height: var(--type-label-line);
   cursor: pointer;
+}
+
+.back:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
 }

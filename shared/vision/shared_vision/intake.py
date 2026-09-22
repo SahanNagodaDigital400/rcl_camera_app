@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -100,6 +101,10 @@ class UnreadableImage(IntakeRefused):
 
 class ImageTooLarge(IntakeRefused):
     """Above the caller's pixel ceiling. Raised from the header, before a decode."""
+
+
+class InvalidCropRect(IntakeRefused):
+    """A crop rectangle with no area, or one that falls outside the image."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,3 +228,74 @@ def display_derivative(image: Image.Image) -> bytes:
         # image too smeared to recognise the tile by, which is the whole reason
         # it is served.
         quality = max(DERIVATIVE_MIN_QUALITY, quality - DERIVATIVE_QUALITY_STEP)
+
+
+#: The ceiling a crop rectangle's own origin coordinate may not reach. `x`/`y`
+#: are normalized fractions of the image's own width/height, so `1.0` itself
+#: is already outside the image no matter how small `width`/`height` are —
+#: there is no pixel at fraction 1.0 of an edge.
+_CROP_ORIGIN_CEILING = 1.0
+
+
+def crop_to_rect(
+    image: Image.Image, x: float, y: float, width: float, height: float
+) -> Image.Image:
+    """Story 3.2's one server-side crop execution point (AD-11).
+
+    `x`, `y`, `width` and `height` are normalized 0-1 fractions of `image`'s
+    own width/height — never absolute pixels, and never a rectangle already
+    applied to the bytes on the way here (AD-11: the client sends the whole
+    downscaled image and its selection, and this is the only place a pixel is
+    ever cropped from it).
+
+    Raises `InvalidCropRect` for a degenerate or out-of-bounds rectangle
+    rather than clamping it: a silently clamped rectangle is a crop the
+    caller never asked for and cannot see coming. This is the check
+    `POST /scans` relies on — it does not repeat the arithmetic, it catches
+    this exception (`apps/api/api/scan.py`).
+
+    **Placed beside `display_derivative` rather than in `pipeline.py`.** This
+    is a post-intake `PIL.Image` transform, not a step of the symmetric
+    index/query boundary that module's own docstring draws: a query image is
+    cropped *before* `preprocess` ever sees it, the same way a reference image
+    arrives already framed by whoever photographed it. Neither pipeline crops
+    on the other's behalf, so this has no twin to stay symmetric with.
+
+    Written as a standalone, reusable function rather than inlined into the
+    route that calls it today, because AD-11 names it as the function a later
+    admin-facing crop step would also call — not adopted in this epic, but a
+    second implementation would be exactly the asymmetry AD-1 exists to
+    prevent if that day comes.
+    """
+    # `nan`/`inf` fail every ordinary comparison as `False` — `nan <= 0` is
+    # `False` exactly as `nan > 0` is — so a bounds check written the obvious
+    # way lets either slip straight through and reach `round()` below, which
+    # raises an uncaught `ValueError` and turns a malformed request into a
+    # `500` instead of this function's own `422`. Checked first and
+    # unconditionally, before any arithmetic is done on the four values.
+    if not (
+        math.isfinite(x) and math.isfinite(y) and math.isfinite(width) and math.isfinite(height)
+    ):
+        raise InvalidCropRect("the crop rectangle is not a finite number")
+    if width <= 0 or height <= 0:
+        raise InvalidCropRect("the crop rectangle has zero or negative area")
+    if not (0 <= x < _CROP_ORIGIN_CEILING) or not (0 <= y < _CROP_ORIGIN_CEILING):
+        raise InvalidCropRect("the crop rectangle's origin is outside the image")
+    if x + width > _CROP_ORIGIN_CEILING or y + height > _CROP_ORIGIN_CEILING:
+        raise InvalidCropRect("the crop rectangle extends past the image")
+
+    left = round(x * image.width)
+    top = round(y * image.height)
+    right = min(image.width, round((x + width) * image.width))
+    bottom = min(image.height, round((y + height) * image.height))
+    # A rectangle that is valid in fractional terms can still round to zero
+    # width or height against a small enough image — `x` close enough to 1.0
+    # can round `left` up to `image.width` itself, and clamping `right` to
+    # that same edge then makes the two equal. Raised rather than repaired:
+    # widening the box by a pixel it was never asked for is the same silent
+    # clamp this function's own docstring refuses to do at the fractional
+    # level, one level down in pixels instead.
+    if right <= left or bottom <= top:
+        raise InvalidCropRect("the crop rectangle rounds to no pixels")
+
+    return image.crop((left, top, right, bottom))

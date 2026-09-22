@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from shared_schema.errors import ApiError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api import audit, auth, catalogue, users
+from api import audit, auth, catalogue, scan, users
 from api.db import lifespan
 
 #: Stable, machine-readable codes for the HTTP statuses routing produces. A
@@ -187,6 +187,13 @@ def create_app() -> FastAPI:
     # JSON: `GET /admin/tiles/{tile_id}/images/{image_id}` proxies image
     # bytes, which is what AD-9 requires in place of a storage URL.
     app.include_router(catalogue.router)
+    # Story 3.2's crop-only submission path. Not under `/admin/`: Scan is
+    # reachable by every authenticated role, so this router declares
+    # `require_claimed_user` rather than `require_administrator`, and
+    # `tests/test_admin_authorization.py`'s route-table guard is what holds
+    # that — a route outside the prefix may not declare the Administrator
+    # check, in either direction.
+    app.include_router(scan.router)
 
     return app
 

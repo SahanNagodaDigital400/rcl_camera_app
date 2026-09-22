@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 
 import styles from './App.module.css';
-import { ApiRequestError, HTTP_UNAUTHORIZED } from './api/client';
+import { ApiRequestError, HTTP_UNAUTHORIZED, submitScan } from './api/client';
 import { useSession, SessionProvider } from './auth/SessionProvider';
 import type { SessionStatus } from './auth/SessionProvider';
 import { AppShell, MAIN_REGION_ID } from './components/AppShell';
@@ -42,9 +42,9 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
  *
  * **`'crop'` is reached only from Scan**, the way `'edit-tile'` is reached
  * only from a Catalogue row: `showCrop` sets the captured image and the
- * section together, and Back returns to Scan with the image discarded. It is
- * a placeholder for Story 3.2's real crop editor and carries no further
- * surfaces of its own.
+ * section together, and Back returns to Scan with the image discarded. A
+ * confirmed crop (Story 3.2) also returns to Scan — there is no Results
+ * screen yet (Story 3.4) — and carries no further surfaces of its own.
  *
  * **The three catalogue surfaces are reached from the Catalogue, not from the
  * home panel** — which is what line 36 and line 37 always said, and what
@@ -583,7 +583,21 @@ function Gate(): JSX.Element {
     return (
       <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
         {signOutFailure}
-        <CropScreen image={capturedImage} onBack={() => showSection('scan')} />
+        <CropScreen
+          image={capturedImage}
+          onBack={() => showSection('scan')}
+          // Story 3.2's submission path. `submitScan` runs the request;
+          // `showSection('scan')` only runs once it resolves — a rejection
+          // propagates straight back to `CropScreen`, which is what leaves
+          // the image and the selection in place with Confirm re-enabled
+          // rather than this function clearing them on a failed request.
+          // There is no Results screen yet (Story 3.4), so success lands back
+          // on Scan, `ScanScreen`'s own precedent from Story 3.1.
+          onConfirm={async (rect) => {
+            await submitScan(capturedImage, rect);
+            showSection('scan');
+          }}
+        />
       </AppShell>
     );
   }

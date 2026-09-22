@@ -157,6 +157,27 @@
    * it at 3px, which this pins so the overlay is not a hairline. */
   --framing-guide-border-width: 3px;
 
+  /* Crop (Story 3.2). DESIGN.md's Crop selector names an accent border but no
+   * width of its own; `mockups/key-crop.html`'s `.crop-select` renders it at
+   * 3px, matching the framing guide's — this is its own token rather than a
+   * reuse of `--framing-guide-border-width` because the two are Scan's and
+   * Crop's own controls and a rename of one must not silently move the
+   * other. */
+  --crop-border-width: 3px;
+  /* The scrim's spread in the mockup's punched-hole trick: a `box-shadow`
+   * wide enough to cover the viewport from inside the selection box, however
+   * large the box itself gets. Arbitrary by construction — any value at least
+   * as large as the largest possible stage covers it — so this is sized
+   * generously rather than derived from a real dimension. */
+  --crop-scrim-spread: 9999px;
+  /* A crop handle's edge-midpoint offset (`tm`/`bm`/`lm`/`rm` sit at the
+   * middle of their edge, corners at 0%/100% — already expressible without a
+   * token). */
+  --crop-handle-mid: 50%;
+  /* Centres a crop handle on its anchor point rather than sitting
+   * below-right of it, on both axes. */
+  --crop-handle-offset: -50%;
+
   /* The one breakpoint in the system: below it, mobile scan surfaces with
    * generous spacing and a bottom tab bar; at and above it, desktop admin
    * surfaces with a sidebar and denser table rows. CSS media queries cannot

@@ -156,3 +156,99 @@ def test_the_steps_between_the_ceiling_and_the_floor_are_taken() -> None:
         steps.append(quality)
 
     assert steps == [76, 70, 68]
+
+
+# --- AD-11's crop -----------------------------------------------------------
+# `apps/api/tests/test_scan_submission.py` drives this through the real
+# endpoint, which proves it is wired up and refuses what it should over the
+# wire. This file asserts the pixels it actually produces — the box a caller
+# cannot see from a status code — and the exception it raises directly,
+# without a route's own status-code translation in the way.
+
+
+def test_the_rectangle_is_read_against_the_images_own_pixels() -> None:
+    image = textured(size=(200, 100))
+
+    cropped = intake.crop_to_rect(image, x=0.25, y=0.5, width=0.5, height=0.5)
+
+    # 200x100, so x=0.25 -> 50px, width=0.5 -> 100px; y=0.5 -> 50px,
+    # height=0.5 -> 50px. Different scales on each axis, on purpose: a bug
+    # that swapped width/height against x/y would still pass a square fixture.
+    assert cropped.size == (100, 50)
+
+
+def test_a_full_frame_rectangle_is_accepted_and_changes_nothing() -> None:
+    image = textured(size=(64, 48))
+
+    cropped = intake.crop_to_rect(image, x=0, y=0, width=1, height=1)
+
+    assert cropped.size == image.size
+    assert np.asarray(cropped).tolist() == np.asarray(image).tolist()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "why"),
+    [
+        ({"width": 0}, "zero width"),
+        ({"height": 0}, "zero height"),
+        ({"width": -0.1}, "negative width"),
+        ({"x": 1.0, "width": 0.1}, "x at the ceiling — no pixel sits at fraction 1.0"),
+        ({"y": 1.0, "height": 0.1}, "y at the ceiling"),
+        ({"x": -0.01}, "x below zero"),
+        ({"y": -0.01}, "y below zero"),
+        ({"x": 0.5, "width": 0.6}, "x + width past the far edge"),
+        ({"y": 0.5, "height": 0.6}, "y + height past the far edge"),
+        # `nan`/`inf` fail every ordinary comparison as `False`, so a bounds
+        # check that only compares (`width <= 0`, `x + width > 1`, ...) lets
+        # each of these through to `round()`, which raises an uncaught
+        # `ValueError` rather than this function's own `InvalidCropRect`. One
+        # case per field, so a `math.isfinite` guard dropped from any single
+        # argument is still caught.
+        ({"width": float("nan")}, "nan width"),
+        ({"height": float("nan")}, "nan height"),
+        ({"x": float("nan")}, "nan x"),
+        ({"y": float("nan")}, "nan y"),
+        ({"width": float("inf")}, "infinite width"),
+        ({"height": float("inf")}, "infinite height"),
+        ({"x": float("inf")}, "infinite x"),
+        ({"y": float("inf")}, "infinite y"),
+        ({"x": float("-inf")}, "negative-infinite x"),
+        ({"y": float("-inf")}, "negative-infinite y"),
+    ],
+)
+def test_a_degenerate_or_out_of_bounds_rectangle_is_refused(
+    kwargs: dict[str, float], why: str
+) -> None:
+    base = {"x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5}
+    image = textured()
+
+    with pytest.raises(intake.InvalidCropRect):
+        intake.crop_to_rect(image, **{**base, **kwargs})
+
+
+def test_rounding_a_tiny_fractional_rectangle_never_collapses_to_zero_pixels() -> None:
+    # A rectangle that is entirely valid in fractional terms can still round to
+    # zero width or height against a small enough image — this one is small
+    # enough to round down towards the origin but not so close to the far edge
+    # that it collapses (see the test directly below for that case), so the
+    # crop it produces is at least one pixel on each axis.
+    image = textured(size=(20, 20))
+
+    cropped = intake.crop_to_rect(image, x=0.01, y=0.01, width=0.02, height=0.02)
+
+    assert cropped.width >= 1
+    assert cropped.height >= 1
+
+
+def test_a_rectangle_that_rounds_to_no_pixels_against_the_far_edge_is_refused() -> None:
+    # `x`/`y` this close to 1.0 pass every fractional bounds check above —
+    # `0.99 < 1.0`, and `0.99 + 0.005 = 0.995 <= 1.0` — but against a small
+    # image `round(x * image.width)` can land exactly on `image.width` itself,
+    # and clamping `right`/`bottom` to that same edge then makes the box zero
+    # pixels wide or tall. This is the case the bounds checks above cannot
+    # catch because nothing is wrong with the rectangle in fractional terms —
+    # only the rounding of it against *this* image's pixel grid.
+    image = textured(size=(10, 10))
+
+    with pytest.raises(intake.InvalidCropRect):
+        intake.crop_to_rect(image, x=0.99, y=0.99, width=0.005, height=0.005)

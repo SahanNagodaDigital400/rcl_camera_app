@@ -42,6 +42,7 @@ import {
   IMAGE_UNMATCHED,
   INVALID_CATEGORY,
   INVALID_CODE,
+  INVALID_CROP_RECT,
   INVALID_CURRENT_PASSWORD,
   INVALID_EMAIL,
   INVALID_IMAGE,
@@ -175,6 +176,8 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   image_not_paired: { file: 'catalogue.py', name: 'IMAGE_NOT_PAIRED' },
   image_unmatched: { file: 'catalogue.py', name: 'IMAGE_UNMATCHED' },
   row_failed: { file: 'catalogue.py', name: 'ROW_FAILED' },
+  // Story 3.2's one — the crop-only `POST /scans` router's own module.
+  invalid_crop_rect: { file: 'scan.py', name: 'INVALID_CROP_RECT' },
 };
 
 const TYPESCRIPT: Record<string, string> = {
@@ -208,6 +211,7 @@ const TYPESCRIPT: Record<string, string> = {
   image_not_paired: IMAGE_NOT_PAIRED,
   image_unmatched: IMAGE_UNMATCHED,
   row_failed: ROW_FAILED,
+  invalid_crop_rect: INVALID_CROP_RECT,
 };
 
 describe('the envelope codes are one contract in two languages', () => {
@@ -269,7 +273,7 @@ describe('the envelope codes are one contract in two languages', () => {
     // no message constant does: the value is exactly the constant's own name,
     // lowercased. `CODE_UNIQUE_INDEX = "tile_code_key"` and the refusal
     // sentences are not codes and do not match.
-    const routers = ['auth.py', 'catalogue.py', 'dependencies.py', 'users.py'];
+    const routers = ['auth.py', 'catalogue.py', 'dependencies.py', 'scan.py', 'users.py'];
     const declared = routers.flatMap((file) =>
       [...read(join(API, file)).matchAll(/^([A-Z_][A-Z0-9_]*)\s*=\s*"([a-z0-9_]+)"/gm)]
         .filter((match) => match[1]?.toLowerCase() === match[2])

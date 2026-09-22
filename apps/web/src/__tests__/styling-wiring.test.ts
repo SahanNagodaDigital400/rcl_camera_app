@@ -1156,16 +1156,61 @@ describe('the accent budget on the Scan screen itself', () => {
   });
 });
 
-describe('Crop is deliberately accent-free', () => {
-  // Story 3.2 owns the first accent action on this screen ("Confirm Crop");
-  // adding one now, even as a placeholder, would both violate DESIGN.md's
-  // one-accent-per-screen rule ahead of schedule and hand that story a
-  // control to rip out rather than one to build — see CropScreen's own module
-  // comment.
+describe('Confirm Crop is the one accent action on the Crop screen', () => {
+  // Story 3.2 turns the inert placeholder into the real crop editor, and
+  // "Confirm Crop" is this screen's first accent action — DESIGN.md's
+  // "exactly one per screen", same as every screen's own block in this file.
+  // Every handle also carries an accent *border* (DESIGN.md's crop-selector
+  // treatment), which is why the count below is per-control rather than a
+  // bare "zero or one" the way the placeholder's own version of this test
+  // read.
   const css = (): string => read(join(SRC, 'screens', 'CropScreen.module.css'));
 
-  it('paints nothing on this screen with the accent', () => {
-    expect([...css().matchAll(/var\(--color-accent\)/g)]).toHaveLength(0);
+  it('fills Confirm Crop with the accent and writes on it in navy', () => {
+    const confirm = rule(css(), '.confirm');
+
+    expect(declaration(confirm, 'background')).toBe('var(--color-accent)');
+    expect(declaration(confirm, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('leaves Back as the navy outline, not a second filled control', () => {
+    const back = rule(css(), '.back');
+
+    expect(declaration(back, 'color')).toBe('var(--color-primary)');
+    expect(declaration(back, 'background')).toBe('transparent');
+    expect(declaration(back, 'border')).toBe(
+      'var(--border-hairline) solid var(--color-primary)',
+    );
+  });
+
+  it('outlines the selection and every handle with the accent, never fills them', () => {
+    // DESIGN.md's crop-selector block: an accent *border* on the active
+    // selection and on its handles, not a fill — a filled handle would read
+    // as a second accent-filled control competing with Confirm.
+    const selection = rule(css(), '.selection');
+    const handle = rule(css(), '.handle');
+
+    expect(declaration(selection, 'border')).toContain('var(--color-accent)');
+    expect(declaration(handle, 'border')).toContain('var(--color-accent)');
+    expect(declaration(handle, 'background')).toBe('var(--color-surface)');
+  });
+
+  it('colours a failed submission the same destructive red every other screen uses', () => {
+    // `a rejection is written in the colour the matrix specifies`'s own
+    // pattern, one screen later: red is destructive-or-failed in this system
+    // and nothing else, so a `.error` pointed at any other token would let a
+    // failed submission read as ordinary prose beside a Confirm that looks
+    // like it is still waiting to be pressed.
+    expect(declaration(rule(css(), '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
+  it('keeps the drag hint muted, never mistaken for the failure it sits beside', () => {
+    // The hint ("Drag the corners or edges to resize…") and the error share
+    // this screen's one alert slot's neighbourhood, so the two must not share
+    // a colour either — `--color-muted-text` is this system's one non-brand,
+    // non-signal text colour, and pointed at `--color-destructive` instead the
+    // hint would read as a standing warning rather than an instruction.
+    expect(declaration(rule(css(), '.hint'), 'color')).toBe('var(--color-muted-text)');
   });
 });
 

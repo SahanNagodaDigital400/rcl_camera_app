@@ -141,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_five_auth_routes_health_and_the_nine_admin_paths() -> None:
+def test_the_route_table_is_the_five_auth_routes_health_the_ten_admin_paths_and_scans() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -245,6 +245,17 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_nine_admin_paths
     # `bulk` is a literal segment for `lookup`'s reason, and there is no
     # `POST /admin/tiles/{tile_id}` for it to be shadowed by.
     #
+    # `/scans` (Story 3.2, FR-24) is the eleventh new path and the first
+    # outside `/admin/` since the five auth routes: it is Scan's submission
+    # path, authenticated through `require_claimed_user` rather than
+    # `require_administrator` — every claimed Staff or Administrator account
+    # reaches it, not only Administrators — but a claimed account is still an
+    # account an Administrator already provisioned. It takes four crop
+    # coordinates and an image; no field on it names a person, an address or a
+    # password, and it writes nothing at all (no `Scan` table exists yet —
+    # Story 3.5). It cannot be a registration surface because it cannot be
+    # reached without a session that already required one.
+    #
     # The seeded Administrator (`infra/rocell_infra/seed.py`) is still the only
     # row written with no Administrator behind it, and it is written by the
     # migration runner outside the application entirely.
@@ -265,6 +276,7 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_nine_admin_paths
         "/admin/tiles/lookup",
         "/admin/tiles/{tile_id}",
         "/admin/tiles/{tile_id}/images/{image_id}",
+        "/scans",
     }
 
 

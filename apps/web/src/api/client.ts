@@ -242,6 +242,18 @@ export const IMAGE_TOO_LARGE = 'image_too_large';
 export const TOO_MANY_IMAGES = 'too_many_images';
 
 /**
+ * The envelope code for a crop rectangle `POST /scans` refuses to apply.
+ *
+ * Zero or negative width/height, an origin outside `[0, 1)`, or a rectangle
+ * that extends past the image's far edge — `shared_vision.crop_to_rect`'s own
+ * three conditions (AD-11). Marks nothing on `CropScreen`: the rectangle it
+ * sends is computed straight from the drag state the screen already keeps
+ * inside the image's own bounds, so a caller that sees this has a bug in that
+ * translation rather than a selection to fix by hand.
+ */
+export const INVALID_CROP_RECT = 'invalid_crop_rect';
+
+/**
  * The envelope code for a Code that is already a tile's.
  *
  * Marks the **code** field. A `409`: nothing is wrong with the caller's
@@ -578,8 +590,11 @@ function refusal(response: Response, body: unknown): ApiRequestError {
 /**
  * Send one request and return its parsed body, or throw an `ApiRequestError`.
  *
- * A `204` returns `null`: the server said "done, nothing to read", and parsing
- * an empty body as JSON would throw where nothing is wrong.
+ * A `204` or a `202` returns `null`. A `204` because there is nothing to
+ * return; a `202` because `POST /scans` (Story 3.2) answers "accepted" with
+ * nothing yet to hand back — no candidates (3.4), no persisted row (3.5) —
+ * and both cases are the server saying "done, nothing to read." Parsing
+ * either body as JSON would throw where nothing is wrong.
  */
 export async function apiRequest(path: string, options: RequestOptions = {}): Promise<unknown> {
   const method = options.method ?? 'GET';
@@ -622,7 +637,7 @@ export async function apiRequest(path: string, options: RequestOptions = {}): Pr
       throw failed(controller);
     }
 
-    if (response.status === 204) return null;
+    if (response.status === 204 || response.status === 202) return null;
 
     let body: unknown;
     try {
@@ -656,6 +671,47 @@ export async function apiRequest(path: string, options: RequestOptions = {}): Pr
     // keeps both alive, and in a test it keeps the event loop alive too.
     clearTimeout(expiry);
   }
+}
+
+/**
+ * `CropScreen`'s confirmed selection, normalized 0-1 against the *uploaded*
+ * image's own width/height — never absolute pixels (AD-11).
+ */
+export interface NormalizedCropRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Send the Crop screen's confirmed selection to the server, and crop it there.
+ *
+ * `CropScreen`'s own submission path (Story 3.2, AD-11): the request carries
+ * the same downscaled image `ScanScreen` produced, unmodified, plus the
+ * on-screen selection expressed as a fraction of that image's own pixel
+ * dimensions — never a pixel rectangle, and never an image already cropped on
+ * this side. The pixel crop itself runs exactly once, server-side, in
+ * `shared_vision`.
+ *
+ * A `FormData`, `AddTileScreen`'s own reason: the body carries a file, and
+ * only `fetch` — never this module — may set the multipart boundary that
+ * delimits its parts. `UPLOAD_TIMEOUT_MS`, not the default: intake decodes,
+ * colour-manages and re-encodes the image server-side, which the 15s default
+ * is sized wrong for in exactly the way it is wrong for `POST /admin/tiles`.
+ *
+ * Resolves to nothing: `POST /scans` answers `202` with no body — this
+ * story's own scope is crop-only, with no candidates and no persisted row yet
+ * — and `apiRequest` reads a `202` the same way it reads a `204`.
+ */
+export async function submitScan(image: Blob, rect: NormalizedCropRect): Promise<void> {
+  const body = new FormData();
+  body.append('image', image, 'scan.jpg');
+  body.append('crop_x', String(rect.x));
+  body.append('crop_y', String(rect.y));
+  body.append('crop_width', String(rect.width));
+  body.append('crop_height', String(rect.height));
+  await apiRequest('/scans', { method: 'POST', body, timeoutMs: UPLOAD_TIMEOUT_MS });
 }
 
 /**
