@@ -1,15 +1,15 @@
-"""`POST /scans` — the crop-only submission path AD-11 requires (Story 3.2).
+"""`POST /scans` — the crop-only submission path AD-11 requires (Story 3.2),
+now with FR-9's quality gate wired in (Story 3.3).
 
 Story 3.1 gave Scan a capture/upload path with nowhere to send the result.
-This route is that destination, and today it does exactly one thing: it
-crops the submitted image, server-side, in `shared_vision`, and answers.
-Everything past that — a blur/framing check (3.3), matching against the
-catalogue (3.4), a persisted `Scan` row (3.5 — no such table exists yet) — is
-a later story's extension of *this same handler*, not a second endpoint.
-Inventing a response shape now that those stories would only replace is
-exactly the fantasized scope CLAUDE.md and AGENTS.md both ask this workflow
-to avoid, so this responds `202` with no body: there is nothing yet to hand
-back.
+This route is that destination: it crops the submitted image server-side, in
+`shared_vision`, checks the cropped region's quality, and answers. Matching
+against the catalogue (3.4) and a persisted `Scan` row (3.5 — no such table
+exists yet) are later stories' extension of *this same handler*, not a second
+endpoint. Inventing a response shape now that those stories would only
+replace is exactly the fantasized scope CLAUDE.md and AGENTS.md both ask this
+workflow to avoid, so a passing scan still responds `202` with no body: there
+is nothing yet to hand back.
 
 **`require_claimed_user`, never `require_administrator`.** Scan is reachable
 by every authenticated role — Story 3.1's own home-panel door carries no role
@@ -66,6 +66,20 @@ INVALID_CROP_RECT = "invalid_crop_rect"
 #: translation rather than a selection to fix by hand.
 INVALID_RECT_MESSAGE = "That crop selection is not valid. Adjust it and try again."
 
+#: The cropped region scored below `shared_vision.SCAN_QUALITY_THRESHOLD`
+#: (FR-9, AD-12). `CropScreen` recognises this code and swaps its actions for
+#: a single "Retake" — see its own module comment — rather than leaving a
+#: resubmission of the same photo live, which would only fail again.
+SCAN_QUALITY_TOO_LOW = "scan_quality_too_low"
+
+#: Verbatim, EXPERIENCE.md's own microcopy for this refusal. `CropScreen`
+#: renders `failure.message` straight from the server rather than holding a
+#: second copy of this sentence, so there is no TypeScript twin for
+#: `error-code-parity.test.ts` to pin it against — only the *code* above has
+#: one. This exact wording is pinned by nothing but
+#: `test_scan_submission.py`'s own direct assertion against it.
+SCAN_QUALITY_MESSAGE = "This photo's a little blurry — try again."
+
 
 def _refusal(code: str, message: str, status_code: int) -> ApiError:
     """One constructor for every refusal here. `api.catalogue`'s own idiom."""
@@ -81,7 +95,8 @@ def submit_scan(
     crop_height: Annotated[float, Form()],
     image: Annotated[UploadFile, File()],
 ) -> Response:
-    """Story 3.2 — crop the submitted scan, server-side, exactly once.
+    """Story 3.2 crops the submitted scan, server-side, exactly once; Story 3.3
+    gates what survives that crop on FR-9's quality check.
 
     `crop_x`/`crop_y`/`crop_width`/`crop_height` are the normalized 0-1
     rectangle `CropScreen` computed from its own on-screen selection against
@@ -89,15 +104,16 @@ def submit_scan(
     pixels, and never a rectangle already applied to the bytes that arrive
     here.
 
-    **`202`, with a genuinely empty body — not `None`.** Nothing is persisted
-    yet (no `Scan` table exists — Story 3.5), nothing is matched yet (3.4),
-    and there is no quality verdict yet (3.3): those stories extend this same
-    handler with the thing they add, rather than this one inventing a
-    response shape today that tomorrow would only replace. Unlike a `204`,
-    FastAPI does not suppress a `202`'s body on its own — returning `None`
-    with no declared `response_model` would still serialize to the four bytes
-    `null` — so this builds and returns its own empty `Response`, `auth.logout`'s
-    own pattern for the same reason.
+    **`202`, with a genuinely empty body — not `None`, and only on a pass.**
+    Nothing is persisted yet (no `Scan` table exists — Story 3.5) and nothing
+    is matched yet (3.4): those stories extend this same handler with the
+    thing they add, rather than this one inventing a response shape today
+    that tomorrow would only replace. Unlike a `204`, FastAPI does not
+    suppress a `202`'s body on its own — returning `None` with no declared
+    `response_model` would still serialize to the four bytes `null` — so a
+    pass builds and returns its own empty `Response`, `auth.logout`'s own
+    pattern for the same reason. A quality failure (3.3, below) never reaches
+    that return at all.
     """
     data = _read_upload(image)
     try:
@@ -110,10 +126,21 @@ def submit_scan(
         ) from unreadable
 
     try:
-        shared_vision.crop_to_rect(accepted.image, crop_x, crop_y, crop_width, crop_height)
+        cropped = shared_vision.crop_to_rect(
+            accepted.image, crop_x, crop_y, crop_width, crop_height
+        )
     except shared_vision.InvalidCropRect as invalid:
         raise _refusal(
             INVALID_CROP_RECT, INVALID_RECT_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
         ) from invalid
+
+    # FR-9 / AD-12: the quality gate runs on the cropped region `cropped` is —
+    # never on `accepted.image`, the pre-crop upload. A failing score stops
+    # the request here; matching (3.4) never sees a blurry or poorly-framed
+    # scan.
+    if not shared_vision.passes_quality(cropped):
+        raise _refusal(
+            SCAN_QUALITY_TOO_LOW, SCAN_QUALITY_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
 
     return Response(status_code=status.HTTP_202_ACCEPTED, headers=dict(NO_STORE))

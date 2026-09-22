@@ -149,6 +149,18 @@
   line-height: var(--type-body-line);
 }
 
+/* EXPERIENCE.md's `retake-prompt`: an inline, surface-colored banner — never
+ * the destructive red `.error` above, since a quality refusal is not the
+ * failed-request case that colour is reserved for. `BulkUploadScreen.module.css`'s
+ * `.file` recipe, the one DESIGN.md names for this component. */
+.retakePrompt {
+  background: var(--color-surface);
+  border: var(--border-hairline) solid var(--color-border);
+  color: var(--color-text);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

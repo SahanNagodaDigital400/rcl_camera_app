@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { JSX, PointerEvent as ReactPointerEvent } from 'react';
 
-import { ApiRequestError } from '../api/client';
+import { ApiRequestError, SCAN_QUALITY_TOO_LOW } from '../api/client';
 import type { NormalizedCropRect } from '../api/client';
 import styles from './CropScreen.module.css';
 
@@ -40,6 +40,14 @@ import styles from './CropScreen.module.css';
  * Rendered *inside* the shell, in place of the home panel, exactly as
  * `ScanScreen` is — no `<main>` of its own; `AppShell` already provides the
  * one the gate's focus effect moves focus to on a screen swap.
+ *
+ * **A `scan_quality_too_low` refusal (Story 3.3, FR-9/AD-12) is not an
+ * ordinary `error`.** The server scored the cropped region below its
+ * configured bound, and the fix is a new photo, not a nudge to the
+ * rectangle — so this swaps the normal Confirm/Back pair for a single
+ * "Retake" action above an inline banner, rather than leaving both live for
+ * a resubmission that would only fail again (Design Notes: "Retake, not
+ * re-crop").
  */
 
 interface CropScreenProps {
@@ -177,6 +185,13 @@ export function CropScreen({ image, onBack, onConfirm }: CropScreenProps): JSX.E
   const [rect, setRect] = useState<Rect>(DEFAULT_RECT);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Set instead of `error` when the server's refusal is `SCAN_QUALITY_TOO_LOW`
+   * (Story 3.3, FR-9/AD-12) — the API's own sentence, never a copy hardcoded
+   * here. `null` is the ordinary state; a fresh `handleConfirm` attempt clears
+   * it before asking again, the same way it clears `error`.
+   */
+  const [qualityRetake, setQualityRetake] = useState<string | null>(null);
 
   // Created and revoked inside the same effect, keyed on `image` — never
   // split into a `useMemo` for the create half. React does not guarantee a
@@ -287,13 +302,24 @@ export function CropScreen({ image, onBack, onConfirm }: CropScreenProps): JSX.E
     if (confirming) return;
     setConfirming(true);
     setError(null);
+    setQualityRetake(null);
     try {
       await onConfirm(rect);
       // No further state change on success: `App`'s `onConfirm` moves the
       // section away from Crop, which unmounts this component. Clearing
       // `confirming` here as well would be a `setState` racing an unmount.
     } catch (failure) {
-      setError(failure instanceof ApiRequestError ? failure.message : SUBMIT_FAILURE);
+      if (failure instanceof ApiRequestError && failure.code === SCAN_QUALITY_TOO_LOW) {
+        // The photo's content, not the selection, is what failed — adjusting
+        // the rectangle over the same blurry frame cannot fix it (Design
+        // Notes: "Retake, not re-crop"), so this branches away from the
+        // ordinary `error` state into the one that swaps the actions row
+        // below for a single "Retake" rather than leaving Confirm live for a
+        // resubmission that would only fail again.
+        setQualityRetake(failure.message);
+      } else {
+        setError(failure instanceof ApiRequestError ? failure.message : SUBMIT_FAILURE);
+      }
       setConfirming(false);
     }
   }
@@ -358,23 +384,47 @@ export function CropScreen({ image, onBack, onConfirm }: CropScreenProps): JSX.E
         </p>
       )}
 
+      {/* EXPERIENCE.md's `retake-prompt`: an inline, surface-colored banner
+          directly above the one action available — never a modal. Fires only
+          on the cropped region (AD-12), and only replaces the ordinary
+          Confirm/Back pair below, never joins them. */}
+      {qualityRetake !== null && (
+        <p className={styles.retakePrompt} role="alert">
+          {qualityRetake}
+        </p>
+      )}
+
       <div className={styles.actions}>
-        {/* The screen's one accent control (DESIGN.md: exactly one per
-            screen). Back is the secondary, navy-outlined one. */}
-        <button
-          className={styles.confirm}
-          type="button"
-          onClick={() => void handleConfirm()}
-          disabled={confirming}
-        >
-          {confirming ? 'Submitting…' : 'Confirm Crop'}
-        </button>
-        {/* Disabled in flight, `AddTileScreen`'s own reason: a click that
-            unmounted this screen mid-request would leave the caller unsure
-            whether the scan had already been submitted. */}
-        <button className={styles.back} type="button" onClick={onBack} disabled={confirming}>
-          Back
-        </button>
+        {qualityRetake !== null ? (
+          // Retake, not re-crop (Design Notes): the failure is the photo's
+          // content, not the selection, so adjusting the rectangle over the
+          // same blurry frame cannot fix it. One action, calling `onBack`
+          // rather than `handleConfirm` — a resubmission of the same photo
+          // would only fail again — and the secondary Back control is
+          // redundant with it, so it is not rendered alongside this one.
+          <button className={styles.confirm} type="button" onClick={onBack}>
+            Retake
+          </button>
+        ) : (
+          <>
+            {/* The screen's one accent control (DESIGN.md: exactly one per
+                screen). Back is the secondary, navy-outlined one. */}
+            <button
+              className={styles.confirm}
+              type="button"
+              onClick={() => void handleConfirm()}
+              disabled={confirming}
+            >
+              {confirming ? 'Submitting…' : 'Confirm Crop'}
+            </button>
+            {/* Disabled in flight, `AddTileScreen`'s own reason: a click that
+                unmounted this screen mid-request would leave the caller unsure
+                whether the scan had already been submitted. */}
+            <button className={styles.back} type="button" onClick={onBack} disabled={confirming}>
+              Back
+            </button>
+          </>
+        )}
       </div>
     </section>
   );

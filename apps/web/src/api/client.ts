@@ -254,6 +254,17 @@ export const TOO_MANY_IMAGES = 'too_many_images';
 export const INVALID_CROP_RECT = 'invalid_crop_rect';
 
 /**
+ * The envelope code for a cropped scan that scored below the quality gate.
+ *
+ * FR-9 / AD-12: the check runs on `POST /scans`' own cropped region, after
+ * `crop_to_rect` succeeds — a rectangle can be perfectly valid and still
+ * enclose a blurry or poorly-framed photo. `CropScreen` recognises this code
+ * and swaps its actions for a single "Retake" rather than leaving Confirm
+ * live for a resubmission of the same photo, which could only fail again.
+ */
+export const SCAN_QUALITY_TOO_LOW = 'scan_quality_too_low';
+
+/**
  * The envelope code for a Code that is already a tile's.
  *
  * Marks the **code** field. A `409`: nothing is wrong with the caller's

@@ -62,7 +62,7 @@ development_status:
   epic-3: backlog
   3-1-capture-or-upload-a-scan: done
   3-2-crop-before-submit: done
-  3-3-capture-quality-guidance: backlog
+  3-3-capture-quality-guidance: done
   3-4-ranked-candidate-results-with-images: backlog
   3-5-scan-history: backlog
   3-6-scan-rate-limiting: backlog

@@ -729,6 +729,66 @@ describe('confirming a crop', () => {
   });
 
   it(
+    'shows the retake prompt and relabels the action "Retake" on a ' +
+      'scan_quality_too_low refusal, discarding the image on tap',
+    async () => {
+      stubCanvas();
+      const { revoke } = stubObjectUrl();
+      stubImageBitmap({ width: 1000, height: 1000 });
+      stubFetch({
+        '/api/auth/session': [{ status: 200, body: STAFF }],
+        '/api/scans': [
+          {
+            status: 422,
+            body: {
+              error: {
+                code: 'scan_quality_too_low',
+                message: "This photo's a little blurry — try again.",
+              },
+            },
+          },
+          // The AC's third clause: a later, ordinary submission still works —
+          // nothing about the retake state lingers and breaks it.
+          { status: 202 },
+        ],
+      });
+
+      await reachCrop();
+
+      fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
+
+      expect(await screen.findByRole('alert')).toHaveProperty(
+        'textContent',
+        "This photo's a little blurry — try again.",
+      );
+      // Still on Crop — the failure did not navigate away — but the action
+      // row is now the single "Retake" control, not Confirm/Back.
+      expect(screen.getByRole('heading', { name: /^crop$/i })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /confirm crop/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^back$/i })).toBeNull();
+      const retake = screen.getByRole('button', { name: /^retake$/i });
+      expect(retake).toBeTruthy();
+
+      fireEvent.click(retake);
+
+      // Discards the image exactly the way Back does (`leaving Crop` above):
+      // returns to Scan, and the preview's object URL is actually released.
+      expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
+      expect(screen.queryByRole('heading', { name: /^crop$/i })).toBeNull();
+      expect(revoke).toHaveBeenCalledWith('blob:mock-preview');
+
+      // A fresh capture, submitted afterward, still reaches the server and
+      // succeeds — the retake state left nothing behind to break it.
+      fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
+      await screen.findByRole('heading', { name: /^crop$/i });
+
+      fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
+
+      expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    },
+  );
+
+  it(
     'shows an inline error and re-enables Confirm on a failed submission, ' +
       'keeping the image and the selection',
     async () => {

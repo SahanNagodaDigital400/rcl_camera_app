@@ -56,6 +56,7 @@ import {
   PASSWORD_CHANGE_REQUIRED,
   PIPELINE_STAMP_MISMATCH,
   ROW_FAILED,
+  SCAN_QUALITY_TOO_LOW,
   TILE_NOT_FOUND,
   TOO_MANY_IMAGES,
   TOO_MANY_ROWS,
@@ -178,6 +179,8 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   row_failed: { file: 'catalogue.py', name: 'ROW_FAILED' },
   // Story 3.2's one — the crop-only `POST /scans` router's own module.
   invalid_crop_rect: { file: 'scan.py', name: 'INVALID_CROP_RECT' },
+  // Story 3.3's — the same router, gating the cropped region's quality.
+  scan_quality_too_low: { file: 'scan.py', name: 'SCAN_QUALITY_TOO_LOW' },
 };
 
 const TYPESCRIPT: Record<string, string> = {
@@ -212,6 +215,7 @@ const TYPESCRIPT: Record<string, string> = {
   image_unmatched: IMAGE_UNMATCHED,
   row_failed: ROW_FAILED,
   invalid_crop_rect: INVALID_CROP_RECT,
+  scan_quality_too_low: SCAN_QUALITY_TOO_LOW,
 };
 
 describe('the envelope codes are one contract in two languages', () => {

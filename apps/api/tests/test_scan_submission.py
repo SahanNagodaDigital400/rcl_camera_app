@@ -49,6 +49,15 @@ def jpeg_bytes(image: Image.Image | None = None) -> bytes:
     return buf.getvalue()
 
 
+def a_flat_photograph(size: tuple[int, int] = (320, 320)) -> Image.Image:
+    """A single uniform colour — zero Laplacian variance, whatever the crop
+    rectangle takes from it, and the fixture Story 3.3's quality gate exists
+    to refuse. `a_tile_photograph`'s random-noise fixture scores far above any
+    provisional threshold, so it stays the happy-path fixture unchanged.
+    """
+    return Image.new("RGB", size, (180, 180, 180))
+
+
 def sign_in(client: TestClient, account: Any) -> None:
     response = client.post(LOGIN, json={"email": account.email, "password": account.password})
     assert response.status_code == 200
@@ -135,6 +144,28 @@ def test_a_degenerate_or_out_of_bounds_rect_is_refused(
 
     assert response.status_code == 422, response.text
     assert response.json()["error"]["code"] == "invalid_crop_rect"
+
+
+def test_a_blurry_or_flat_crop_is_refused_as_low_quality(
+    client: TestClient, make_user: MakeUser
+) -> None:
+    """FR-9 / AD-12 — a cropped region that scores below the quality gate is
+    refused before matching (3.4) ever exists to see it, with a dedicated
+    `422` distinct from `invalid_crop_rect`: the rectangle here is perfectly
+    valid, it is the pixels inside it that fail.
+    """
+    sign_in(client, make_user())
+
+    response = submit_scan(
+        client, image=("scan.jpg", jpeg_bytes(a_flat_photograph()), "image/jpeg")
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "scan_quality_too_low"
+    # This exact wording has no TypeScript twin — `CropScreen` renders the
+    # server's own `message` verbatim rather than holding a second copy — so
+    # this assertion is the only thing pinning it anywhere.
+    assert response.json()["error"]["message"] == "This photo's a little blurry — try again."
 
 
 def test_a_valid_full_frame_rect_is_accepted(client: TestClient, make_user: MakeUser) -> None:

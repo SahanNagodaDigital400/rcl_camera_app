@@ -1768,3 +1768,11 @@ source_spec: `spec-3-2-crop-before-submit.md`
 severity: low
 reason: Verified against the source of truth: epics.md's UX-DR17 scopes "visible focus states with a keyboard path" explicitly to "all admin surfaces," not the mobile-first Scan/Crop flow — the touch-target-size half of the same accessibility floor (which this screen does meet) is the only part stated for mobile surfaces. This is a legitimate future accessibility improvement, not a violation of a stated AC.
 status: open
+
+### DW-222: `blur_score`'s variance-of-Laplacian metric cannot detect blur in genuinely low-high-frequency content, so a sharp, correctly-framed photo of a real catalogue category (Mono Colour tiles, and
+origin: spec-deferred 446dc7dc0d10
+location: shared/vision/shared_vision/quality.py
+source_spec: `spec-3-3-capture-quality-guidance.md`
+severity: high
+reason: Measured directly against `shared_vision.quality.blur_score`: a flat 180x160x140 tile re-photographed with realistic sensor noise (sigma 1-3, typical of a well-lit low-ISO phone shot) and JPEG-encoded at quality 75-92 scores 0.0-26.0, versus the provisional `DEFAULT_SCAN_QUALITY_THRESHOLD` of 100.0 -- it only clears the bound once whole-frame noise reaches sigma>=5 (q92) or sigma>=8 (q75), noise levels not guaranteed in good lighting. A synthetic smooth-gradient tile (no fine texture, only large-scale colour variation -- the Crema Marmol shape) scored 0.25 whether left sharp or run through a radius-20 Gaussian blur: the metric is completely insensitive to focus for this content family, in either direction. This is a structural property of any no-reference, high-frequency-energy blur metric applied to inherently low-texture subjects, not a tunable-threshold problem -- no single `SCAN_QUALITY_THRESHOLD` value can both catch real blur on textured tiles and pass real flat/smooth tiles,
+status: open

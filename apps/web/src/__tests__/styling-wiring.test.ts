@@ -413,6 +413,23 @@ describe('a rejection is written in the colour the matrix specifies', () => {
   });
 });
 
+describe("the Crop screen's retake prompt paints DESIGN.md's retake-prompt block", () => {
+  // Story 3.3 (FR-9/AD-12): a `scan_quality_too_low` refusal is a surface-
+  // colored banner, never the destructive red the ordinary `.error` rule uses
+  // — a quality gate is not the same failure category as a rejected request.
+  // Point any of the three at the wrong token and the render tests (which
+  // apply no stylesheet at all — `vite.config.ts` sets `css: false`) stay
+  // green while the banner paints invisibly-on-white or destructive red.
+  it('uses the surface background, hairline border and body text tokens', () => {
+    const css = read(join(SRC, 'screens', 'CropScreen.module.css'));
+    const body = rule(css, '.retakePrompt');
+
+    expect(declaration(body, 'background')).toBe('var(--color-surface)');
+    expect(declaration(body, 'border')).toContain('var(--color-border)');
+    expect(declaration(body, 'color')).toBe('var(--color-text)');
+  });
+});
+
 describe('the confirmation dialog paints DESIGN.md\'s confirmation-dialog block', () => {
   // The product's first modal, and the first reference to `--scrim` — declared
   // in `tokens.css` for exactly this and pointed at by nothing until now.
