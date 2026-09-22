@@ -55,7 +55,7 @@ development_status:
   2-1-add-product: done
   2-2-edit-product: done
   2-3-remove-product: done
-  2-4-bulk-upload: backlog
+  2-4-bulk-upload: done
   2-5-catalogue-search: backlog
   epic-2-retrospective: optional
 

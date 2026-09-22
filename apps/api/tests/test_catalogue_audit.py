@@ -24,6 +24,7 @@ entry beside the one that recorded the old Code.
 from __future__ import annotations
 
 import io
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -560,3 +561,156 @@ def test_an_audit_failure_leaves_the_tile_where_it_was(
     # And nothing was deleted from storage: the objects go after the commit,
     # and there was no commit.
     assert len([path for path in storage_root.rglob("*") if path.is_file()]) == 2
+
+
+# --- The bulk upload (Story 2.4, FR-17) ---------------------------------------
+# **No new `AuditAction`.** A Tile added by bulk is a Tile added: same actor,
+# same consequence for the catalogue, same `details`. A second action naming the
+# same fact is drift — the argument Story 2.3 used to refuse a second
+# `tile_not_found` — and the provenance that is genuinely lost (which batch a
+# Tile came from) is not something FR-20 asks for. So the claim here is not
+# that the bulk path records *something*: it is that it records exactly what the
+# single add records, once per created row and never for a refused one.
+
+BULK_UPLOAD = "/admin/tiles/bulk"
+
+
+def bulk(client: TestClient, sheet: bytes, images: list[tuple[str, bytes]]) -> Any:
+    files: list[tuple[str, tuple[str, bytes, str]]] = [
+        ("manifest", ("codes.csv", sheet, "text/csv"))
+    ]
+    files.extend(("images", (name, data, "image/jpeg")) for name, data in images)
+    return client.post(BULK_UPLOAD, files=files)
+
+
+#: Five rows. Row 3's image is zero bytes — a defect the real source tree
+#: carries — so four are created and one is refused.
+_FIVE_ROWS = (
+    b"file,code,size,category\n"
+    b"1.jpg,RP.CMA.0001DJ.SM.0T,45X90,CREMA MARMOL\n"
+    b"2.jpg,RP.CMA.0002DJ.SM.0T,45X90,CREMA MARMOL\n"
+    b"3.jpg,RP.CMA.0003DJ.SM.0T,45X90,CREMA MARMOL\n"
+    b"4.jpg,RP.CMA.0004DJ.SM.0T,45X90,CREMA MARMOL\n"
+    b"5.jpg,RP.CMA.0005DJ.SM.0T,45X90,CREMA MARMOL\n"
+)
+
+_FIVE_IMAGES = [
+    ("1.jpg", an_image(1)),
+    ("2.jpg", an_image(2)),
+    ("3.jpg", b""),
+    ("4.jpg", an_image(4)),
+    ("5.jpg", an_image(5)),
+]
+
+
+@needs_model
+def test_a_batch_of_five_with_one_failure_writes_exactly_four_entries(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    response = bulk(client, _FIVE_ROWS, _FIVE_IMAGES)
+    assert response.status_code == 200, response.text
+    report = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    statuses = [line["status"] for line in report if line["kind"] == "row"]
+    assert statuses == ["created", "created", "failed", "created", "created"]
+
+    entries = catalogue_entries(conn, audit_rows)
+
+    assert len(entries) == 4
+    # One per *created* row, and the refused one is absent by its Code rather
+    # than only by the count: a report that renumbered its rows would still
+    # have four entries and the wrong four.
+    assert {entry["details"]["code"] for entry in entries} == {  # type: ignore[index]
+        "RP.CMA.0001DJ.SM.0T",
+        "RP.CMA.0002DJ.SM.0T",
+        "RP.CMA.0004DJ.SM.0T",
+        "RP.CMA.0005DJ.SM.0T",
+    }
+
+
+@needs_model
+def test_every_bulk_entry_names_the_actor_the_time_and_the_address(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    bulk(client, _FIVE_ROWS, _FIVE_IMAGES)
+
+    for entry in catalogue_entries(conn, audit_rows):
+        assert entry["actor_user_id"] == administrator.id
+        assert entry["actor_email"] == administrator.email
+        # The `client` fixture connects from loopback; `api.audit.source_ip`
+        # canonicalises and stores whatever the trust boundary resolved.
+        assert entry["source_ip"] == "127.0.0.1"
+        assert entry["created_at"] is not None
+        # A Tile is not an account, so the target columns stay empty — putting
+        # its id in `target_user_id` would make the log's shape a lie.
+        assert entry["target_user_id"] is None
+        assert entry["target_email"] is None
+
+
+@needs_model
+def test_a_bulk_entry_has_the_same_details_shape_the_single_add_writes(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # The shape three tests pin, asserted as a *comparison* rather than as a
+    # second literal list of keys: a key added on one path and not the other is
+    # the drift, and two independent lists of keys would both be updated by
+    # whoever added it.
+    add(client)
+    by_hand = catalogue_entries(conn, audit_rows)[0]
+
+    sheet = b"file,code,size,category\n1.jpg,RP.CMA.0099DJ.SM.0T,45X90,CREMA MARMOL\n"
+    assert bulk(client, sheet, [("1.jpg", an_image(1))]).status_code == 200
+
+    in_bulk = next(
+        entry
+        for entry in catalogue_entries(conn, audit_rows)
+        if entry["details"]["code"] == "RP.CMA.0099DJ.SM.0T"  # type: ignore[index]
+    )
+
+    assert isinstance(by_hand["details"], dict) and isinstance(in_bulk["details"], dict)
+    assert set(in_bulk["details"]) == set(by_hand["details"])
+    # No `bulk` marker, no batch id, no row number. The fact recorded is the
+    # same fact, and a flag inside `details` would fork a shape three tests
+    # pin for the sake of provenance FR-20 does not ask for.
+    assert in_bulk["details"]["size"] == "45X90"
+    assert in_bulk["details"]["category"] == "CREMA MARMOL"
+    assert in_bulk["details"]["reference_images"] == 1
+
+
+@needs_model
+def test_the_vocabulary_gains_no_member_for_the_bulk_path(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # Stated over what the log actually holds rather than over `AuditAction`,
+    # which `test_audit.py` already pins at sixteen: a batch writes
+    # `catalogue_tile_added` and nothing else at all — not a `batch_started`,
+    # not a `batch_finished`, and not one entry summarising the run.
+    bulk(client, _FIVE_ROWS, _FIVE_IMAGES)
+
+    # The sign-in is the fixture's, not the batch's, and is excluded by name
+    # rather than by filtering to catalogue actions — the claim is that the
+    # batch added *no* vocabulary, so a `batch_started` would have to show up
+    # here and an over-narrow filter would hide exactly that.
+    assert {row["action"] for row in audit_rows(conn)} - {"login_succeeded"} == {
+        "catalogue_tile_added"
+    }
+
+
+def test_a_pre_stream_refusal_records_nothing(
+    client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
+) -> None:
+    # A manifest that cannot be read changed nothing, so there is nothing to
+    # record — the add path's argument for a `409` or a `422`, one level up.
+    assert bulk(client, b"not,a,manifest\n", [("1.jpg", an_image(1))]).status_code == 422
+
+    assert catalogue_entries(conn, audit_rows) == []
+
+
+def test_a_refused_caller_writes_no_bulk_entry(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser, audit_rows: AuditRows
+) -> None:
+    account = make_user(role=Role.STAFF)
+    client.post(LOGIN, json={"email": account.email, "password": account.password})
+
+    assert bulk(client, _FIVE_ROWS, _FIVE_IMAGES).status_code == 403
+
+    assert catalogue_entries(conn, audit_rows) == []

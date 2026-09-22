@@ -1592,3 +1592,35 @@ source_spec: `spec-2-3-remove-product.md`
 severity: low
 reason: Observed during this pass: `make test` failed once at `session-expiry.test.tsx:165` (`findByLabelText(/password/i)` timing out after the sign-out click, with the signed-in home panel still rendered), then passed on two consecutive full runs and on an isolated run of that file. Nothing in this story touches session handling or that screen — the only edits near it are comment-only lines in `App.tsx` and `api/client.ts` — so the flake predates this change and is a property of the test's waiting strategy under 23 parallel workers, not of the diff.
 status: open
+
+### DW-200: The whole multipart body is received and spooled to disk before `require_administrator` runs, so a session-holder can push a large body before being refused.
+origin: spec-deferred f7c0426fbe93
+location: apps/api/api/catalogue.py bulk_upload, add_tile
+source_spec: `spec-2-4-bulk-upload.md`
+severity: medium
+reason: FastAPI reads the form before solving dependencies, so the role check fires only after every part has been written. Not caused by this story — `add_tile` has had the same property since 2.1, and the root cause is that nothing in the product bounds a request body: there is no middleware (the spine forbids adding one here), no proxy limit in `infra/`, and no aggregate ceiling anywhere. A body bound is a deployment contract this codebase has no authority to invent.
+status: open
+
+### DW-201: A batch has no aggregate byte budget, and every upload is written to disk twice.
+origin: spec-deferred 7e90bc5de073
+location: apps/api/api/catalogue.py _spool
+source_spec: `spec-2-4-bulk-upload.md`
+severity: low
+reason: With the row/part cap in place the worst case is `MAX_BULK_ROWS` x `MAX_IMAGE_BYTES` of temporary files, and Starlette has already spooled each part before `_spool` copies it again. Both copies are needed as written — the second is what makes the bytes outlive the multipart form under a `StreamingResponse` — so removing the duplication means changing how the form's lifetime is held, and a total-bytes ceiling would refuse legitimate batches of the 96 MB press files this catalogue really contains. The number is a product decision.
+status: open
+
+### DW-202: `session-expiry.test.tsx`'s 401 assertion is flaky under the full suite's parallel load, failing roughly one run in four while passing every time the file is run alone.
+origin: spec-deferred fd8a4c6eddcd
+location: apps/web/src/__tests__/session-expiry.test.tsx
+source_spec: `spec-2-4-bulk-upload.md`
+severity: low
+reason: Observed once during this pass: `make test` failed at `a 401 from any request drops the app to the login screen > swaps the shell for the login screen and says the session ended` (`findByLabelText(/password/i)` timing out with the signed-in shell still rendered), then passed on an isolated run of that file and on three consecutive full web-suite runs. The file is untouched by this story and nothing here reaches session handling. The same flake is already recorded on Story 2.3.
+status: open
+
+### DW-203: `EditTileScreen`'s reference-image gallery strips its list markers without restating `role="list"`, so it stops being announced as a list.
+origin: spec-deferred aa5207fb4a9b
+location: apps/web/src/screens/EditTileScreen.tsx:823
+source_spec: `spec-2-4-bulk-upload.md`
+severity: low
+reason: `EditTileScreen.module.css:200` sets `list-style: none` under a comment claiming "the list is still a list to a screen reader, which is what makes 'three reference images' audible" — the exact claim this story disproved on its own report list and corrected there with an explicit `role="list"`. Safari and VoiceOver drop list semantics from a marker-less list, so on that pairing the gallery announces neither "list, 3 items" nor "image 2 of 3". Pre-existing since Story 2.2; nothing in this change touches that screen, and no test in `edit-tile.test.tsx` asserts the role or the item count.
+status: open

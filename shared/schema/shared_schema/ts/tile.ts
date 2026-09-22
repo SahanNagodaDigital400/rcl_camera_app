@@ -26,6 +26,23 @@
 /** The AD-18 sentinel, as a value — the twin of Python's `UNKNOWN_CATEGORY`. */
 export const UNKNOWN_CATEGORY = 'UNKNOWN';
 
+/**
+ * How many rows one bulk manifest may carry — the twin of Python's
+ * `MAX_BULK_ROWS`.
+ *
+ * Mirrored here because the Bulk Upload screen refuses an over-long batch
+ * *before* uploading it: a hundred reference images is comfortably gigabytes,
+ * and an Administrator who watched that upload finish only to be told the row
+ * cap was never going to be accepted has lost the transfer, not a rule check.
+ * The server refuses it too, with `too_many_rows`, whatever this says.
+ *
+ * `face_number` has no twin here and never will: the trailing number is
+ * recovered from the Code by one rule on the server, and a second
+ * implementation on this side is the asymmetry AD-1 is about, one level up
+ * from the pixels.
+ */
+export const MAX_BULK_ROWS = 100;
+
 export interface ReferenceImage {
   /** UUIDv4. Builds the proxied image path; never a storage key. */
   id: string;

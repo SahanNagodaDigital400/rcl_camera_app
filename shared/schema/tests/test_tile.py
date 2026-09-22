@@ -23,6 +23,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 from shared_schema.tile import (
+    MAX_BULK_ROWS,
     MAX_CODE_LENGTH,
     UNKNOWN_CATEGORY,
     ReferenceImage,
@@ -30,6 +31,7 @@ from shared_schema.tile import (
     clean_category,
     clean_code,
     clean_size,
+    face_number,
     normalize_label,
 )
 
@@ -104,6 +106,62 @@ def test_an_absent_category_becomes_the_sentinel_rather_than_a_refusal(
     # unknown marker and flagged for follow-up. Dropping it would remove a real
     # tile over a grouping attribute that is not its identity.
     assert clean_category(value) == UNKNOWN_CATEGORY
+
+
+# --- The trailing number (a hint, never an identity) ---------------------------
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        # The five naming conventions that genuinely coexist in the real Drive
+        # tree, in the spellings `poc/tests/test_catalog.py` pinned them from —
+        # the POC read them off the actual files, so these are examples and not
+        # invented cases.
+        ("RP.CMA.0008DJ.SM.0T", "8"),  # structured code, number as a segment
+        ("77DH.MA_F3", "3"),  # underscore-F suffix
+        ("1Jk", "1"),  # bare leading number
+        ("61M", "61"),
+        ("279", "279"),  # bare integer
+        ("6LD.MA Quarry Stone Natural", "6"),  # free text trailing the code
+    ],
+)
+def test_the_trailing_number_is_recovered_from_every_convention_that_carries_one(
+    code: str, expected: str
+) -> None:
+    assert face_number(code) == expected
+
+
+def test_a_code_with_no_recoverable_number_answers_none_rather_than_guessing() -> None:
+    # The dash-delimited names carry four digit groups and no trailing number.
+    # Returning `001` or `156` would put a number on screen that is not the
+    # tile's — and the Code alone identifies the Tile anyway (AD-18), so the
+    # honest answer is that there is nothing to show.
+    assert face_number("RC-001-OHA-156-MA-J2") is None
+
+
+def test_the_structured_rule_wins_over_the_leading_number_rule() -> None:
+    # Ordering, asserted rather than assumed: the patterns are tried
+    # most-specific-first, and a Code that both rules could read must be read
+    # by the one written for it.
+    assert face_number("RP.CMA.0008DJ.SM.0T") == "8"
+    assert face_number("0008DJ") == "8"
+
+
+def test_leading_zeros_go_and_an_all_zero_number_survives_as_zero() -> None:
+    # `lstrip("0")` alone turns `0000` into the empty string, which renders as
+    # a missing value rather than as the number it is.
+    assert face_number("RP.CMA.0000DJ.SM.0T") == "0"
+
+
+def test_the_row_cap_is_a_bound_the_two_writers_share() -> None:
+    # `apps/api`'s bulk route refuses a longer manifest and the Bulk upload
+    # screen refuses one before uploading it. A bound that existed on one side
+    # only would be a batch travelling in full to be refused at the far end.
+    assert MAX_BULK_ROWS > 0
+    match = re.search(r"^export const MAX_BULK_ROWS = (\d+);$", _ts(), re.MULTILINE)
+    assert match is not None, "MAX_BULK_ROWS is no longer an integer literal in tile.ts"
+    assert int(match.group(1)) == MAX_BULK_ROWS
 
 
 # --- The model ----------------------------------------------------------------

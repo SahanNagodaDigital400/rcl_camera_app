@@ -9,6 +9,7 @@ import { AppShell, MAIN_REGION_ID } from './components/AppShell';
 import { AccountSettingsScreen } from './screens/AccountSettingsScreen';
 import { AddTileScreen } from './screens/AddTileScreen';
 import { AuditLogScreen } from './screens/AuditLogScreen';
+import { BulkUploadScreen } from './screens/BulkUploadScreen';
 import { CreateUserScreen } from './screens/CreateUserScreen';
 import { EditTileScreen } from './screens/EditTileScreen';
 import { EditUserScreen } from './screens/EditUserScreen';
@@ -23,22 +24,24 @@ const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
 /**
  * Which surface inside the shell is showing.
  *
- * Eight values because eight surfaces exist. This is not a router and is not
- * the beginning of one: EXPERIENCE.md's nav is role-conditional, spans six
+ * Nine values because nine surfaces exist. This is not a router and is not the
+ * beginning of one: EXPERIENCE.md's nav is role-conditional, spans six
  * top-level surfaces and changes shape at a breakpoint, and three of those six
- * do not exist yet. Four of them do, and each has its own door on the home
- * panel: `'users'` is EXPERIENCE.md line 33's User List, `'audit'` is line 38's
- * Audit Log, and `'add-tile'` and `'edit-tile'` are the two halves of line 36's
- * Add/Edit Tile — all standing on the home panel until there is a nav to hold
- * them. Create user is not a door: line 34 reaches it from the list's "+ Add
- * user", and `'edit-user'` from a row's own Edit control on the same line.
+ * do not exist yet. Five sections have a door of their own on the home panel:
+ * `'users'` is EXPERIENCE.md line 33's User List, `'audit'` is line 38's Audit
+ * Log, `'add-tile'` and `'edit-tile'` are the two halves of line 36's Add/Edit
+ * Tile, and `'bulk-upload'` is line 37's Bulk Upload — all standing on the home
+ * panel until there is a nav to hold them. Create user is not a door: line 34
+ * reaches it from the list's "+ Add user", and `'edit-user'` from a row's own
+ * Edit control on the same line.
  *
- * **Both tile surfaces stand on the home panel rather than behind a Catalogue
- * list** because line 36 reaches Add Tile from "+ Add Tile" *or* from a
- * Catalogue row, and Edit Tile from a row alone — and the Catalogue surface is
- * Story 2.5's. Until it exists, Edit tile finds its own tile by an exact Code;
- * when the list arrives it opens the same screen from a row, which is a prop to
- * pass rather than a screen to rebuild.
+ * **All three catalogue surfaces stand on the home panel rather than behind a
+ * Catalogue list** because line 36 reaches Add Tile from "+ Add Tile" *or* from
+ * a Catalogue row, Edit Tile from a row alone, and line 37 reaches Bulk Upload
+ * from the Catalogue — and the Catalogue surface is Story 2.5's. Until it
+ * exists, Edit tile finds its own tile by an exact Code; when the list arrives
+ * it opens the same screen from a row, which is a prop to pass rather than a
+ * screen to rebuild, and Bulk Upload moves onto it unchanged.
  */
 type Section =
   | 'home'
@@ -48,18 +51,20 @@ type Section =
   | 'edit-user'
   | 'audit'
   | 'add-tile'
-  | 'edit-tile';
+  | 'edit-tile'
+  | 'bulk-upload';
 
 /**
- * Which of the eleven screens the session state selects.
+ * Which of the twelve screens the session state selects.
  *
  * Named separately from `SessionStatus` because the two are not the same shape:
  * `'signed-in'` covers the forced-change screen, the shell, Account Settings,
- * Users, Create user, Edit user, the Audit log, Add tile and Edit tile, and the
- * moves between them are screen swaps that the status cannot see. Focus
- * management keys off this, not off the status — which is why the section is
- * folded in here rather than handled beside it: swapping the home panel for
- * another surface unmounts whatever had focus exactly as the other swaps do.
+ * Users, Create user, Edit user, the Audit log, Add tile, Edit tile and Bulk
+ * upload, and the moves between them are screen swaps that the status cannot
+ * see. Focus management keys off this, not off the status — which is why the
+ * section is folded in here rather than handled beside it: swapping the home
+ * panel for another surface unmounts whatever had focus exactly as the other
+ * swaps do.
  */
 type Screen =
   | 'loading'
@@ -72,7 +77,8 @@ type Screen =
   | 'edit-user'
   | 'audit'
   | 'add-tile'
-  | 'edit-tile';
+  | 'edit-tile'
+  | 'bulk-upload';
 
 /**
  * Whether `role` can reach `section` at all.
@@ -92,7 +98,8 @@ function reachableBy(section: Section, role: Role | null): boolean {
     section === 'edit-user' ||
     section === 'audit' ||
     section === 'add-tile' ||
-    section === 'edit-tile'
+    section === 'edit-tile' ||
+    section === 'bulk-upload'
   ) {
     return role === 'admin';
   }
@@ -120,12 +127,14 @@ function currentScreen(
   // It is a convenience, not the control: the cached `User` is a render cache
   // and never an authorization decision (AGENTS.md Policy), and the server
   // refuses a Staff caller at every route under `/admin/` whatever this
-  // returns — the two collection reads these sections open, and the five
-  // writes reached from them (provision, edit, delete, deactivate, activate).
+  // returns — the two collection reads these sections open, the five account
+  // writes reached from them (provision, edit, delete, deactivate, activate)
+  // and the four catalogue ones (add, edit, remove, bulk).
   if (section === 'users') return reachableBy(section, user.role) ? 'users' : 'shell';
   if (section === 'audit') return reachableBy(section, user.role) ? 'audit' : 'shell';
   if (section === 'add-tile') return reachableBy(section, user.role) ? 'add-tile' : 'shell';
   if (section === 'edit-tile') return reachableBy(section, user.role) ? 'edit-tile' : 'shell';
+  if (section === 'bulk-upload') return reachableBy(section, user.role) ? 'bulk-upload' : 'shell';
   if (section === 'create-user') return reachableBy(section, user.role) ? 'create-user' : 'shell';
   if (section === 'edit-user') {
     // The row being edited is part of what makes this section renderable, so it
@@ -444,6 +453,23 @@ function Gate(): JSX.Element {
     );
   }
 
+  if (screen === 'bulk-upload') {
+    // Inside the shell, in place of the home panel, exactly as Add tile and
+    // Edit tile are. It renders no `<main>` of its own — `AppShell` provides
+    // the one the focus effect above moves focus to.
+    //
+    // Back goes to the home panel rather than to a list, because the Catalogue
+    // list is Story 2.5's and there is nowhere else this was opened from.
+    // EXPERIENCE.md line 37 reaches Bulk Upload *from* the Catalogue, so when
+    // that surface arrives this door moves onto it and Back returns there.
+    return (
+      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+        {signOutFailure}
+        <BulkUploadScreen onBack={() => showSection('home')} />
+      </AppShell>
+    );
+  }
+
   if (screen === 'edit-user' && editing !== null) {
     // `editing !== null` is unreachable at runtime — `currentScreen` already
     // answers `'users'` for an `'edit-user'` section with no row — and it is here
@@ -524,23 +550,26 @@ function Gate(): JSX.Element {
       </p>
       {/* The doors to the admin surfaces, role-conditional as EXPERIENCE.md
           line 18 requires: a Staff user never sees an entry they cannot use.
-          These are four of EXPERIENCE.md's six nav entries — line 33's User
-          List, line 38's Audit Log and both halves of line 36's Add/Edit Tile —
-          standing in for a nav that does not exist yet; the other surfaces
-          still do not exist either. Create user is reached from the list's
-          "+ Add user", which is where line 34 reaches it from, and Edit user
-          from a row's own control, so neither is a door here.
+          These are the admin surfaces that exist. Two are nav entries of their
+          own — line 33's User List and line 38's Audit Log — and three are
+          reached from the Catalogue in EXPERIENCE.md: both halves of line 36's
+          Add/Edit Tile and line 37's Bulk Upload. All five stand on this panel
+          in place of a nav that does not exist yet; the surfaces the rest of
+          that nav would hold do not exist either. Create user is reached from
+          the list's "+ Add user", which is where line 34 reaches it from, and
+          Edit user from a row's own control, so neither is a door here.
 
-          Add tile and Edit tile are doors rather than controls on a Catalogue
-          list because that list is Story 2.5's; line 36 reaches Add Tile from
-          "+ Add Tile" as well as from a row, and Edit Tile from a row alone —
-          so until the list exists Edit tile finds its own tile by an exact
-          Code, and these are the entries that reach both.
+          The three catalogue entries are doors rather than controls on a
+          Catalogue list because that list is Story 2.5's; line 36 reaches Add
+          Tile from "+ Add Tile" as well as from a row, Edit Tile from a row
+          alone, and line 37 reaches Bulk Upload from the Catalogue — so until
+          the list exists Edit tile finds its own tile by an exact Code, and
+          these are the entries that reach all three.
 
           A convenience only. The server refuses a Staff caller at
           `GET /admin/users`, `GET /admin/audit`, `POST /admin/tiles`,
-          `GET /admin/tiles/lookup`, `PATCH /admin/tiles/{id}` and
-          `DELETE /admin/tiles/{id}` regardless of
+          `GET /admin/tiles/lookup`, `PATCH /admin/tiles/{id}`,
+          `DELETE /admin/tiles/{id}` and `POST /admin/tiles/bulk` regardless of
           what this renders (AGENTS.md Policy: authorization is never gated by
           what the UI hides), and the cached `user` read here is a render cache
           and never a decision. */}
@@ -548,11 +577,11 @@ function Gate(): JSX.Element {
         // One guard for the whole group, not one each: the role rule is a
         // property of the group rather than of any one button, and two copies
         // of it are two places a further entry could be added under the wrong
-        // condition. Story 2.1 added the third entry under it and Story 2.2 the
-        // fourth, neither needing a second condition, which is the argument
-        // holding. It is also the seam the real nav replaces — the
-        // fragment becomes that nav's children, and the condition becomes
-        // whether the Admin section is rendered at all.
+        // condition. Story 2.1 added the third entry under it, Story 2.2 the
+        // fourth and Story 2.4 the fifth, none needing a second condition,
+        // which is the argument holding. It is also the seam the real nav
+        // replaces — the fragment becomes that nav's children, and the
+        // condition becomes whether the Admin section is rendered at all.
         <>
           <button className={styles.userList} type="button" onClick={() => showSection('users')}>
             Users
@@ -569,6 +598,13 @@ function Gate(): JSX.Element {
             onClick={() => showSection('edit-tile')}
           >
             Edit tile
+          </button>
+          <button
+            className={styles.bulkUpload}
+            type="button"
+            onClick={() => showSection('bulk-upload')}
+          >
+            Bulk upload
           </button>
         </>
       )}

@@ -63,7 +63,8 @@ import type { Tile } from '@rocell/schema/tile';
  *   the server can sniff content (AGENTS.md Policy). A screen that refused a
  *   `.tif` would refuse files the real catalogue is full of, and one that
  *   accepted by extension would be validating nothing.
- * - **No list, no edit, no removal, no bulk upload.** Stories 2.2 to 2.5.
+ * - **No list here.** Editing (2.2), removal (2.3) and bulk upload (2.4) have
+ *   screens of their own; the catalogue list is Story 2.5.
  */
 
 /** Shown for a failure that arrives as something other than an `ApiRequestError`. */

@@ -65,7 +65,52 @@ MAX_IMAGES_PER_REQUEST = 8
 #: comparison silently compare against nothing.
 MAX_IMAGE_BYTES = 134217728
 
+#: How big one bulk upload may be — **in manifest rows and in images alike.**
+#:
+#: One number, counted on both sides of the request, and that is not tidiness:
+#: the row count alone bounds the manifest and nothing else, so a one-row sheet
+#: sent with four hundred image parts would pass it and still be spooled in
+#: full. `apps/api` therefore refuses a batch whose rows *or* whose uploaded
+#: parts exceed this, which is what lets the rest of this note be true.
+#:
+#: The real source tree is 381 files across 76 category folders, and 96% of
+#: files sit in folders holding 2-26 siblings — so a hundred covers any real
+#: range several times over while bounding three things that would otherwise be
+#: unbounded: the temporary spool the bulk handler writes every upload to, the
+#: report the screen renders, and how long one request may hold a pooled
+#: connection.
+#:
+#: Written out for `MAX_IMAGE_BYTES`'s reason: `apps/web` mirrors it onto the
+#: Bulk upload screen, which refuses an over-long batch *before* uploading it,
+#: and `error-code-parity.test.ts` pins the two together by reading this line
+#: as an integer literal.
+MAX_BULK_ROWS = 100
+
 _WHITESPACE = re.compile(r"\s+")
+
+#: The four spellings a trailing number is recoverable from, most-specific
+#: first. Ported in behaviour from the POC's `FACE_PATTERNS`
+#: (`poc/tilematch/catalog.py`), which was verified against the real Drive
+#: tree; `poc/` is outside this workspace, so the rule is copied rather than
+#: imported, and `tests/test_tile.py` re-asserts it against the same examples.
+#:
+#: Five naming conventions coexist in that tree and only four of them carry a
+#: number at all:
+#:
+#: * ``RP.CMA.0008DJ.SM.0T`` — the structured code, number as a segment
+#: * ``77DH.MA_F3`` — an underscore-`F` suffix
+#: * ``279`` — a bare integer
+#: * ``1Jk``, ``61M``, ``6LD.MA Quarry Stone Natural`` — a leading number
+#:
+#: Dash-delimited names (``RC-001-OHA-156-MA-J2``) match none of them, which is
+#: the point: they carry no recoverable trailing number and the rule answers
+#: `None` rather than picking one of the four digit groups they do contain.
+_FACE_PATTERNS = (
+    re.compile(r"^RP\.[A-Z]{3}\.(\d{3,4})[A-Z]{2}\.", re.IGNORECASE),
+    re.compile(r"_F(\d+)$", re.IGNORECASE),
+    re.compile(r"^(\d+)$"),
+    re.compile(r"^(\d+)[A-Z]{1,3}\b", re.IGNORECASE),
+)
 
 
 def normalize_label(value: str) -> str:
@@ -144,6 +189,36 @@ def clean_category(value: str | None) -> str:
     if _has_control_character(normalized):
         raise ValueError("A Category must not contain control characters.")
     return normalized
+
+
+def face_number(code: str) -> str | None:
+    """The Code's trailing number as a display hint, or `None` rather than a guess.
+
+    **A hint, never an identity** (AD-18). The Code alone identifies the Tile;
+    nothing may key, group or match on what this returns, and a Tile whose
+    Code yields nothing is a perfectly ordinary Tile with a `NULL` column and a
+    flag for follow-up — never a refusal.
+
+    Lives here, beside `clean_code`, rather than in a route: it is a rule about
+    what a Code says, two writers need it (`apps/api`'s bulk path and
+    `scripts/ingest`), and a second implementation of a four-pattern rule is
+    exactly how the two would come to disagree about one file.
+
+    **First match wins, and there is no fallback.** The patterns are ordered
+    most-specific-first, so `RP.CMA.0008DJ.SM.0T` is read by the structured
+    rule rather than stumbled into by the leading-number one. A Code that
+    matches none of them answers `None`: the dash-delimited names in the real
+    tree carry four digit groups and no trailing number, and picking one would
+    put a number on screen that is not the tile's.
+
+    Leading zeros are stripped — `0008` is face `8` — and a number that is all
+    zeros answers `"0"` rather than the empty string.
+    """
+    for pattern in _FACE_PATTERNS:
+        found = pattern.search(code)
+        if found:
+            return found.group(1).lstrip("0") or "0"
+    return None
 
 
 class ReferenceImage(BaseModel):

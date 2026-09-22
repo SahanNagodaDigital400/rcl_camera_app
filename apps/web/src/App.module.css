@@ -143,3 +143,32 @@
   line-height: var(--type-label-line);
   cursor: pointer;
 }
+
+/* The door to Bulk upload, beside its three neighbours and on the same terms.
+ * Written out rather than composed from `.addTile` for the reason the rules
+ * above give: a class named for one entry carried by another is a rule nobody
+ * can read.
+ *
+ * Secondary, and this one is not a close call at all. The screen it opens is
+ * the one place in the product where the accent is also a *status* colour
+ * (DESIGN.md:144-149) — an orange door leading to it would be the same hue
+ * meaning "press this" here and "review this row" one click later. It is also a
+ * sub-surface: EXPERIENCE.md line 37 reaches Bulk Upload from the Catalogue,
+ * never from the nav, so when Story 2.5 builds that surface this entry moves
+ * onto it as a secondary control beside "+ Add Tile" — which is the entry that
+ * takes the accent there.
+ */
+.bulkUpload {
+  align-self: flex-start;
+  justify-content: center;
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}

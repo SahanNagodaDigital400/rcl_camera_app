@@ -103,6 +103,13 @@ TILE_IMAGE = "/admin/tiles/{tile_id}/images/{image_id}"
 EDIT_TILE = "/admin/tiles/{tile_id}"
 TILE_LOOKUP = "/admin/tiles/lookup"
 
+#: Story 2.4's one (FR-17). A second literal segment under the collection, for
+#: `TILE_LOOKUP`'s reason and with one addition of its own: it is the first
+#: route in the product whose response is a *stream*, so every refusal it can
+#: make has to be made before the first byte — which is precisely what the
+#: guards below check by never reaching the handler at all.
+BULK_UPLOAD = "/admin/tiles/bulk"
+
 LOGIN = "/auth/login"
 
 #: The throwaway route. Declared here and mounted on an app built here, so
@@ -536,7 +543,7 @@ def test_the_admin_route_table_is_not_empty() -> None:
     assert _admin_routes(create_app()) != []
 
 
-def test_the_admin_route_table_is_the_twelve_routes_the_product_serves() -> None:
+def test_the_admin_route_table_is_the_thirteen_routes_the_product_serves() -> None:
     # The stricter half, separated from the vacuity guard above because it is a
     # different claim with a different lifetime: this one is *meant* to fail the
     # moment a story adds a route under `/admin/` — Story 1.9 added
@@ -545,11 +552,13 @@ def test_the_admin_route_table_is_the_twelve_routes_the_product_serves() -> None
     # `GET /admin/audit`, and Story 2.1 added `POST /admin/tiles` and
     # `GET /admin/tiles/{tile_id}/images/{image_id}`, and Story 2.2 added
     # `PATCH /admin/tiles/{tile_id}` and `GET /admin/tiles/lookup`, and Story
-    # 2.3 added `DELETE /admin/tiles/{tile_id}` — and its failure means "update
-    # this list", not "the guards above stopped guarding".
+    # 2.3 added `DELETE /admin/tiles/{tile_id}`, and Story 2.4 added
+    # `POST /admin/tiles/bulk` — and its failure means "update this list", not
+    # "the guards above stopped guarding".
     #
     # The comparison is over `f"{method} {path}"`, so the removal is a *twelfth*
-    # entry rather than a second method on a path already listed.
+    # entry rather than a second method on a path already listed, and the bulk
+    # upload a *thirteenth* rather than a second POST on `/admin/tiles`.
     #
     # The count is in the name on purpose, the same way `test_audit.py` names
     # its vocabulary size: a story that adds a route has to change the name as
@@ -580,6 +589,7 @@ def test_the_admin_route_table_is_the_twelve_routes_the_product_serves() -> None
             f"PATCH {EDIT_TILE}",
             f"DELETE {EDIT_TILE}",
             f"GET {TILE_LOOKUP}",
+            f"POST {BULK_UPLOAD}",
         ]
     )
 
@@ -625,6 +635,41 @@ def test_the_lookup_segment_resolves_to_the_lookup_handler() -> None:
 
     edit = next(route for method, path, route in ordered if (method, path) == ("PATCH", EDIT_TILE))
     assert edit.endpoint is catalogue.edit_tile
+
+
+def test_the_bulk_segment_resolves_to_the_bulk_handler() -> None:
+    # The same claim as the lookup's, for the second literal segment under the
+    # collection, and made separately because the shadowing route is a
+    # different one: the day anything adds `POST /admin/tiles/{tile_id}` above
+    # this, Starlette matches in registration order and `bulk` is read as a
+    # tile id that fails to parse as a UUID. The path-set guard above compares
+    # sets, so it would not notice.
+    #
+    # Stated over `POST` rather than over every method, because that is what
+    # the shadowing would have to be: a `GET` or a `PATCH` taking a path
+    # parameter cannot swallow this route's requests at all.
+    ordered = [(method, path, route) for method, path, route in _api_routes(create_app())]
+
+    bulk_at = next(
+        index
+        for index, (method, path, _) in enumerate(ordered)
+        if (method, path) == ("POST", BULK_UPLOAD)
+    )
+    assert ordered[bulk_at][2].endpoint is catalogue.bulk_upload
+
+    shadowing = [
+        f"{method} {path}"
+        for index, (method, path, _) in enumerate(ordered)
+        if index < bulk_at
+        and method == "POST"
+        and path.startswith("/admin/tiles/")
+        and "{" in path.removeprefix("/admin/tiles/")
+    ]
+    assert shadowing == [], (
+        "A POST under /admin/tiles/ taking a path parameter is registered before "
+        f"{BULK_UPLOAD}, so Starlette matches it first and `bulk` is read as a tile "
+        f"id: {', '.join(shadowing)}. Register the literal segment above it."
+    )
 
 
 def test_every_admin_route_declares_the_role_check() -> None:

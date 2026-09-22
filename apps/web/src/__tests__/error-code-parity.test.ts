@@ -37,12 +37,15 @@ import {
   CODE_ALREADY_EXISTS,
   EMAIL_ALREADY_EXISTS,
   IMAGE_NOT_FOUND,
+  IMAGE_NOT_PAIRED,
   IMAGE_TOO_LARGE,
+  IMAGE_UNMATCHED,
   INVALID_CATEGORY,
   INVALID_CODE,
   INVALID_CURRENT_PASSWORD,
   INVALID_EMAIL,
   INVALID_IMAGE,
+  INVALID_MANIFEST,
   INVALID_SIZE,
   LAST_ADMINISTRATOR,
   LAST_REFERENCE_IMAGE,
@@ -50,8 +53,10 @@ import {
   PASSWORD_CHANGE_NOT_REQUIRED,
   PASSWORD_CHANGE_REQUIRED,
   PIPELINE_STAMP_MISMATCH,
+  ROW_FAILED,
   TILE_NOT_FOUND,
   TOO_MANY_IMAGES,
+  TOO_MANY_ROWS,
   UNAUTHORIZED,
   UNREADABLE_IMAGE,
   USER_NOT_FOUND,
@@ -129,10 +134,20 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   email_already_exists: { file: 'users.py', name: 'EMAIL_ALREADY_EXISTS' },
   user_not_found: { file: 'users.py', name: 'USER_NOT_FOUND' },
   last_administrator: { file: 'users.py', name: 'LAST_ADMINISTRATOR' },
-  // Epic 2's catalogue routes. Thirteen codes rather than one generic
+  // Epic 2's catalogue routes. Eighteen codes rather than one generic
   // `validation_error`, because the screen decides which of its controls to
-  // mark from the code alone — eleven from Story 2.1's add and image read, and
-  // two more from Story 2.2's edit and lookup.
+  // mark from the code alone — eleven from Story 2.1's add and image read, two
+  // more from Story 2.2's edit and lookup, and five from Story 2.4's bulk
+  // upload.
+  //
+  // Story 2.4's five are not all the same kind of thing, and the map
+  // deliberately does not distinguish them: `invalid_manifest` and
+  // `too_many_rows` arrive as ordinary envelopes under a `422` before the
+  // stream opens, while `image_not_paired`, `image_unmatched` and `row_failed`
+  // arrive *inside* a report line's `error` object, under a `200`. What this
+  // file pins is the spelling, and a per-row code that drifted would be exactly
+  // as invisible as an envelope code that did — more so, since no status
+  // carries it.
   invalid_code: { file: 'catalogue.py', name: 'INVALID_CODE' },
   invalid_size: { file: 'catalogue.py', name: 'INVALID_SIZE' },
   invalid_category: { file: 'catalogue.py', name: 'INVALID_CATEGORY' },
@@ -146,6 +161,11 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   image_not_found: { file: 'catalogue.py', name: 'IMAGE_NOT_FOUND' },
   tile_not_found: { file: 'catalogue.py', name: 'TILE_NOT_FOUND' },
   last_reference_image: { file: 'catalogue.py', name: 'LAST_REFERENCE_IMAGE' },
+  invalid_manifest: { file: 'catalogue.py', name: 'INVALID_MANIFEST' },
+  too_many_rows: { file: 'catalogue.py', name: 'TOO_MANY_ROWS' },
+  image_not_paired: { file: 'catalogue.py', name: 'IMAGE_NOT_PAIRED' },
+  image_unmatched: { file: 'catalogue.py', name: 'IMAGE_UNMATCHED' },
+  row_failed: { file: 'catalogue.py', name: 'ROW_FAILED' },
 };
 
 const TYPESCRIPT: Record<string, string> = {
@@ -173,6 +193,11 @@ const TYPESCRIPT: Record<string, string> = {
   image_not_found: IMAGE_NOT_FOUND,
   tile_not_found: TILE_NOT_FOUND,
   last_reference_image: LAST_REFERENCE_IMAGE,
+  invalid_manifest: INVALID_MANIFEST,
+  too_many_rows: TOO_MANY_ROWS,
+  image_not_paired: IMAGE_NOT_PAIRED,
+  image_unmatched: IMAGE_UNMATCHED,
+  row_failed: ROW_FAILED,
 };
 
 describe('the envelope codes are one contract in two languages', () => {
@@ -343,6 +368,7 @@ function screenPath(file: string): string {
 const CREATE_USER_SCREEN = 'CreateUserScreen.tsx';
 const EDIT_USER_SCREEN = 'EditUserScreen.tsx';
 const ADD_TILE_SCREEN = 'AddTileScreen.tsx';
+const BULK_UPLOAD_SCREEN = 'BulkUploadScreen.tsx';
 
 /**
  * Where a bound's Python twin lives, when it is not in `apps/api/api`.
@@ -449,6 +475,32 @@ const BOUNDS: {
   },
   {
     screen: EDIT_TILE_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_IMAGE_BYTES', root: SHARED_SCHEMA },
+    typescript: 'MAX_IMAGE_BYTES',
+  },
+  // Story 2.4's screen. Two mirrored bounds rather than the other screens'
+  // five: it carries no text field at all, so there is no `maxLength` to keep
+  // in step — the Code, the Size and the Category arrive in the manifest, and
+  // reading it is the server's job.
+  //
+  // Both are here for the stronger of the two reasons the Add tile rows give:
+  // the screen refuses past either bound *before* uploading, so a drift is not
+  // a missing convenience — it is the screen refusing a batch the server would
+  // have taken, or letting gigabytes travel to be refused at the far end.
+  //
+  // `MAX_BULK_ROWS` bounds a bulk upload on both counts — the manifest's rows
+  // and the uploaded images — and the server enforces it on both, which is
+  // what lets this screen refuse on the count it *can* see without stating a
+  // rule the product does not have. It never reads the manifest, so images is
+  // the number it has; the server checks that one too and refuses the same
+  // batch with `too_many_rows` whatever this says.
+  {
+    screen: BULK_UPLOAD_SCREEN,
+    python: { file: 'tile.py', name: 'MAX_BULK_ROWS', root: SHARED_SCHEMA },
+    typescript: 'MAX_BULK_ROWS',
+  },
+  {
+    screen: BULK_UPLOAD_SCREEN,
     python: { file: 'tile.py', name: 'MAX_IMAGE_BYTES', root: SHARED_SCHEMA },
     typescript: 'MAX_IMAGE_BYTES',
   },

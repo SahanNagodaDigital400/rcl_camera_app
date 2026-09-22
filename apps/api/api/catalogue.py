@@ -1,10 +1,14 @@
 """`/admin/tiles` — the Catalogue's write path, and the query that proves it worked.
 
-Five routes and one function that is not a route:
+Six routes and one function that is not a route:
 
 * `POST /admin/tiles` (FR-14) takes a Code, a Size, an optional Category and
   one to eight reference images, and creates a Tile that a Scan can return in
   the same session.
+* `POST /admin/tiles/bulk` (FR-17) takes a CSV manifest and the image set it
+  names, and does the same thing once per row — through the add's own intake
+  and embedding helpers, never a second path — streaming one NDJSON line per
+  row as that row completes.
 * `PATCH /admin/tiles/{tile_id}` (FR-15) corrects one: its Code, its Size, its
   Category, and the Reference Images it carries — adding new ones through the
   *same* intake, embedding and derivative path the add uses, and removing old
@@ -85,17 +89,44 @@ proxied by the `GET` below, which re-checks authorization on every request.
 the score because ranking and every server log line need it; nothing on the
 `Tile` contract carries one, and no route here emits one.
 
-Not here, deliberately: the bulk path (2.4), the catalogue **list and substring
-search** (2.5), Epic 3's scan endpoint, and any crop step — AD-11 resolved that
-one explicitly as *no* for admin uploads. Nor any way back from a removal: no
-restore, no undo, no trash state and no grace period. The confirmation on the
-screen is the safeguard, and a Tile that should come back is added again.
+**The bulk path is the add, N times, and not a second implementation of it**
+(FR-17, epic context: "no shortcut for bulk"). Every image it takes reaches
+storage through `_accept_bytes` and `_prepare` — the same content sniff, the
+same colour management, the same sixteen views, the same capped derivative —
+and `tests/test_source_guards.py` fails the build if the bulk handler ever
+reaches the pixel pipeline on its own. What it adds is batching, a per-row
+report and the classification of the defects the real catalogue carries: a
+Category that cannot be recovered and a Code with no trailing number are
+**flags on a Tile that was created**, while a zero-byte or unreadable file is
+a **failure of that row alone** (AD-18, AD-7). Two rows sharing a Size and a
+Category are two distinct Tiles, merged nowhere and reported as a conflict
+nowhere.
+
+**The bulk response is a stream, and that decides where its refusals live.**
+The status is committed at the first byte, so everything refusable —
+authorization, the manifest, the row cap, the missing model artifact and
+AD-14's stamp — is checked while a real envelope under a 4xx or 5xx is still
+possible. After that the status is `200` and every outcome is a row.
+
+Not here, deliberately: the catalogue **list and substring search** (2.5),
+Epic 3's scan endpoint, and any crop step — AD-11 resolved that one explicitly
+as *no* for admin uploads. Nor any way back from a removal: no restore, no
+undo, no trash state and no grace period. The confirmation on the screen is the
+safeguard, and a Tile that should come back is added again. Nor a job table, a
+queue, a worker, a polling endpoint or a resume verb for the bulk path: one
+request, one stream, no state to garbage-collect.
 """
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import logging
+import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
@@ -104,17 +135,22 @@ from uuid import UUID, uuid4
 import psycopg
 import shared_vision
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
 from PIL import Image
 from psycopg import errors as pg_errors
+from psycopg_pool import ConnectionPool
 from shared_schema.errors import ApiError
 from shared_schema.tile import (
+    MAX_BULK_ROWS,
     MAX_IMAGE_BYTES,
     MAX_IMAGES_PER_REQUEST,
+    UNKNOWN_CATEGORY,
     ReferenceImage,
     Tile,
     clean_category,
     clean_code,
     clean_size,
+    face_number,
 )
 from shared_schema.user import User
 
@@ -123,7 +159,7 @@ from shared_schema.user import User
 # naming it (AD-4). This module records through it and names nothing.
 from api import audit
 from api.audit import AuditAction
-from api.db import get_connection
+from api.db import get_connection, get_pool
 from api.dependencies import NO_STORE, require_administrator
 from api.storage import ObjectNotFound, ObjectStore, get_object_store
 
@@ -153,6 +189,18 @@ TILE_NOT_FOUND = "tile_not_found"
 LAST_REFERENCE_IMAGE = "last_reference_image"
 MATCHING_UNAVAILABLE = "matching_unavailable"
 PIPELINE_STAMP_MISMATCH = "pipeline_stamp_mismatch"
+
+# Story 2.4's five. The first two are *envelope* codes in the ordinary sense —
+# they refuse the whole request before a byte of the stream is written. The
+# last three can only ever appear inside a report line, under a `200`, because
+# they describe one row of a batch the rest of which is fine; they are named
+# here anyway and exported to `apps/web` on the same terms, since a code the
+# screen has to recognise is a code that belongs in the parity check.
+INVALID_MANIFEST = "invalid_manifest"
+TOO_MANY_ROWS = "too_many_rows"
+IMAGE_NOT_PAIRED = "image_not_paired"
+IMAGE_UNMATCHED = "image_unmatched"
+ROW_FAILED = "row_failed"
 
 #: What a caller who sent no image at all is told. Named, because "add a Tile"
 #: without a reference image is a catalogue row a Scan can never return and a
@@ -229,6 +277,110 @@ STAMP_MISMATCH = (
     "A re-index is required before tiles can be added or matched."
 )
 
+# --- The bulk manifest (FR-17) ------------------------------------------------
+
+#: The three columns a manifest row must carry, and the one it may.
+#:
+#: **A CSV, and deliberately not an `.xlsx`.** Every spreadsheet tool exports
+#: CSV, `csv` is in the standard library, and reading workbook bytes would mean
+#: a new runtime dependency (`openpyxl`) that AGENTS.md asks to be flagged
+#: before it is added. If `.xlsx` is ever genuinely required it is an additive
+#: change behind this same route and this same report.
+#:
+#: `category` is optional because a Category that cannot be recovered is not an
+#: error (AD-18): the row is created against the `UNKNOWN` sentinel and flagged
+#: for follow-up. Every other column in the sheet is ignored rather than
+#: refused — a real export carries notes, counts and a column somebody added
+#: last week, and refusing the file over one of them would refuse the whole
+#: range.
+MANIFEST_COLUMNS = ("file", "code", "size")
+MANIFEST_OPTIONAL_COLUMN = "category"
+
+#: The manifest is missing, empty, unreadable or short of a column.
+#:
+#: One sentence for all four, because the Administrator's next action is the
+#: same in every case and the specific defect is named in the sentence the
+#: reader below composes from this plus what it found. It **names the fix for
+#: the wrong file type** rather than describing the problem: somebody who
+#: attached a workbook needs to know to export it, not that the bytes did not
+#: parse.
+NO_MANIFEST = (
+    "Attach the spreadsheet of codes as a CSV file with "
+    f"{', '.join(MANIFEST_COLUMNS)} columns. Export the sheet as CSV and upload that."
+)
+
+#: Above the cap — on the manifest's rows or on the uploaded images, since one
+#: ceiling bounds both. The number is in the sentence for `TOO_MANY`'s reason:
+#: an Administrator holding a longer sheet needs to know where to split it.
+TOO_MANY_ROWS_MESSAGE = (
+    f"A bulk upload takes at most {MAX_BULK_ROWS} rows and {MAX_BULK_ROWS} images at a time. "
+    "Split the sheet and upload it in parts."
+)
+
+#: No upload matches what the row names, or two of them do. Worded about the
+#: pairing rather than about the file, because both halves are the
+#: Administrator's to fix and neither is a defect in the image.
+NOT_PAIRED = "No image in this upload is named {file}."
+AMBIGUOUS_PAIR = "Two images in this upload are named {file}. Give each tile its own file name."
+
+#: The row's own `file` cell is blank, so there is no name to look for. The
+#: same code as the two above — the pairing is what failed either way — with
+#: its own sentence, because "No image in this upload is named ." is not a
+#: sentence anybody can act on.
+NO_FILE_NAMED = "This row names no image file."
+
+#: An upload no row named. Reported rather than silently ignored: an image that
+#: travelled and was not indexed is a tile the Administrator believes is in the
+#: catalogue.
+NOT_NAMED = "No row of the sheet names this image, so it was not added."
+
+#: A multipart part that carried bytes and declared no file name at all. The
+#: same code as the sentence above, because it is the same fact — an image that
+#: travelled and was not indexed — with a different reason nothing could name
+#: it. A browser's file input always sends a name, so this is a hand-built
+#: request rather than anything an Administrator can have done by accident, and
+#: the sentence says what to change rather than apologising for it.
+UNNAMED_UPLOAD = "One uploaded file carries no file name, so no row can name it."
+
+#: The batch stopped outside any one row. By the time this can happen the
+#: response has already started, so there is no status left to carry it and
+#: this line is the only honest way to say it: the rows above are real, the
+#: rows below never ran. The cause is logged and deliberately not repeated
+#: here, for `ROW_FAILED_MESSAGE`'s reason.
+BATCH_STOPPED_MESSAGE = (
+    "The upload stopped before every row was processed. "
+    "The rows above were finished; send the rest again."
+)
+
+#: A row that failed in a way this handler cannot explain. **A fixed sentence**
+#: — the exception's text can carry a file path, a query fragment or a
+#: credential, and this response goes to the browser. The traceback is logged
+#: instead, which is where an operator can act on it.
+ROW_FAILED_MESSAGE = "This row could not be added. The failure has been logged."
+
+#: The three outcomes a row can have, and the only three (DESIGN.md:144-149
+#: paints exactly these). A `flagged` row **was created** and carries a
+#: `tile_id`: the flag is follow-up, not failure.
+ROW_CREATED = "created"
+ROW_FLAGGED = "flagged"
+ROW_FAILED_STATUS = "failed"
+
+#: The follow-up markers, in the order a row carries them. Stable, so a screen
+#: renders two flags the same way twice and a test can compare a list rather
+#: than a set. None of the three is an error: each names a Tile that is in the
+#: catalogue and searchable, with something about it worth a second look.
+FLAG_UNKNOWN_CATEGORY = "unknown_category"
+FLAG_UNKNOWN_FACE_NUMBER = "unknown_face_number"
+FLAG_LOW_QUALITY_IMAGE = "low_quality_image"
+
+#: The media type of the report. One JSON object per line, flushed as each row
+#: finishes — which is what EXPERIENCE.md:94 asks for ("per-row status updates
+#: as they complete, not a single spinner until the whole batch finishes") and
+#: what a single JSON array could not give, since an array is only parseable
+#: once it is closed.
+NDJSON = "application/x-ndjson"
+
+
 #: How many Candidates a search returns. Three, always (FR-7, AGENTS.md): size
 #: and finish are not recoverable from a photo, so a single answer is
 #: confidently wrong. Deliberately separate from whatever a screen chooses to
@@ -290,9 +442,17 @@ RETURNING id
 
 #: The id is supplied rather than left to `gen_random_uuid()` because the
 #: storage keys are built from it and the objects are written before this runs.
+#:
+#: `face_number` is written by the bulk path, which recovers it from the Code
+#: (`shared_schema.tile.face_number`), and passed as `None` by `add_tile`,
+#: whose form has no field for it — a display hint the Administrator would have
+#: to transcribe by hand is a hint nobody would fill in correctly. **One
+#: statement for both**, rather than a second `INSERT` differing in one column:
+#: two statements writing one table is how the two come to disagree about a
+#: column a later migration adds.
 _INSERT_TILE = """
-INSERT INTO tile (id, code, size_id, category_id)
-VALUES (%s, %s, %s, %s)
+INSERT INTO tile (id, code, size_id, category_id, face_number)
+VALUES (%s, %s, %s, %s, %s)
 RETURNING id, code, face_number, created_at, updated_at
 """
 
@@ -391,6 +551,7 @@ UPDATE tile
    SET code = %s,
        size_id = %s,
        category_id = %s,
+       face_number = %s,
        updated_at = now()
  WHERE id = %s
 RETURNING id, code, face_number, created_at, updated_at
@@ -733,9 +894,30 @@ def _accept(upload: UploadFile) -> shared_vision.IntakeResult:
     image. `add_tile` runs this over *every* file before it embeds any of them,
     so an oversized or corrupt second file is refused in milliseconds rather
     than after the first file has been embedded and thrown away.
-    """
-    data = _read_upload(upload)
 
+    The read and the intake are two functions rather than one so that the bulk
+    path can call the second half over bytes it already holds — see
+    `_accept_bytes`.
+    """
+    return _accept_bytes(_read_upload(upload))
+
+
+def _accept_bytes(data: bytes) -> shared_vision.IntakeResult:
+    """AD-7's intake over bytes that are already in hand.
+
+    **This is what makes "the bulk path uses the same intake" a fact rather
+    than a claim.** `add_tile` reaches it through `_accept` above, having read
+    an `UploadFile`; the bulk handler reaches it directly, having read its own
+    spooled copy — and there is exactly one content sniff, one colour
+    management step, one EXIF strip and one re-encode between them. A second
+    intake written for the batch path is the asymmetry AD-1 and AD-7 exist to
+    prevent, and nothing about it would raise.
+
+    The refusals are raised as `ApiError` rather than returned, so that
+    `add_tile` answers a `413` or a `422` unchanged. The bulk handler catches
+    them and turns each into a failed row, which is the only difference between
+    the two callers.
+    """
     try:
         # AD-7's single intake, and the only place in `apps/api` that turns
         # bytes into pixels. Content-sniffed; the name and the client's
@@ -945,7 +1127,12 @@ def add_tile(
             try:
                 tile_row = conn.execute(
                     _INSERT_TILE,
-                    (tile_id, tile_code, size_id["id"], category_id["id"]),
+                    # `None` for the trailing number. This form has no field
+                    # for it and inventing one would ask an Administrator to
+                    # transcribe a display hint by hand; the bulk path
+                    # recovers it from the Code, which is the only place the
+                    # rule belongs.
+                    (tile_id, tile_code, size_id["id"], category_id["id"], None),
                 ).fetchone()
             except pg_errors.UniqueViolation as clash:
                 # Caught rather than pre-empted by a `SELECT`: a read-then-write
@@ -1031,6 +1218,744 @@ def add_tile(
     )
 
 
+# --- The bulk upload (FR-17) --------------------------------------------------
+# The add, once per manifest row, reported row by row. Everything expensive
+# here is `add_tile`'s: `_accept_bytes` and `_prepare` are the intake and the
+# embedding, unchanged and uncopied, and `tests/test_source_guards.py` fails
+# the build if anything below reaches the pixel pipeline on its own.
+
+
+#: The ceiling on the manifest itself — a megabyte. Not `MAX_IMAGE_BYTES`: a
+#: hundred rows of `file,code,size,category` is a few kilobytes, and a bound
+#: sized for a 128 MB press file would let an unbounded read masquerade as a
+#: bounded one. One byte past this is enough to refuse; nothing reads the rest.
+MAX_MANIFEST_BYTES = 1048576
+
+#: How much of one image is read at a time while it is copied to the spool.
+#: The whole point of copying in chunks is that memory holds one buffer rather
+#: than the whole batch — a hundred reference images at 96 MB each is not a
+#: thing a process can hold.
+SPOOL_CHUNK_BYTES = 1048576
+
+
+@dataclass(frozen=True, slots=True)
+class _ManifestRow:
+    """One data row of the manifest, as text. Nothing here is validated yet.
+
+    `category` is `None` when the column was absent *or* the cell was blank,
+    which are the same thing to AD-18: both mean "no Category was recovered",
+    and both produce a Tile under the `UNKNOWN` sentinel with a flag on it.
+    """
+
+    number: int
+    file: str
+    code: str
+    size: str
+    category: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Spooled:
+    """One uploaded image, copied to a handler-owned file on disk.
+
+    `oversized` is decided during the *copy* rather than after it: the copy
+    stops one byte past `MAX_IMAGE_BYTES` and writes no more, so an oversized
+    part costs one buffer of disk rather than its own size on disk. It does
+    **not** mean the bytes never travelled — Starlette has parsed the whole
+    multipart body before this handler is entered, so the transfer has already
+    happened and the part is already in Starlette's own spool. What this bound
+    buys is the second copy, the read of it and everything downstream of that.
+    The count bound in `bulk_upload` is what limits the transfer itself.
+
+    **`path` is never built from the uploaded name.** The name is
+    caller-controlled and is kept as data alone; the file on disk is named
+    after its position in the request, so nothing a manifest or a multipart
+    part can say reaches the filesystem.
+
+    `name` is the base name exactly as it was declared, kept beside the folded
+    key the pairing matches on so that a report line quotes what the
+    Administrator actually sent rather than a lowercased version of it.
+    """
+
+    path: Path
+    name: str
+    oversized: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _RowResult:
+    """What became of one row, in the shape the report line carries.
+
+    A `flagged` row **was created** and carries a `tile_id`. The three flags
+    are follow-up markers on a Tile that is in the catalogue and searchable,
+    never a softer word for a refusal (AD-18, epic context).
+    """
+
+    status: str
+    tile_id: UUID | None
+    flags: list[str]
+    error: dict[str, str] | None
+
+
+def _failed(code: str, message: str) -> _RowResult:
+    """One refused row, in the envelope's own `{code, message}` shape.
+
+    Reusing that shape rather than inventing a second one is what makes a
+    per-row failure read the same as any other refusal in the product: the
+    screen renders `error.message` here exactly as it renders an envelope's.
+    """
+    return _RowResult(
+        status=ROW_FAILED_STATUS,
+        tile_id=None,
+        flags=[],
+        error={"code": code, "message": message},
+    )
+
+
+def _invalid_manifest(detail: str) -> ApiError:
+    """The manifest is not one. A `422`, before a byte of the stream exists.
+
+    Pre-stream, which is the only reason a real envelope is possible at all:
+    once the first row has been written the status is `200` and there is
+    nowhere left to put a `422`. `detail` names what was wrong with the file
+    and `NO_MANIFEST` names the fix, in that order.
+    """
+    return _refusal(
+        INVALID_MANIFEST, f"{detail} {NO_MANIFEST}", status.HTTP_422_UNPROCESSABLE_CONTENT
+    )
+
+
+def _read_manifest(manifest: UploadFile | None) -> bytes:
+    """The manifest's bytes, bounded, or the `422` that says none arrived."""
+    if manifest is None or not (manifest.filename or manifest.size):
+        raise _invalid_manifest("No spreadsheet was attached.")
+
+    data = manifest.file.read(MAX_MANIFEST_BYTES + 1)
+    if len(data) > MAX_MANIFEST_BYTES:
+        raise _invalid_manifest("That spreadsheet is too large to be a list of codes.")
+    if not data:
+        raise _invalid_manifest("That spreadsheet is empty.")
+    return data
+
+
+def _manifest_rows(data: bytes) -> list[_ManifestRow]:
+    """The manifest's data rows, or the `422` naming why there are none.
+
+    **`utf-8-sig`, not `utf-8`.** A sheet exported from Excel carries a byte
+    order mark, and read as plain UTF-8 its first header becomes `﻿file`
+    — a column named `file` that no lookup matches, so every real export would
+    be refused for missing the column it plainly has.
+
+    **Headers are matched case- and whitespace-insensitively** for the same
+    reason: `File `, `CODE` and ` Size` are what a hand-maintained sheet
+    actually contains, and refusing them would be refusing the data this
+    endpoint exists to load. Every other column is ignored rather than refused
+    — a real export carries notes and counts, and none of them is this
+    endpoint's business.
+
+    A row whose three required cells are *all* empty is a blank line and is
+    skipped; a row with some of them filled is a real row that will fail
+    below, with a code naming the cell. The difference matters because a
+    trailing newline is not a row an Administrator has to be told about.
+    """
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as undecodable:
+        # Almost always a workbook rather than a CSV: `.xlsx` is a ZIP archive
+        # and its first bytes do not decode as text at all.
+        raise _invalid_manifest("That file is not a readable CSV.") from undecodable
+
+    reader = csv.DictReader(io.StringIO(text))
+    try:
+        # **`csv` raises, and what it raises is not a `ValueError` a caller
+        # would think to expect.** A cell past `csv.field_size_limit()`
+        # (131072 characters by default) and a NUL byte anywhere in the stream
+        # both raise `csv.Error` — out of the handler, past every refusal
+        # below, and into `api.main`'s unhandled-error path as a `500`. A
+        # spreadsheet this endpoint cannot read is a `422` whatever shape the
+        # defect takes, and the sentence is the same one: export it as CSV.
+        #
+        # `fieldnames` is where the header is actually parsed — the attribute
+        # reads the first row lazily — so the guard has to be here and not on
+        # the constructor above.
+        header = reader.fieldnames
+    except csv.Error as malformed:
+        raise _invalid_manifest("That spreadsheet could not be read as a CSV.") from malformed
+    if not header:
+        raise _invalid_manifest("That spreadsheet has no header row.")
+
+    # First spelling wins, so a sheet carrying `code` and `Code` resolves to
+    # the leftmost of the two rather than to whichever `dict` iteration order
+    # happened to keep.
+    columns: dict[str, str] = {}
+    for name in header:
+        if name is None:
+            continue
+        columns.setdefault(name.strip().lower(), name)
+
+    missing = [column for column in MANIFEST_COLUMNS if column not in columns]
+    if missing:
+        raise _invalid_manifest(f"The spreadsheet has no {' or '.join(missing)} column.")
+
+    def cell(record: dict[str, Any], column: str) -> str:
+        value = record.get(columns[column]) if column in columns else None
+        # `DictReader` answers `None` for a short row and a list for a long
+        # one (under `restkey`, which is not set here, the extras are
+        # discarded). Neither is a string, and both mean the cell is empty.
+        return value.strip() if isinstance(value, str) else ""
+
+    try:
+        # Drained in one go, and guarded for the header's reason: the same
+        # `csv.Error` can come out of any row rather than only out of the
+        # first. Materialising is safe because `MAX_MANIFEST_BYTES` has already
+        # bounded the text this is parsed from.
+        records = list(reader)
+    except csv.Error as malformed:
+        raise _invalid_manifest("That spreadsheet could not be read as a CSV.") from malformed
+
+    rows: list[_ManifestRow] = []
+    for record in records:
+        file_name = cell(record, "file")
+        code = cell(record, "code")
+        size = cell(record, "size")
+        if not (file_name or code or size):
+            continue
+        category = cell(record, MANIFEST_OPTIONAL_COLUMN)
+        rows.append(
+            _ManifestRow(
+                number=len(rows) + 1,
+                file=file_name,
+                code=code,
+                size=size,
+                category=category or None,
+            )
+        )
+
+    if not rows:
+        raise _invalid_manifest("That spreadsheet has a header row and no tiles under it.")
+    return rows
+
+
+def _pairing_key(name: str) -> str:
+    """The name a manifest cell and an upload are paired on.
+
+    **The base name, case-folded.** The base name because a `file` cell reading
+    `45X90/POLISH/a.jpg` — which is how the source tree names a file, and what
+    a sheet built from a directory listing carries — names the same image as a
+    part called `a.jpg`. Case-folded because a sheet exported on one machine
+    routinely spells `IMG_1.JPG` where the file on disk is `img_1.jpg`, and
+    refusing that pair would refuse the row *and* report its image as unmatched
+    — two lines of report for one difference the Administrator cannot see.
+
+    Both separators are folded before the base name is taken. A sheet
+    maintained on Windows spells that same directory listing
+    `45X90\\POLISH\\a.jpg`, and `Path` on this server splits on `/` only —
+    so the backslash form would arrive whole, pair with nothing, and produce
+    the two lines this function exists to prevent.
+
+    A real collision still survives this: two uploads that differ only by case
+    fold to one key, land in one list, and the pairing below refuses that row
+    as ambiguous rather than picking one of them.
+    """
+    return Path(name.replace("\\", "/")).name.casefold()
+
+
+def _spool(uploads: list[UploadFile], directory: Path) -> tuple[dict[str, list[_Spooled]], int]:
+    """Copy every uploaded image into `directory`, keyed for pairing.
+
+    Returns the spool and how many parts carried bytes but no usable file name.
+
+    **The handler owns the bytes it reads later, and this is why.** Under a
+    `StreamingResponse` the endpoint function returns before the body runs, and
+    FastAPI's dependency exit stack — which closes the multipart form — unwinds
+    at that return. Reading an `UploadFile` from inside the generator is
+    therefore reading a file that may already be closed. Copying first makes
+    the lifetime explicit, and copying in chunks keeps memory at one buffer
+    rather than the whole batch.
+
+    A key is allowed to arrive twice. The list is what lets the pairing below
+    refuse that row as ambiguous rather than silently picking one of the two
+    files — which would put the wrong image under a Code with nothing raised.
+
+    **A part with bytes and no name is counted, not dropped.** It cannot be
+    paired — nothing can name it — but silently discarding it is the exact
+    failure `image_unmatched` exists to prevent: an image that travelled, was
+    not indexed, and that the Administrator believes is in the catalogue. The
+    caller reports one line per such part. A part with neither a name nor any
+    bytes is a picker with nothing chosen and really is nothing, so it is
+    filtered out before this is called.
+    """
+    spooled: dict[str, list[_Spooled]] = {}
+    unnamed = 0
+
+    for index, upload in enumerate(uploads):
+        # Both separators folded before the base name is taken, exactly as
+        # `_pairing_key` folds them. A part declared `C:\shots\a.jpg` pairs on
+        # `a.jpg` either way, but this is the name the report quotes back and
+        # sorts on — so without the fold one line of the report names a file
+        # and another names a whole Windows path for the same image.
+        name = Path((upload.filename or "").replace("\\", "/")).name
+        if not name:
+            # Reported by the caller as `image_unmatched`. Not spooled, because
+            # no row can name it and there is therefore nothing to read it for.
+            unnamed += 1
+            continue
+
+        path = directory / str(index)
+        written = 0
+        oversized = False
+        with path.open("wb") as sink:
+            while True:
+                chunk = upload.file.read(SPOOL_CHUNK_BYTES)
+                if not chunk:
+                    break
+                if written + len(chunk) > MAX_IMAGE_BYTES:
+                    # One byte past the ceiling is enough to decide. Nothing
+                    # more is copied, read or decoded — see `_Spooled` for what
+                    # that does and does not save.
+                    oversized = True
+                    break
+                sink.write(chunk)
+                written += len(chunk)
+
+        spooled.setdefault(_pairing_key(name), []).append(
+            _Spooled(path=path, name=name, oversized=oversized)
+        )
+
+    return spooled, unnamed
+
+
+def _bulk_row(
+    conn: psycopg.Connection,
+    store: ObjectStore,
+    administrator: User,
+    source_ip: str | None,
+    row: _ManifestRow,
+    spooled: dict[str, list[_Spooled]],
+) -> _RowResult:
+    """One row: validate, pair, intake, embed, write, record. `add_tile`'s shape.
+
+    **Its own transaction and its own audit entry**, so a failure takes only
+    this row down and the next one proceeds — which is the whole of "reports
+    per row, not per batch". A refused row leaves nothing behind: no `tile`, no
+    `reference_image`, no `reference_embedding` and no stored object.
+
+    **The defects the real catalogue carries are classified, not conflated**
+    (AD-18): a blank Category and a Code with no trailing number are flags on a
+    Tile that was created, while a zero-byte or unreadable file is a failure of
+    this row. Two rows sharing a Size and a Category are two distinct Tiles and
+    nothing here merges, deduplicates or reports a conflict between them — they
+    resolve to the same two lookup rows and to two `tile` rows, which is what
+    AD-18 says a Category folder holding 26 files is.
+    """
+    if not row.file:
+        return _failed(IMAGE_NOT_PAIRED, NO_FILE_NAMED)
+
+    candidates = spooled.get(_pairing_key(row.file), [])
+    if not candidates:
+        return _failed(IMAGE_NOT_PAIRED, NOT_PAIRED.format(file=row.file))
+    if len(candidates) > 1:
+        return _failed(IMAGE_NOT_PAIRED, AMBIGUOUS_PAIR.format(file=row.file))
+    spool_entry = candidates[0]
+
+    # The cheap rules first, exactly as `add_tile` orders them: nothing a rule
+    # can reject costs a decode, let alone sixteen forward passes.
+    try:
+        tile_code = clean_code(row.code)
+    except ValueError as invalid:
+        return _failed(INVALID_CODE, str(invalid))
+    try:
+        size_name = clean_size(row.size)
+    except ValueError as invalid:
+        return _failed(INVALID_SIZE, str(invalid))
+    try:
+        # Never a refusal for being absent (AD-18) — the sentinel and a flag.
+        category_name = clean_category(row.category)
+    except ValueError as invalid:
+        return _failed(INVALID_CATEGORY, str(invalid))
+
+    flags: list[str] = []
+    # Read off the *resolved* Category rather than off the cell. A blank cell
+    # and a cell that spells the sentinel are the same fact — this Tile has no
+    # recoverable Category — and flagging only the first would file a Tile
+    # under `UNKNOWN` and report it as a clean success (AD-18).
+    if row.category is None or category_name == UNKNOWN_CATEGORY:
+        flags.append(FLAG_UNKNOWN_CATEGORY)
+    # A display hint and nothing else. The dash-delimited names in the real
+    # tree carry none, so this is a flag rather than a guess or a refusal.
+    trailing_number = face_number(tile_code)
+    if trailing_number is None:
+        flags.append(FLAG_UNKNOWN_FACE_NUMBER)
+
+    if spool_entry.oversized:
+        return _failed(IMAGE_TOO_LARGE, TOO_LARGE)
+
+    # The duplicate-Code pre-flight. **An optimisation and not the decision** —
+    # `tile_code_key` is, and the `UniqueViolation` below is what enforces it.
+    # What this buys is the ordinary case: a Code already in the catalogue is
+    # reported before sixteen forward passes are spent on an image that is
+    # about to be thrown away.
+    if conn.execute(_SELECT_CODE, (tile_code,)).fetchone() is not None:
+        return _failed(CODE_ALREADY_EXISTS, CODE_IN_USE)
+
+    tile_id = uuid4()
+    try:
+        # The add's own two halves, and nothing of this path's own. A zero-byte
+        # file, a renamed text file and a truncated one all raise out of the
+        # first of them, which is what keeps a garbage embedding out of the
+        # index (AD-7).
+        accepted = _accept_bytes(spool_entry.path.read_bytes())
+        prepared = _prepare(tile_id, accepted)
+    except ApiError as refused:
+        return _failed(refused.code, refused.message)
+
+    if prepared.featureless:
+        # FR-19's threshold. Still created and still searchable — the flag is
+        # what tells an Administrator the reference is worth re-shooting, and
+        # `reference_image.featureless` carries it on the Tile's own screen.
+        flags.append(FLAG_LOW_QUALITY_IMAGE)
+
+    written: list[str] = []
+    try:
+        store.put(prepared.source_key, prepared.source)
+        written.append(prepared.source_key)
+        store.put(prepared.derivative_key, prepared.derivative)
+        written.append(prepared.derivative_key)
+
+        with conn.transaction():
+            generation_id = ensure_active_generation(conn)
+            size_id = conn.execute(_RESOLVE_SIZE, (size_name,)).fetchone()
+            category_id = conn.execute(_RESOLVE_CATEGORY, (category_name,)).fetchone()
+            assert size_id is not None and category_id is not None
+
+            try:
+                tile_row = conn.execute(
+                    _INSERT_TILE,
+                    (
+                        tile_id,
+                        tile_code,
+                        size_id["id"],
+                        category_id["id"],
+                        trailing_number,
+                    ),
+                ).fetchone()
+            except pg_errors.UniqueViolation as clash:
+                # Two rows of one batch claiming a Code land here, as does a
+                # Code another request claimed in between. Narrowed to the one
+                # index by name; a clash this handler cannot explain is
+                # re-raised and becomes `row_failed`.
+                if clash.diag.constraint_name != CODE_UNIQUE_INDEX:
+                    raise
+                raise _refusal(
+                    CODE_ALREADY_EXISTS, CODE_IN_USE, status.HTTP_409_CONFLICT
+                ) from clash
+            assert tile_row is not None
+
+            image_row = conn.execute(
+                _INSERT_REFERENCE_IMAGE,
+                (
+                    prepared.image_id,
+                    tile_id,
+                    prepared.source_key,
+                    prepared.derivative_key,
+                    prepared.sha256,
+                    prepared.width,
+                    prepared.height,
+                    len(prepared.source),
+                    len(prepared.derivative),
+                    prepared.pixel_std,
+                    prepared.featureless,
+                ),
+            ).fetchone()
+            assert image_row is not None
+
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    _INSERT_EMBEDDING,
+                    [
+                        (prepared.image_id, generation_id, vector, kind, index)
+                        for kind, index, vector in prepared.embeddings
+                    ],
+                )
+
+            # **`catalogue_tile_added`, and no new action.** A Tile added by
+            # bulk is a Tile added: same actor, same consequence, same
+            # `details` shape. A second action naming the same fact is drift,
+            # and a `bulk` marker inside `details` would fork a shape three
+            # tests pin. Inside this row's transaction, so a Tile that exists
+            # always has a record of who added it.
+            audit.record(
+                conn,
+                action=AuditAction.CATALOGUE_TILE_ADDED,
+                actor_id=administrator.id,
+                actor_email=administrator.email,
+                source_ip=source_ip,
+                details={
+                    "code": tile_row["code"],
+                    "tile_id": str(tile_id),
+                    "size": size_name,
+                    "category": category_name,
+                    "reference_images": 1,
+                },
+            )
+    except ApiError as refused:
+        # The `409` above, raised from inside the transaction. The rows rolled
+        # back with it, so the objects are next.
+        _discard(store, written)
+        return _failed(refused.code, refused.message)
+    except BaseException:
+        # Every other failure, `BaseException` included for `add_tile`'s
+        # reason: a cancelled request must not leave objects behind either.
+        # Re-raised — the caller turns it into `row_failed` and logs it.
+        _discard(store, written)
+        raise
+
+    return _RowResult(
+        status=ROW_FLAGGED if flags else ROW_CREATED,
+        tile_id=tile_id,
+        flags=flags,
+        error=None,
+    )
+
+
+def _row_line(number: int | None, file_name: str, code: str | None, result: _RowResult) -> str:
+    """One report line: a JSON object and the newline that terminates it.
+
+    Two shapes travel on this stream and `kind` is what tells them apart, so a
+    reader never has to infer which it is holding from which keys are present.
+    Every key is written on every row line, `null` included: a screen that had
+    to test for a key's presence as well as its value is a screen with two
+    ways to be wrong.
+
+    **`row` is the row's position among the manifest's data rows, or `null`.**
+    Counted from one, with the header row not counted and blank lines skipped,
+    so it is an ordinal within the sheet's tiles rather than a physical line
+    number — "the twelfth tile in the sheet", not "line twelve of the file".
+    That is what an Administrator needs to find the row that was refused, and
+    it has to mean a position in that sheet and nothing else. The lines that
+    report an upload no row named, and the one that reports the batch
+    stopping, therefore carry `null` rather than a number counted on past the
+    manifest's end — which would send somebody to row 14 of a sheet that has
+    twelve.
+    """
+    return (
+        json.dumps(
+            {
+                "kind": "row",
+                "row": number,
+                "file": file_name,
+                "code": code,
+                "status": result.status,
+                "tile_id": None if result.tile_id is None else str(result.tile_id),
+                "flags": result.flags,
+                "error": result.error,
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+
+
+def _bulk_stream(
+    pool: ConnectionPool,
+    store: ObjectStore,
+    administrator: User,
+    source_ip: str | None,
+    rows: list[_ManifestRow],
+    spooled: dict[str, list[_Spooled]],
+    unnamed: int,
+    spool: tempfile.TemporaryDirectory[str],
+) -> Iterator[str]:
+    """The report, a line at a time, then the summary that closes it.
+
+    **The connection is opened here, not declared as a dependency.** A yielded
+    `get_connection` is returned to the pool when the *request function*
+    returns, which under a `StreamingResponse` is before a byte of this has
+    run — so the rows below would be written on a connection the pool had
+    already handed to somebody else.
+
+    **Rows are processed one after another, never concurrently.** AD-16's
+    argument applied to the write side: parallel forward passes oversubscribe
+    the same cores, so a batch run four at a time finishes no sooner and every
+    individual row takes longer to report.
+
+    **The summary always closes the report, including when the batch stops.**
+    A failure outside any one row — a pool with no free connection, a database
+    that went away between rows — happens *after* the response has started, so
+    there is no status left to change and an exception escaping here would
+    leave the client holding a `200` with a truncated body: no row saying what
+    went wrong, no summary, and rows that really were created looking like
+    rows that never ran. So an unexpected failure is logged, reported as a
+    final failed line, counted, and the summary is written anyway.
+
+    The spool is removed in the `finally`, which is what makes an abandoned
+    batch leave nothing on disk: a client that disconnects mid-stream closes
+    the iterator, the generator is thrown into, and the cleanup still runs.
+    """
+    counts = {ROW_CREATED: 0, ROW_FLAGGED: 0, ROW_FAILED_STATUS: 0}
+    try:
+        stopped = False
+        try:
+            with pool.connection() as conn:
+                for row in rows:
+                    try:
+                        result = _bulk_row(conn, store, administrator, source_ip, row, spooled)
+                    except Exception:
+                        # One row's unexplained failure is not the batch's.
+                        # Logged with its traceback, reported as a fixed
+                        # sentence that leaks nothing, and the loop continues —
+                        # tearing the stream down here would lose the report
+                        # for every row that already succeeded.
+                        logger.exception(
+                            "bulk row %s (%s) could not be added", row.number, row.file
+                        )
+                        result = _failed(ROW_FAILED, ROW_FAILED_MESSAGE)
+
+                    counts[result.status] += 1
+                    yield _row_line(row.number, row.file, row.code or None, result)
+
+                # An image no row named. Reported rather than silently dropped:
+                # an upload that travelled and was not indexed is a tile the
+                # Administrator believes is in the catalogue. Sorted by the
+                # name as declared, so two runs of the same batch report them
+                # in the same order, and one line per *file* rather than per
+                # key — two uploads differing only by case are two images and
+                # two things to go and look at.
+                named = {_pairing_key(row.file) for row in rows}
+                orphans = [
+                    entry
+                    for key, entries in spooled.items()
+                    if key not in named
+                    for entry in entries
+                ]
+                for entry in sorted(orphans, key=lambda spooled_file: spooled_file.name):
+                    counts[ROW_FAILED_STATUS] += 1
+                    yield _row_line(None, entry.name, None, _failed(IMAGE_UNMATCHED, NOT_NAMED))
+
+                # A part that carried bytes and declared no file name. Nothing
+                # can name it, so it is reported rather than dropped — the
+                # whole reason `image_unmatched` exists. The line carries an
+                # empty `file` because there is none, and the sentence says so.
+                for _ in range(unnamed):
+                    counts[ROW_FAILED_STATUS] += 1
+                    yield _row_line(None, "", None, _failed(IMAGE_UNMATCHED, UNNAMED_UPLOAD))
+        except Exception:
+            # Outside any row, and after the response has started. See above.
+            logger.exception("the bulk upload stopped before every row was processed")
+            stopped = True
+
+        if stopped:
+            counts[ROW_FAILED_STATUS] += 1
+            yield _row_line(None, "", None, _failed(ROW_FAILED, BATCH_STOPPED_MESSAGE))
+
+        yield (
+            json.dumps(
+                {
+                    "kind": "summary",
+                    "created": counts[ROW_CREATED],
+                    "flagged": counts[ROW_FLAGGED],
+                    "failed": counts[ROW_FAILED_STATUS],
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+    finally:
+        # Guarded, because this runs *after* the summary has been written: a
+        # directory that will not go away is an operator's problem, and letting
+        # it escape here would turn a complete report into a torn-down response
+        # for the one reader who had already received every line of it.
+        try:
+            spool.cleanup()
+        except OSError:
+            logger.exception("the bulk spool could not be removed")
+
+
+@router.post("/admin/tiles/bulk")
+def bulk_upload(
+    administrator: Annotated[User, Depends(require_administrator)],
+    pool: Annotated[ConnectionPool, Depends(get_pool)],
+    store: Annotated[ObjectStore, Depends(get_object_store)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
+    manifest: Annotated[UploadFile | None, File()] = None,
+    images: Annotated[list[UploadFile] | None, File()] = None,
+) -> StreamingResponse:
+    """FR-17 — load a whole range, and report on it row by row.
+
+    **Registered above every route that takes a path parameter under
+    `/admin/tiles/`**, so the literal `bulk` segment can never be read as a
+    Tile id. There is no `POST /admin/tiles/{tile_id}` today; the ordering is
+    what keeps that a property of the route table rather than of nobody having
+    added one yet.
+
+    **Everything refusable is refused before the first byte of the stream.**
+    The HTTP status is committed at that byte, so authorization, the manifest,
+    the row cap, the missing model artifact and AD-14's stamp are all decided
+    while a real `{"error": {...}}` envelope under a 4xx or 5xx is still
+    possible. Afterwards the status is `200` and every outcome is a row —
+    which is the cost of streaming, paid deliberately in exchange for a report
+    that arrives as it happens rather than after minutes of silence
+    (EXPERIENCE.md:94).
+
+    **No job table, no queue, no worker, no polling endpoint.** One request,
+    one stream, nothing to garbage-collect. The connection stays busy for the
+    life of the batch, so no idle timeout fires on a run that takes minutes.
+
+    Sync, not `async def`, for `add_tile`'s reason: psycopg is synchronous and
+    the embedding is CPU-bound for tens of seconds per image. The generator is
+    sync too, and Starlette iterates it in the threadpool.
+    """
+    rows = _manifest_rows(_read_manifest(manifest))
+
+    # A part with neither a name nor any bytes is a file picker with nothing
+    # chosen, which `add_tile` filters the same way at its own `uploads` line.
+    # It is nothing, so it counts as nothing — against the cap below and in the
+    # report.
+    uploads = [upload for upload in (images or []) if upload.filename or upload.size]
+
+    # **One ceiling, counted on both sides.** The row count alone bounds the
+    # manifest and nothing else, so a one-row sheet sent with four hundred
+    # image parts would pass it and then be spooled in full — a copy of every
+    # part at up to `MAX_IMAGE_BYTES`, for a batch that can produce one Tile.
+    # Counting the parts against the same number is what makes
+    # `MAX_BULK_ROWS`'s claim to bound the spool true.
+    if len(rows) > MAX_BULK_ROWS or len(uploads) > MAX_BULK_ROWS:
+        raise _refusal(TOO_MANY_ROWS, TOO_MANY_ROWS_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT)
+
+    # The two deployment-level refusals, pre-flighted rather than discovered on
+    # row 1. Both would otherwise fail every row of the batch identically,
+    # which is a report of a hundred lines saying one thing that belongs in an
+    # envelope. `_prepare` still raises its own for the artifact, because a
+    # file deleted between this check and that call is a real state.
+    if not shared_vision.MODEL_PATH.exists():
+        raise _refusal(MATCHING_UNAVAILABLE, NOT_INSTALLED, status.HTTP_503_SERVICE_UNAVAILABLE)
+    with pool.connection() as conn:
+        # AD-14, read-only: a deployment running ahead of its re-index refuses
+        # the whole batch in milliseconds rather than one row at a time.
+        active_generation(conn)
+
+    # Spooled *here*, inside the request function, because the multipart form
+    # is closed when it returns. See `_spool`.
+    spool = tempfile.TemporaryDirectory(prefix="rocell-bulk-")
+    try:
+        spooled, unnamed = _spool(uploads, Path(spool.name))
+    except BaseException:
+        # Nothing has been streamed yet, so the caller is about to be told this
+        # failed — and the directory must not outlive the request either way.
+        spool.cleanup()
+        raise
+
+    return StreamingResponse(
+        _bulk_stream(pool, store, administrator, source_ip, rows, spooled, unnamed, spool),
+        media_type=NDJSON,
+        # `no-store` like every other authenticated response: a report naming
+        # Codes is catalogue data. `nosniff` because a browser that sniffed its
+        # way from NDJSON to something executable would be running script from
+        # the catalogue — the same argument the reference-image read makes.
+        headers={**NO_STORE, **NO_SNIFF},
+    )
+
+
 # --- The lookup and the edit (FR-15) ------------------------------------------
 
 
@@ -1042,7 +1967,9 @@ def add_tile(
 #: *send*, and the day those two stop being the same set — a part that maps to
 #: two columns, a column written by something other than the body — a diff built
 #: off the request would silently describe the wrong thing. `face_number` is
-#: absent because nothing writes it; `updated_at` is absent because it moves on
+#: absent because it is not sent: it is derived from the Code, so an edit that
+#: moved it moved the Code, and the Code's own entry already says so.
+#: `updated_at` is absent because it moves on
 #: every edit and would be noise in every entry; the Reference Images are absent
 #: because they are counted separately, and a list of image ids is not something
 #: a reader of the log can do anything with.
@@ -1401,10 +2328,21 @@ def edit_tile(
                 assert category_row is not None
                 category_id = category_row["id"]
 
+            # **Re-derived whenever the Code is, and left alone otherwise.**
+            # The trailing number is read off the Code and nothing else, so a
+            # Tile whose Code changed and whose stored hint did not would show
+            # a number belonging to a Code it no longer carries — a Tile the
+            # bulk path created as `RP.CMA.0008DJ.SM.0T` (hint `8`) and that was
+            # then renamed still reading `8`. An edit that did not send a Code
+            # writes the stored value back untouched, the way every other
+            # column here does: nothing about the Code changed, so nothing
+            # derived from it may.
+            trailing_number = current["face_number"] if new_code is None else face_number(tile_code)
+
             try:
                 tile_row = conn.execute(
                     _UPDATE_TILE,
-                    (tile_code, size_row["id"], category_id, tile_id),
+                    (tile_code, size_row["id"], category_id, trailing_number, tile_id),
                 ).fetchone()
             except pg_errors.UniqueViolation as clash:
                 # The pre-flight above is the fast path; this is the decision.

@@ -1,0 +1,315 @@
+/* Bulk upload — a whole range in one pass, reported row by row (FR-17).
+ *
+ * Rendered *inside* the shell, like Add tile: the app bar is above it and
+ * `AppShell`'s `<main>` is around it, so there is no full-height centring and
+ * no chrome-less panel here. The form rhythm is deliberately
+ * `AddTileScreen.module.css`'s — a single narrow column, label above input,
+ * `--space-5` between fields — because an Administrator moving between the two
+ * catalogue upload surfaces should not read them as two different
+ * applications.
+ *
+ * This is the one stylesheet in the product where all three brand colours
+ * appear as status indicators together (DESIGN.md:221), and the only place the
+ * accent is a *signal* rather than an action — the `flagged-activity-row`
+ * precedent (DESIGN.md:214), justified the same way: nothing on a report row is
+ * clickable to begin with, so an orange marker on one cannot be mistaken for
+ * the screen's action. The accent's only other appearance below is the submit
+ * fill, which is the action.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target
+ * floor and the accent focus ring are already on `button` and `input` in
+ * global.css and are deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: var(--measure-form);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  color: var(--color-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+/* Both file inputs. Left as the platform control rather than hidden behind a
+ * styled button: the native one is keyboard-reachable, announces the chosen
+ * file count by itself, and is the one control on this screen whose behaviour a
+ * custom replacement would have to reimplement from nothing. */
+.file {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The line under a picker that says what belongs in it. Muted, because it is
+ * guidance rather than a state — the manifest's shape and the batch's two
+ * limits both live here, and they are stated nowhere else on the screen. */
+.hint {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* The rejection, carrying the API's own sentence — which names the rule that
+ * failed (EXPERIENCE.md:87). Red is destructive-or-failed in this system and
+ * nothing else, and it is never the only signal: the text says what happened
+ * and `aria-invalid` marks the picker. */
+.error {
+  color: var(--color-destructive);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* Upload, Back and the progress line on one row, so the indicator sits beside
+ * the thing that triggered it rather than in a corner. Wraps rather than
+ * shrinks: at the narrowest phone width three items on one line would push the
+ * buttons below the touch-target floor. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* The single primary action on this screen: accent fill, navy foreground.
+ * Never white on orange — 2.63:1, the one contrast pair DESIGN.md bans. */
+.submit {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.submit:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* Back: DESIGN.md's secondary button — navy outline, navy text, transparent
+ * fill. The default for every non-primary action, and the reason this screen
+ * still has exactly one accent-filled control. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.back:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+/* The progress line, muted throughout and empty at rest.
+ *
+ * Deliberately **not** the save indicator's navy-on-done treatment: this
+ * announces that rows are arriving, and the thing that says how the batch came
+ * out is the summary at the foot of the report, which is where an
+ * Administrator will be looking by then. */
+.indicator {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+/* The report: DESIGN.md's Card — white surface, hairline border, `md` radius,
+ * navy-tinted shadow. A card rather than more prose in the column, because the
+ * report is the deliverable of this screen and has to read as an object rather
+ * than as a continuation of the form above it. */
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-card);
+}
+
+.subtitle {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: var(--color-text);
+}
+
+/* The rows.
+ *
+ * **It scrolls with the page, not inside a box of its own.** EXPERIENCE.md:73
+ * asks for a scrollable per-row list rather than a single pass/fail summary,
+ * and the list being long is what makes it scrollable — a nested scroll region
+ * with its own height would be the scroll trap this product avoids everywhere
+ * else: `AuditLogScreen`, the only other long list here, takes `overflow-x` for
+ * its table's columns and lets the page own the vertical axis. A hundred rows
+ * inside a fixed box on a phone is a region a thumb cannot leave.
+ *
+ * `list-style: none` because a marker beside a row that already leads with an
+ * icon and a word says nothing. **Removing the markers is not free**, though:
+ * Safari with VoiceOver strips list semantics from a list styled this way, so
+ * the rows stop being announced as a list at all and "row 4 of 30" goes with
+ * them. The `<ol>` carries an explicit `role="list"` to put it back — see the
+ * comment on the element. */
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  list-style: none;
+  padding: 0;
+}
+
+/* One reported row. A hairline between rows rather than a card each: this is
+ * the dense data-table treatment the admin surfaces share (DESIGN.md's
+ * `data-table-row`), and a hundred stacked cards would be a hundred shadows. */
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-bottom: var(--space-3);
+  border-bottom: var(--border-hairline) solid var(--color-border);
+}
+
+/* The indicator and its word, on one line and never apart. The word is the
+ * accessible signal and the colour is the glance — EXPERIENCE.md's floor is
+ * that a state is never colour-only, so these two travel together. */
+.outcome {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+.icon {
+  width: var(--icon-size);
+  height: var(--icon-size);
+  flex: none;
+}
+
+/* The word inherits the row's outcome colour from the three rules below, which
+ * is what makes this class a hook rather than a treatment of its own. */
+.word {
+  color: inherit;
+}
+
+/* DESIGN.md:144-149's `upload-report-row`, one rule per outcome. The colour is
+ * set on the row so the icon and the word take it together. */
+
+/* `success-indicator: {colors.primary}`. Navy, which is chrome everywhere else
+ * in this product — here it is the quiet outcome, which is the right weight for
+ * the one that needs no attention. */
+.created {
+  color: var(--color-primary);
+}
+
+/* `flagged-indicator: {colors.accent}`. The row *was* created (AD-18); orange
+ * marks it for follow-up, not for repair. This is the accent as a signal, which
+ * is the `flagged-activity-row` exception DESIGN.md:214 already makes — nothing
+ * on this row is clickable, so it cannot be read as the screen's action. */
+.flagged {
+  color: var(--color-accent);
+}
+
+/* `failure-indicator: {colors.destructive}`. Red means this row wrote nothing —
+ * no tile, no reference image, no embedding, no stored object — which is
+ * exactly the "failed" this system's one hard-contracted colour is for. */
+.failed {
+  color: var(--color-destructive);
+}
+
+/* The manifest row number. Muted and in the label role: it leads the line but
+ * it is a reference into the sheet rather than the line's subject, and two
+ * body-weight values side by side would compete. */
+.rowNumber {
+  color: var(--color-muted-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  white-space: nowrap;
+}
+
+/* The file name: the field almost every line carries — the exception is a part
+ * that declared none, whose sentence says so. Body text, because where there
+ * is one it is the row's subject. */
+.fileName {
+  color: var(--color-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  overflow-wrap: anywhere;
+}
+
+/* The Code, in the monospace role DESIGN.md reserves for a value read character
+ * by character — this is the identity (AD-18) and the value an Administrator
+ * will compare against the sheet in front of them, so 0/O and 1/I must not be
+ * confusable. */
+.codeValue {
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--type-code-size);
+  font-weight: var(--type-code-weight);
+  line-height: var(--type-code-line);
+  overflow-wrap: anywhere;
+}
+
+/* The row's sentence: the server's refusal message, or what a flag means.
+ * Muted rather than coloured, so the indicator above stays the one thing
+ * carrying the outcome — a red sentence under a red word is the same signal
+ * twice, and a red sentence under an *orange* word would contradict it. */
+.detail {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+
+/* The closing count. Body text in the ordinary colour: it summarises the list
+ * above rather than replacing it, and painting it in any of the three outcome
+ * colours would pick one of them as the batch's verdict. */
+.summary {
+  color: var(--color-text);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}

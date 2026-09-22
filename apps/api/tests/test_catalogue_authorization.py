@@ -2,10 +2,18 @@
 
 `tests/test_admin_authorization.py` proves the *rule* over the route table —
 every route under `/admin/` declares `require_administrator`, and every route
-declaring it is under `/admin/`, with Story 2.1's two, Story 2.2's two and Story
-2.3's one now in its expected set. This file proves the *behaviour* on those
-five routes specifically, and the one thing the table guard cannot see: that a
-refused caller leaves the database and the object store untouched.
+declaring it is under `/admin/`, with Story 2.1's two, Story 2.2's two, Story
+2.3's one and Story 2.4's one now in its expected set. This file proves the
+*behaviour* on those six routes specifically, and the one thing the table guard
+cannot see: that a refused caller leaves the database and the object store
+untouched.
+
+The bulk route is worth a line of its own here, because it is the first in the
+product whose success is a **stream**. Its refusal therefore has to arrive as
+an envelope under a `403` or a `401` rather than as a `200` carrying rows that
+say "not allowed" — and both halves are asserted below, since a handler that
+opened the stream and reported the refusal inside it would answer `200` and
+look fine to a test reading only the body.
 
 For the removal that claim is inverted and is the stronger half: there is a Tile
 in the catalogue when the refused call arrives, so "nothing was written" becomes
@@ -38,6 +46,7 @@ from shared_vision import pipeline
 MakeUser = Callable[..., Any]
 
 ADD_TILE = "/admin/tiles"
+BULK_UPLOAD = "/admin/tiles/bulk"
 LOGIN = "/auth/login"
 
 #: The removal's refusals need a Tile to fail to remove, and putting one in the
@@ -58,6 +67,9 @@ def an_image() -> bytes:
 
 
 REFUSED_FIELDS = {"code": "RP.CMA.0001DJ.SM.0T", "size": "45X90", "category": "CREMA MARMOL"}
+
+#: The same Tile as `REFUSED_FIELDS`, as a bulk manifest of one row.
+REFUSED_MANIFEST = b"file,code,size,category\na.jpg,RP.CMA.0001DJ.SM.0T,45X90,CREMA MARMOL\n"
 
 
 def post_tile(client: TestClient) -> Any:
@@ -83,6 +95,23 @@ def patch_tile(client: TestClient) -> Any:
         f"{ADD_TILE}/{uuid4()}",
         data=REFUSED_FIELDS,
         files=[("images", ("reference.jpg", an_image(), "image/jpeg"))],
+    )
+
+
+def post_bulk(client: TestClient) -> Any:
+    """Story 2.4's batch, with a real manifest and a real image part.
+
+    Driven with both, not an empty body: refusing `{}` would be refusing a
+    malformed request and would show nothing about the authorization. The
+    manifest names one valid row, so a handler that ran at all would write a
+    Tile.
+    """
+    return client.post(
+        BULK_UPLOAD,
+        files=[
+            ("manifest", ("codes.csv", REFUSED_MANIFEST, "text/csv")),
+            ("images", ("a.jpg", an_image(), "image/jpeg")),
+        ],
     )
 
 
@@ -171,6 +200,28 @@ def test_a_staff_caller_is_refused_the_edit_and_writes_nothing(
     assert [r for r in audit_rows(conn) if r["action"] == "catalogue_tile_edited"] == []
 
 
+def test_a_staff_caller_is_refused_the_bulk_upload_and_writes_nothing(
+    client: TestClient,
+    conn: psycopg.Connection,
+    storage_root: Path,
+    make_user: MakeUser,
+    audit_rows: Callable[[psycopg.Connection], list[dict[str, object]]],
+) -> None:
+    sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
+
+    response = post_bulk(client)
+
+    # An envelope under a `403`, not a `200` carrying a report that says
+    # "refused". The stream's status is committed at its first byte, so a
+    # handler that opened it before checking the role would have nowhere left
+    # to put this.
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "administrator_required"
+    assert "kind" not in response.text
+    nothing_was_written(conn, storage_root)
+    assert [r for r in audit_rows(conn) if r["action"] == "catalogue_tile_added"] == []
+
+
 def test_a_staff_caller_is_refused_the_lookup(client: TestClient, make_user: MakeUser) -> None:
     # A read, and still Administrator-only: catalogue exfiltration through a
     # compromised account is this product's primary commercial threat, and a
@@ -206,7 +257,7 @@ def test_a_staff_callers_image_is_never_decoded(
     monkeypatch.setattr(shared_vision, "intake_image", refuse)
     sign_in(client, make_user(role=Role.STAFF))
 
-    for send in (post_tile, patch_tile):
+    for send in (post_tile, patch_tile, post_bulk):
         response = send(client)
 
         assert response.status_code == 403
@@ -254,6 +305,17 @@ def test_a_signed_out_caller_is_refused_the_edit_and_writes_nothing(
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
+    nothing_was_written(conn, storage_root)
+
+
+def test_a_signed_out_caller_is_refused_the_bulk_upload_and_writes_nothing(
+    client: TestClient, conn: psycopg.Connection, storage_root: Path
+) -> None:
+    response = post_bulk(client)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+    assert "kind" not in response.text
     nothing_was_written(conn, storage_root)
 
 
@@ -316,7 +378,9 @@ def test_an_administrator_demoted_mid_session_is_refused_on_the_next_request(
     nothing_was_written(conn, storage_root)
 
 
-@pytest.mark.parametrize("send", [post_tile, get_image, patch_tile, lookup_tile, delete_tile])
+@pytest.mark.parametrize(
+    "send", [post_tile, get_image, patch_tile, lookup_tile, delete_tile, post_bulk]
+)
 def test_every_refusal_is_uncacheable(
     client: TestClient, make_user: MakeUser, send: Callable[[TestClient], Any]
 ) -> None:

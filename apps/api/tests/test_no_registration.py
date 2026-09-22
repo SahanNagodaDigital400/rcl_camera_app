@@ -232,6 +232,19 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_nine_admin_paths
     # keeps it a path in its own right rather than a Code that happens to look
     # like a UUID.
     #
+    # `/admin/tiles/bulk` (Story 2.4, FR-17) is the tenth admin path. It loads
+    # a whole range from a CSV of Codes and the images that CSV names, and it
+    # is the first route in the product whose response is a stream rather than
+    # one body — neither of which changes anything here, because this guard is
+    # about which paths exist. No field on it names a person, an address or a
+    # password: the manifest's columns are a file name, a Code, a Size and a
+    # Category, and the only rows it writes are catalogue rows. It is
+    # authenticated and Administrator-only through the same
+    # `require_administrator` every route under `/admin/` declares.
+    #
+    # `bulk` is a literal segment for `lookup`'s reason, and there is no
+    # `POST /admin/tiles/{tile_id}` for it to be shadowed by.
+    #
     # The seeded Administrator (`infra/rocell_infra/seed.py`) is still the only
     # row written with no Administrator behind it, and it is written by the
     # migration runner outside the application entirely.
@@ -248,6 +261,7 @@ def test_the_route_table_is_the_five_auth_routes_health_and_the_nine_admin_paths
         "/admin/users/{user_id}/activate",
         "/admin/audit",
         "/admin/tiles",
+        "/admin/tiles/bulk",
         "/admin/tiles/lookup",
         "/admin/tiles/{tile_id}",
         "/admin/tiles/{tile_id}/images/{image_id}",

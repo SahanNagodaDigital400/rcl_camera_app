@@ -316,6 +316,18 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
   });
 
+  it('colours the bulk upload rejection the same way', () => {
+    // The screen whose refusals are the *pre-stream* ones — an unreadable
+    // manifest, a batch over the row cap, a server with no pixel pipeline. Once
+    // the stream opens the status is `200` and every outcome is a row, so this
+    // rule paints the only failure on the screen that is not a row: the one
+    // that means the batch never started. Point `.error` at `--color-text` and
+    // "nothing was uploaded" reads as a note beside a form that looks fine.
+    const css = read(join(SRC, 'screens', 'BulkUploadScreen.module.css'));
+
+    expect(declaration(rule(css, '.error'), 'color')).toBe('var(--color-destructive)');
+  });
+
   it('colours the user list failure the same way', () => {
     // The one screen whose alert replaces its whole contents: when this fires
     // there is no table beside it, so the sentence is the entire answer to "who
@@ -366,6 +378,7 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     ['EditUserScreen', join('screens', 'EditUserScreen.tsx'), 'error'],
     ['UserListScreen', join('screens', 'UserListScreen.tsx'), 'error'],
     ['AddTileScreen', join('screens', 'AddTileScreen.tsx'), 'error'],
+    ['BulkUploadScreen', join('screens', 'BulkUploadScreen.tsx'), 'error'],
     // Widened past `screens/` by Story 1.11: the confirmation dialog is a
     // component, and its refusal state is the one alert in the product that is
     // not on a screen at all. Its alert class is `body` rather than `error`
@@ -913,6 +926,133 @@ describe('saving is the one accented action on the edit tile screen', () => {
   });
 });
 
+describe('uploading is the one accented action on the bulk upload screen', () => {
+  // DESIGN.md's "exactly one per screen" for the accent-filled primary, on the
+  // one screen in the product that also uses the accent as a *status* colour.
+  // DESIGN.md:221 is explicit that this is "the only place all three brand
+  // colors appear as status indicators together, since it's the one screen
+  // genuinely reporting three distinct outcomes" — which makes the accent
+  // budget here tighter than anywhere else, not looser: Upload is the fill, the
+  // flagged row indicator is the signal, and there is no third orange thing.
+  //
+  // Nothing else in the suite can see any of this — `vite.config.ts` sets
+  // `css: false`, so jsdom applies no stylesheet and there is no computed style
+  // to read. The render tests find the words "Added", "Flagged" and "Failed"
+  // whichever colours they are painted in, so swapping two of these three rules
+  // is invisible to every one of them.
+  const css = (): string => read(join(SRC, 'screens', 'BulkUploadScreen.module.css'));
+
+  it('fills the submit with the accent and writes on it in navy', () => {
+    const submit = rule(css(), '.submit');
+
+    expect(declaration(submit, 'background')).toBe('var(--color-accent)');
+    expect(declaration(submit, 'color')).toBe('var(--color-accent-foreground)');
+  });
+
+  it('leaves Back as the navy outline, not a second filled control', () => {
+    const back = rule(css(), '.back');
+
+    expect(declaration(back, 'color')).toBe('var(--color-primary)');
+    expect(declaration(back, 'background')).toBe('transparent');
+    expect(declaration(back, 'border')).toBe('var(--border-hairline) solid var(--color-primary)');
+  });
+
+  it.each([
+    // DESIGN.md:144-149's `upload-report-row`, token for token:
+    // `success-indicator: {colors.primary}`, `failure-indicator:
+    // {colors.destructive}`, `flagged-indicator: {colors.accent}`.
+    ['.created', 'var(--color-primary)'],
+    ['.flagged', 'var(--color-accent)'],
+    ['.failed', 'var(--color-destructive)'],
+  ])('paints %s in the colour the report-row block names', (name, expected) => {
+    expect(declaration(rule(css(), name), 'color')).toBe(expected);
+  });
+
+  it('never paints a flagged row as a failure', () => {
+    // The swap that would be hardest to see and worst to ship. A flagged row
+    // *was* created — it has a tile id and it is in the index, and the flag is
+    // follow-up (AD-18) — so painting it red tells an Administrator to
+    // re-upload a tile that is already in the catalogue, and painting a failure
+    // orange tells them a tile landed when nothing was written for it.
+    expect(declaration(rule(css(), '.flagged'), 'color')).not.toBe('var(--color-destructive)');
+    expect(declaration(rule(css(), '.failed'), 'color')).not.toBe('var(--color-accent)');
+  });
+
+  it('uses the accent for the submit fill and the flagged indicator, and nothing else', () => {
+    // Counted over the whole stylesheet rather than rule by rule, so a new rule
+    // cannot introduce a third orange thing unseen. **Two** here rather than
+    // the one every other screen's sibling test asserts, and the second one is
+    // DESIGN.md:214's flagged-activity-row exception rather than a relaxation
+    // of the rule: orange is a signal on a row where nothing is clickable, so
+    // it cannot be mistaken for the action that has not fired yet.
+    const accents = [...css().matchAll(/var\(--color-accent\)/g)];
+
+    expect(accents).toHaveLength(2);
+    expect(declaration(rule(css(), '.submit'), 'background')).toBe('var(--color-accent)');
+    expect(declaration(rule(css(), '.flagged'), 'color')).toBe('var(--color-accent)');
+  });
+
+  it('keeps the progress line muted, never destructive and never accented', () => {
+    // A batch in flight is a routine wait, not a failure and not an action.
+    // Red here would read as something having gone wrong while rows are landing
+    // perfectly well, and orange would be a second primary competing with
+    // Upload — the control it sits beside.
+    const indicator = rule(css(), '.indicator');
+
+    expect(declaration(indicator, 'color')).toBe('var(--color-muted-text)');
+    expect(declaration(indicator, 'color')).not.toBe('var(--color-destructive)');
+    expect(declaration(indicator, 'color')).not.toBe('var(--color-accent)');
+  });
+
+  it('gives the report DESIGN.md\'s card treatment', () => {
+    const report = rule(css(), '.report');
+
+    expect(declaration(report, 'background')).toBe('var(--color-surface)');
+    expect(declaration(report, 'border-radius')).toBe('var(--radius-md)');
+    expect(declaration(report, 'box-shadow')).toBe('var(--elevation-card)');
+  });
+
+  it('sets the Code in the monospace role', () => {
+    // DESIGN.md reserves `code` for a value read character by character, so
+    // 0/O and 1/I cannot be confused. On this screen the Code is what an
+    // Administrator compares against the sheet in front of them, row by row.
+    expect(declaration(rule(css(), '.codeValue'), 'font-family')).toBe('var(--font-mono)');
+  });
+
+  /**
+   * Both files with their comment bodies blanked out.
+   *
+   * The two checks below are about what the screen *says and does*, not about
+   * what it writes down: both files argue at length for the rules, naming the
+   * very words the rules forbid, and prose about a rule must never trip the
+   * rule. `no-raw-values.test.ts` strips comments for the same reason.
+   */
+  const spoken = (): string =>
+    [css(), read(join(SRC, 'screens', 'BulkUploadScreen.tsx'))]
+      .join('\n')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+
+  it('never names a similarity value, in the screen or in its stylesheet', () => {
+    // AD-20, as an absence. This screen reports three discrete outcomes and no
+    // degree of anything; a per-row percentage is exactly the shape a score
+    // would arrive in here.
+    for (const banned of ['similarity', 'confidence', 'score']) {
+      expect(spoken().toLowerCase().includes(banned), banned).toBe(false);
+    }
+  });
+
+  it('uses the retired words nowhere', () => {
+    // AD-18 retires `Product` and `Face`: they encoded the identity model it
+    // corrects, and they come back through vocabulary before they come back
+    // through code. A bulk report listing "products" would be the clearest
+    // possible statement of the model AD-18 rejects — one row per range rather
+    // than one row per file.
+    expect(/\bproducts?\b/i.test(spoken())).toBe(false);
+    expect(/\bfaces?\b/i.test(spoken())).toBe(false);
+  });
+});
+
 describe('the home panel\'s admin entries', () => {
   it('are outlined, never filled', () => {
     // A door on the home panel is a secondary control: the shell's landing
@@ -920,14 +1060,19 @@ describe('the home panel\'s admin entries', () => {
     // orange thing on a screen that is for neither user management nor audit.
     // Since Story 1.9 the first entry is Users — EXPERIENCE.md line 33's nav
     // entry, with Create user reached from its "+ Add user" (line 34) — since
-    // Story 1.13 the second is the Audit log, line 38's, and since Stories 2.1
-    // and 2.2 the third and fourth are Add tile and Edit tile, both line 36's.
-    // Add tile is the closest call of the four: "+ Add Tile" *is* the primary
+    // Story 1.13 the second is the Audit log, line 38's, since Stories 2.1
+    // and 2.2 the third and fourth are Add tile and Edit tile, both line 36's,
+    // and since Story 2.4 the fifth is Bulk upload, line 37's.
+    // Add tile is the closest call of the five: "+ Add Tile" *is* the primary
     // action on the Catalogue surface and will take the accent there, but here
-    // it is a door on a panel that is for none of them.
+    // it is a door on a panel that is for none of them. Bulk upload is the
+    // least close: the screen behind it is the one place in the product where
+    // the accent is also a *status* colour (DESIGN.md:144-149), so an orange
+    // door onto it would be the same hue meaning two different things one
+    // click apart.
     const app = read(join(SRC, 'App.module.css'));
 
-    for (const name of ['.userList', '.auditLog', '.addTile', '.editTile']) {
+    for (const name of ['.userList', '.auditLog', '.addTile', '.editTile', '.bulkUpload']) {
       const entry = rule(app, name);
 
       expect(declaration(entry, 'background'), name).toBe('transparent');

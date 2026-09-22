@@ -514,3 +514,85 @@ def test_the_sql_patterns_catch_what_they_are_for(line: str) -> None:
 )
 def test_the_sql_patterns_leave_parameterized_queries_alone(line: str) -> None:
     assert not any(pattern.search(line) for pattern in INTERPOLATED_SQL)
+
+
+# --- AD-7's "no shortcut for bulk" (Story 2.4) --------------------------------
+
+
+#: The functions that make up the bulk path, read by `inspect.getsource`.
+#:
+#: Named as objects rather than matched as a slice of the file, because a slice
+#: is a line range somebody has to keep in step with an edit and this is not.
+#: If a helper is added to that path it belongs in this tuple, and the reader
+#: who adds it is the reader who is about to be told why.
+_BULK_FUNCTION_NAMES = (
+    "bulk_upload",
+    "_bulk_stream",
+    "_bulk_row",
+    "_manifest_rows",
+    "_read_manifest",
+    "_spool",
+    "_row_line",
+)
+
+#: The only `shared_vision` attribute the bulk path may name directly.
+#:
+#: A path, checked for existence before the stream opens so that a deployment
+#: with no model artifact refuses the whole batch with an envelope rather than
+#: failing a hundred rows identically. It is not a step in the pipeline and
+#: nothing about it turns bytes into pixels.
+_BULK_MAY_NAME = {"MODEL_PATH"}
+
+_SHARED_VISION_ATTRIBUTE = re.compile(r"\bshared_vision\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def test_the_bulk_path_reaches_the_pixel_pipeline_only_through_the_add_s_helpers() -> None:
+    # **The story's central invariant, and the one that fails silently.**
+    # Epic 2's context is explicit that every image byte is intaken the same
+    # way "with no shortcut for bulk" (AD-7), and AD-1 is the same rule one
+    # level down: index-time and query-time preprocessing must be identical.
+    # A bulk handler that called the intake, the view generator or the embedder
+    # itself would still produce embeddings, still write rows, and still pass
+    # every behavioural test in the suite — while quietly indexing a second
+    # pipeline's vectors alongside the first. Nothing raises. This does.
+    #
+    # Read off the functions' own source rather than the whole module, because
+    # `_accept_bytes` and `_prepare` — the two halves the bulk path is *meant*
+    # to reach the pipeline through — legitimately name it on every line.
+    import inspect
+
+    from api import catalogue
+
+    offenders: list[str] = []
+    for name in _BULK_FUNCTION_NAMES:
+        function = getattr(catalogue, name, None)
+        assert function is not None, (
+            f"api.catalogue.{name} no longer exists, so this guard is reading nothing. "
+            "Rename it here or say why the bulk path no longer has it."
+        )
+        source = inspect.getsource(function)
+        offenders.extend(
+            f"{name}: shared_vision.{attribute}"
+            for attribute in _SHARED_VISION_ATTRIBUTE.findall(source)
+            if attribute not in _BULK_MAY_NAME
+        )
+
+    assert offenders == [], (
+        "The bulk path reaches shared_vision on its own. Every image it takes must "
+        "go through _accept_bytes and _prepare — the same intake, colour management, "
+        "16 views and derivative the single add uses (AD-1, AD-7). A second path is "
+        "an asymmetry that destroys accuracy with nothing raised: " + ", ".join(offenders)
+    )
+
+
+def test_the_bulk_guard_catches_a_second_path() -> None:
+    # A guard nobody has seen fail is a guard nobody knows works. This is the
+    # shortcut in miniature: a handler embedding for itself rather than through
+    # the add's own helpers.
+    shortcut = "    accepted = shared_vision.intake_image(data)\n"
+
+    assert [
+        attribute
+        for attribute in _SHARED_VISION_ATTRIBUTE.findall(shortcut)
+        if attribute not in _BULK_MAY_NAME
+    ] == ["intake_image"]

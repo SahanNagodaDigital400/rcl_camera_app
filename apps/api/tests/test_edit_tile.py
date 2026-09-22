@@ -241,6 +241,40 @@ def test_renaming_the_code_moves_the_row_and_touches_no_embedding(
 
 
 @needs_model
+def test_renaming_the_code_re_derives_the_trailing_number_it_carries(
+    client: TestClient, conn: psycopg.Connection, administrator: Any
+) -> None:
+    # `face_number` is read off the Code and off nothing else, so the moment a
+    # Code changes the stored hint is about a Code the Tile no longer carries.
+    # Reachable since the bulk path started writing the column: a Tile added as
+    # `...0008DJ...` (hint `8`) and renamed to a dash-delimited Code would go on
+    # showing `8` for a Code that yields no number at all.
+    created = add(client)
+    # Autocommit — see the fixture. The column is arranged by hand because the
+    # only writer of it is the bulk route, which is another story's suite.
+    conn.execute("UPDATE tile SET face_number = %s WHERE id = %s", ("1", created["id"]))
+
+    assert edit(client, created["id"], code=RENAMED).json()["face_number"] == "2"
+
+    # And a Code that yields none clears it rather than leaving the old one.
+    assert edit(client, created["id"], code="RC-001-OHA-156-MA-J2").json()["face_number"] is None
+
+
+@needs_model
+def test_an_edit_that_sends_no_code_leaves_the_trailing_number_alone(
+    client: TestClient, conn: psycopg.Connection, administrator: Any
+) -> None:
+    # The mirror of the rule above, and the reason it is written as "re-derived
+    # whenever the Code is" rather than "re-derived on every edit": an absent
+    # part means unchanged for this column exactly as it does for every other
+    # one, so renaming a Size may not quietly rewrite a hint nothing touched.
+    created = add(client)
+    conn.execute("UPDATE tile SET face_number = %s WHERE id = %s", ("7", created["id"]))
+
+    assert edit(client, created["id"], size="60X60").json()["face_number"] == "7"
+
+
+@needs_model
 def test_the_size_and_category_resolve_through_the_same_normalized_lookup(
     client: TestClient, conn: psycopg.Connection, administrator: Any
 ) -> None:
