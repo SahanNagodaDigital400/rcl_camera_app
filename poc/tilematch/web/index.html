@@ -189,9 +189,10 @@
   </div>
 
   <p class="note">
-    Candidates are listed best-match first. Three are shown; more appear when
-    several references are close to the photo, and fewer when little clears the
-    match bar. The list is <strong>not</strong> ranked by confidence — on this
+    Candidates are listed best-match first. One is shown up front; tap
+    "show more" to see every other reference that cleared the match bar —
+    there is often more than one, and the top pick is <strong>not</strong> more
+    likely to be right than the rest. The list is <strong>not</strong> ranked by confidence — on this
     catalogue the best match is wrong roughly as often as it is right, and the
     order only says which reference looks most like the photo. Finish is not
     recoverable from a photo either: <strong>MONO COLOUR GLOSSY</strong> and
@@ -481,13 +482,29 @@ let last = null;
 // How many reference images to pre-load after a scan. See paint().
 const PREFETCH = 3;
 
-// How many to paint is decided by server.display_count and sent as `show`:
-// three that clear the match bar, or every candidate at or above the expand bar
-// when there are more than three of those. The page does not re-derive the rule
-// — one copy of it, on the server, is what keeps the log and the screen honest.
+// How many qualifying candidates are visible without a tap. Everything else
+// that qualifies sits behind "show more", which always reveals the rest in
+// one go — never a paginated subset. See CLAUDE.md "Product rules": the set
+// of candidates itself must never shrink to one, only its default on-screen
+// disclosure.
+const INITIAL_SHOW = 1;
+
+// Which candidates qualify to be shown at all is decided by server.display_count
+// and sent as `show`/`above_floor`: everything that clears the match bar, plus
+// every candidate at or above the expand bar. The page does not re-derive that
+// rule — one copy of it, on the server, is what keeps the log and the screen
+// honest.
+//
+// How many of those qualifying candidates are painted onto the screen *outright*
+// is a separate, purely client-side display decision — see INITIAL_SHOW below.
+// The two must not be confused: the server's count is which answers are good
+// enough to exist on screen at all — CLAUDE.md "Product rules" requires every
+// one of them stay reachable, so they are always one tap away behind "show
+// more", never dropped and never paginated. INITIAL_SHOW is only how many are
+// visible without that tap.
 //
 // A scan can still legitimately produce two candidates, one, or none. That is
-// the point of the match bar, and padding the list back to three would undo it.
+// the point of the match bar, and padding the list back up would undo it.
 function render(d) {
   const cands = d.candidates || [];
   const shown = d.show ?? 0;
@@ -504,7 +521,7 @@ function render(d) {
     return;
   }
   empty.classList.add('hide');
-  paint(cands.slice(0, above), shown);
+  paint(cands.slice(0, above));
 }
 
 // Bypass for the bar, on an explicit tap only. When nothing clears it the
@@ -515,13 +532,13 @@ $('#anyway').onclick = () => {
   if (!last) return;
   $('#empty').classList.add('hide');
   const topK = last.top_k ?? 3;
-  paint(last.candidates.slice(0, topK), topK);
-  say(`below the match bar — closest ${Math.min(topK, last.candidates.length)} shown, treat as a hint only`, true);
+  paint(last.candidates.slice(0, topK));
+  say(`below the match bar — closest ${Math.min(topK, last.candidates.length)} available, treat as a hint only`, true);
 };
 
-function paint(cands, topK) {
+function paint(cands) {
   results.innerHTML = cands.map((c, i) => `
-    <li class="cand${i >= topK ? ' extra' : ''}" tabindex="0" role="button" data-ref="${c.ref_id}"
+    <li class="cand${i >= INITIAL_SHOW ? ' extra' : ''}" tabindex="0" role="button" data-ref="${c.ref_id}"
         data-code="${esc(c.code)}" data-prod="${esc(c.size + ' · ' + c.design)}"
         data-thumb="/${c.thumb}">
       <div class="thumb"><img src="/${c.thumb}" alt="${esc(c.design)}"><span class="ph">image<br>unavailable</span></div>
@@ -536,9 +553,11 @@ function paint(cands, topK) {
       </div>
     </li>`).join('');
 
-  // Everything handed to paint() already clears the match bar, so the overflow
-  // is simply what the display rule did not put on screen outright.
-  const extra = Math.max(0, cands.length - topK);
+  // Everything handed to paint() already qualifies (cleared the match bar, or
+  // is the closest fallback set from "show anyway"), so "more" is simply
+  // whatever INITIAL_SHOW did not put on screen outright — and the button
+  // always reveals every one of those in a single tap, never a subset.
+  const extra = Math.max(0, cands.length - INITIAL_SHOW);
   const btn = $('#more');
   btn.classList.toggle('hide', extra === 0);
   btn.dataset.open = '';
@@ -550,11 +569,12 @@ function paint(cands, topK) {
   // reading the list. Tapping one then paints from cache instead of waiting on a
   // ~100-500 KB transfer that has not started yet.
   //
-  // Capped at PREFETCH regardless of how many are shown: the expand bar can put
-  // twenty cards on screen, and prefetching twenty references is several MB of
-  // mobile data spent on tiles the user will mostly never open. The ones past
-  // the cap simply load on tap, which is the behaviour before this existed.
-  cands.slice(0, Math.min(topK, PREFETCH)).forEach(c => {
+  // Capped at PREFETCH regardless of how many qualify: the expand bar can put
+  // twenty cards behind "show more", and prefetching twenty references is
+  // several MB of mobile data spent on tiles the user will mostly never open.
+  // The ones past the cap simply load on tap, which is the behaviour before
+  // this existed.
+  cands.slice(0, PREFETCH).forEach(c => {
     new Image().src = '/reference/' + c.ref_id;
   });
 }

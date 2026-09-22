@@ -95,7 +95,9 @@ The reference set comes from a Google Drive tree with real inconsistencies. The 
 
 ## Product rules
 
-**Always return three candidates, never one.** Size and finish are not recoverable from a photo — `MONO COLOUR GLOSSY` and `MONO COLOUR MATT` are visually identical. A single answer will be confidently wrong. Do not add a "confidence threshold that shows only one result" feature.
+**Always compute and return every candidate that clears the match bar, never just one.** Size and finish are not recoverable from a photo — `MONO COLOUR GLOSSY` and `MONO COLOUR MATT` are visually identical. A single answer will be confidently wrong. Do not add a "confidence threshold that drops the response to one result" feature — the underlying set of candidates must never shrink to one.
+
+The POC's results *screen* may still collapse that set to a single card by default, with a "show more" control that reveals the rest — this is a display/disclosure decision, not a confidence threshold, and it must never reduce what the server computes or returns. Never make "show more" reveal only part of the remaining set (no pagination) — one tap must expose everything above the limit, so staff are always one action away from the full picture, not several.
 
 **Always show the reference image with each candidate.** Staff cannot verify a code they don't recognise; they can verify a picture instantly. The image is what makes the result usable.
 
