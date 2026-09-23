@@ -120,6 +120,28 @@
   line-height: var(--type-caption-line);
 }
 
+/* The disclosure under the best match. Deliberately the quietest control on
+ * the screen — it is an escape hatch for the case where the first card is
+ * wrong, not a step in the flow, so it takes neither the accent nor the
+ * secondary outline. Full-width would read as a fourth card; left-aligned
+ * under the one card, it reads as a note about it. */
+.more {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .empty {
   color: var(--color-muted-text);
   font-size: var(--type-body-size);

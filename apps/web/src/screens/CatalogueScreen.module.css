@@ -353,17 +353,51 @@
   overflow-wrap: anywhere;
 }
 
+/* The thumbnail's control: it opens the picture full screen (FR-7), because
+ * `--thumbnail-size` is enough to tell one range from another and not enough
+ * to tell two tiles of one range apart.
+ *
+ * A wrapper with nothing of its own to paint — the picture is the whole of the
+ * visible control — so the UA button chrome is cleared and the image's own
+ * border below is what is seen. `display: block` and the explicit width beat
+ * `global.css`'s `inline-flex` 44px floor in one direction only: the target is
+ * 96px square either way, and left inline-flex the button would sit on the
+ * text baseline and pad the row by a descender's worth.
+ *
+ * No hover background: the image covers the button edge to edge, so
+ * `global.css`'s overlay would be invisible. The affordance is the border on
+ * `.image:hover` instead. The focus ring is `global.css`'s and is never
+ * restated here. */
+.imageButton {
+  display: block;
+  width: var(--thumbnail-size);
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
 /* The proxied derivative (AD-9, AD-17), at `--thumbnail-size` square.
  * `contain` rather than `cover`, for `EditTileScreen.module.css`'s reason: a
  * tile face cropped to fill a square is a tile face an Administrator can no
  * longer tell from its neighbour, which is the one job this picture has. */
 .image {
+  display: block;
   width: var(--thumbnail-size);
   aspect-ratio: 1;
   object-fit: contain;
   border: var(--border-hairline) solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-background);
+}
+
+/* The one thing that says the picture is pressable. The row's own hover
+ * already tints the strip behind it, so this is the border alone — navy, the
+ * same secondary colour every other control on this screen is outlined in,
+ * never the accent. */
+@media (hover: hover) {
+  .imageButton:hover .image {
+    border-color: var(--color-primary);
+  }
 }
 
 /* A tile with no reference image. Unreachable through the product — the API

@@ -100,13 +100,16 @@ const TILE: Tile = {
  * duplicate-key warning and a reconciler free to reuse one row's cells for the
  * other.
  */
+/** The sibling's own picture — two tiles of one range, two images (AD-18). */
+const SIBLING_IMAGE = '4a7c1e93-8b52-4d06-a1f8-6e2b0d5c9a37';
+
 const SIBLING: Tile = {
   ...TILE,
   id: 'c58e2a91-6d04-4b73-8f21-9a7c3e5d0b16',
   code: SIBLING_CODE,
   reference_images: [
     {
-      id: '4a7c1e93-8b52-4d06-a1f8-6e2b0d5c9a37',
+      id: SIBLING_IMAGE,
       width: 2048,
       height: 1365,
       featureless: false,
@@ -503,6 +506,74 @@ describe('the rows', () => {
     for (const forbidden of ['http', 's3', 'signature', 'x-amz', 'presigned']) {
       expect(document.body.innerHTML.toLowerCase()).not.toContain(forbidden);
     }
+  });
+
+  it('opens the reference image full screen when the thumbnail is pressed', async () => {
+    // The thumbnail at `--thumbnail-size` tells one range from another and
+    // cannot tell two tiles of one range apart, which is the whole job the
+    // picture has on this row (FR-7, AD-18). The same `ImageViewer` the
+    // Results screen and Scan history open from a Candidate card, so the
+    // verification moment behaves identically wherever it is reached from.
+    const onEditTile = vi.fn();
+    stubList([TILE, SIBLING]);
+    renderScreen({ onEditTile });
+
+    await screen.findByRole('table');
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    // A real `<button>`, not a click handler on the `<img>`: the row itself
+    // takes no focus and claims no role, so a picture only a mouse could
+    // enlarge would fail EXPERIENCE.md lines 109-113 on a surface
+    // EXPERIENCE.md itself calls desktop-first.
+    const thumbnail = within(rowFor(CODE)).getByRole('button', {
+      name: `View reference image of ${CODE}`,
+    });
+    expect(thumbnail.tagName).toBe('BUTTON');
+    // jsdom's `fireEvent.click` does not focus the element the way a real
+    // browser click does, so the opener is focused by hand — `history.test.tsx`'s
+    // own pattern against this same component, for the same reason.
+    thumbnail.focus();
+    fireEvent.click(thumbnail);
+
+    const viewer = screen.getByRole('dialog');
+    // The same proxied path the row painted (AD-9) — not a second endpoint,
+    // and never a storage URL.
+    expect(within(viewer).getByAltText(`Reference image of ${CODE}`).getAttribute('src')).toBe(
+      `/api/admin/tiles/${TILE.id}/images/${FIRST_IMAGE}`,
+    );
+    // The overlay is a look at the row, never a navigation: the press must not
+    // open Edit tile behind it, which is what the row's own click handler
+    // would do if the event reached it.
+    expect(onEditTile).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(viewer, { key: 'Escape' });
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // Focus lands back on the picture that was pressed — `ImageViewer`'s own
+    // restore contract, and the reason the thumbnail is focusable at all.
+    expect(document.activeElement).toBe(thumbnail);
+    expect(onEditTile).not.toHaveBeenCalled();
+  });
+
+  it('opens the picture belonging to the row it was pressed on', async () => {
+    // Two tiles of one range are two rows with two pictures (AD-18). A viewer
+    // that painted the first row's image whichever thumbnail was pressed would
+    // be worse than no viewer at all: it would confirm the wrong tile.
+    stubList([TILE, SIBLING]);
+    renderScreen();
+
+    await screen.findByRole('table');
+    fireEvent.click(
+      within(rowFor(SIBLING_CODE)).getByRole('button', {
+        name: `View reference image of ${SIBLING_CODE}`,
+      }),
+    );
+
+    const viewer = screen.getByRole('dialog');
+    expect(
+      within(viewer).getByAltText(`Reference image of ${SIBLING_CODE}`).getAttribute('src'),
+    ).toBe(`/api/admin/tiles/${SIBLING.id}/images/${SIBLING_IMAGE}`);
+    expect(within(viewer).queryByAltText(`Reference image of ${CODE}`)).toBeNull();
   });
 
   it('says so in words when a tile carries no reference image', async () => {
@@ -1335,13 +1406,23 @@ describe('the controls', () => {
 
     await screen.findByRole('table');
 
-    expect(screen.getAllByRole('button').map((control) => control.textContent)).toEqual([
+    // Read as accessible names rather than as text, because the thumbnail
+    // control's visible content is the picture: a caption under every row
+    // would say the same three words as many times as there are rows, so its
+    // name is an `aria-label` carrying the Code.
+    expect(
+      screen
+        .getAllByRole('button')
+        .map((control) => control.getAttribute('aria-label') ?? control.textContent),
+    ).toEqual([
       '+ Add Tile',
       'Bulk upload',
       'Back',
       'Search',
-      'Edit',
-      'Edit',
+      `View reference image of ${CODE}`,
+      `Edit ${CODE}`,
+      `View reference image of ${SIBLING_CODE}`,
+      `Edit ${SIBLING_CODE}`,
     ]);
     for (const verb of [/remove/i, /delete/i, /sort/i, /next/i, /previous/i, /filter/i]) {
       // `next` and `previous` among them: a two-row catalogue has one page.

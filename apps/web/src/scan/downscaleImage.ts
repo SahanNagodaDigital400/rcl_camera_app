@@ -19,6 +19,8 @@
  * its own preprocessing begins, independent of what this file does.
  */
 
+import type { SourceRect } from './frameGuideRect';
+
 /** A width and a height, in pixels. */
 export interface Dimensions {
   width: number;
@@ -61,11 +63,18 @@ export function computeDownscaledDimensions(
  * their output is identical by construction rather than by two
  * implementations kept in step by hand. Quality is fixed at 0.9: this is a
  * bandwidth step, not the place to trade quality against size per call site.
+ *
+ * `region` narrows *what is read from the source*, never how it is written:
+ * the capture path passes the part of the camera frame the framing guide
+ * marks out, so the crop happens at full sensor resolution and only the tile
+ * spends the 1024px budget. Omitted — the upload path, which has no guide —
+ * the whole source is drawn, exactly as before.
  */
 export async function downscaleToBlob(
   source: CanvasImageSource,
   width: number,
   height: number,
+  region?: SourceRect,
 ): Promise<Blob> {
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -75,7 +84,11 @@ export async function downscaleToBlob(
   if (context === null) {
     throw new Error('Could not get a 2D canvas context to downscale the image.');
   }
-  context.drawImage(source, 0, 0, width, height);
+  if (region === undefined) {
+    context.drawImage(source, 0, 0, width, height);
+  } else {
+    context.drawImage(source, region.x, region.y, region.width, region.height, 0, 0, width, height);
+  }
 
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(

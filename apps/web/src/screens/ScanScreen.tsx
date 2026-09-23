@@ -4,15 +4,17 @@ import type { ChangeEvent, JSX } from 'react';
 
 import { ApiRequestError, SCAN_QUALITY_TOO_LOW } from '../api/client';
 import { computeDownscaledDimensions, downscaleToBlob } from '../scan/downscaleImage';
+import { computeGuideSourceRect } from '../scan/frameGuideRect';
 import styles from './ScanScreen.module.css';
 
 /**
  * Scan — the entry point to the match pipeline, and the default landing
  * surface (EXPERIENCE.md Information Architecture).
  *
- * **One tap from a live viewfinder to a ranked answer.** A capture, or a
- * chosen file, is downscaled and handed to `onCaptured`, which submits the
- * whole frame for matching and moves to Results when the answer lands. There
+ * **One tap from a live viewfinder to a ranked answer.** A capture (the part
+ * of the frame the framing guide marks out), or a chosen file (whole), is
+ * downscaled and handed to `onCaptured`, which submits it for matching and
+ * moves to Results when the answer lands. There
  * is no mandatory crop step in between: cropping is an *option* — offered on
  * Results ("Adjust crop") and here after a refusal ("Crop this photo") —
  * never a gate the staff member has to clear on every scan.
@@ -41,9 +43,23 @@ import styles from './ScanScreen.module.css';
  * close control, and taking another photo clears them anyway, so the live
  * feed is never blocked by a message the staff member has finished with.
  *
- * **The framing guide is decorative only.** DESIGN.md's `framing-guide-overlay`
- * block is an accent outline with a transparent fill; the quality check runs
- * server-side on the submitted region, never on what is inside this rectangle.
+ * **The framing guide is what gets captured.** DESIGN.md's
+ * `framing-guide-overlay` block is an accent outline with a transparent fill,
+ * and the shutter submits the part of the camera frame that outline marks
+ * out: the tile the staff member lined up, not the shop floor around it.
+ * The crop is taken from the full-resolution frame before the downscale
+ * (`frameGuideRect.ts` maps the outline's on-screen box back through the
+ * viewfinder's `object-fit: cover` into camera pixels), so the tile spends
+ * the whole ~1024px budget instead of a third of it. It is a framing aid, not
+ * a gate: nothing is rejected for sitting outside the outline, the guide is
+ * measured at the moment of capture rather than tracked, and if it cannot be
+ * measured — a viewfinder that has not been laid out yet — the whole frame is
+ * submitted as before. The quality check still runs server-side on whatever
+ * region arrives.
+ *
+ * **Only the capture path is cropped.** A chosen file never passed under the
+ * guide, so "Choose a photo" submits the whole image and the optional crop
+ * editor is how a staff member narrows it.
  *
  * **Content decides, never the extension** — `AddTileScreen`'s own rule,
  * applied here to the file picker: `accept="image/*"` is a hint to the
@@ -140,6 +156,9 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
   /** The last frame submitted, kept for "Try again" and "Crop this photo". */
   const [lastImage, setLastImage] = useState<Blob | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  // The framing guide's element, measured at capture time to find the region
+  // of the camera frame it marks out.
+  const guideRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // `true` while this screen is in the document, so a `getUserMedia` call
@@ -282,8 +301,26 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
     setCapturing(true);
     let blob: Blob;
     try {
-      const { width, height } = computeDownscaledDimensions(video.videoWidth, video.videoHeight);
-      blob = await downscaleToBlob(video, width, height);
+      // What the guide marks out, in camera pixels — or the whole frame when
+      // the guide cannot be measured (no layout yet), which is the same
+      // submission this screen made before the guide framed anything.
+      const guide = guideRef.current;
+      const region =
+        guide === null
+          ? null
+          : computeGuideSourceRect(
+              { width: video.videoWidth, height: video.videoHeight },
+              video.getBoundingClientRect(),
+              guide.getBoundingClientRect(),
+            );
+      const captured = region ?? {
+        x: 0,
+        y: 0,
+        width: video.videoWidth,
+        height: video.videoHeight,
+      };
+      const { width, height } = computeDownscaledDimensions(captured.width, captured.height);
+      blob = await downscaleToBlob(video, width, height, captured);
     } catch {
       setFileError(PROCESS_FAILURE);
       return;
@@ -356,13 +393,16 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
               playsInline
               data-testid="viewfinder-video"
             />
-            {/* Decorative only — see the module comment above. */}
+            {/* The region the shutter captures — see the module comment
+                above. Still `aria-hidden`: it is a line on the video, and the
+                sentence below it is what says what to do with it. */}
             <div
               className={styles.frameGuide}
+              ref={guideRef}
               aria-hidden="true"
               data-testid="framing-guide-overlay"
             />
-            <p className={styles.guideCopy}>Fill the frame with the tile face.</p>
+            <p className={styles.guideCopy}>Fill the box with the tile face.</p>
           </>
         ) : cameraState === 'denied' ? (
           <p className={styles.denied}>{CAMERA_DENIED}</p>

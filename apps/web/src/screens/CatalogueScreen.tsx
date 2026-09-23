@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent, JSX } from 'react';
 
 import { API_PREFIX, ApiRequestError, MALFORMED_RESPONSE, apiRequest } from '../api/client';
+import { ImageViewer } from '../components/ImageViewer';
 import styles from './CatalogueScreen.module.css';
 import { isTile, UNKNOWN_CATEGORY } from '@rocell/schema/tile';
 import type { Tile } from '@rocell/schema/tile';
@@ -49,6 +50,14 @@ import type { Tile } from '@rocell/schema/tile';
  * session cookie travels with it and the server re-checks the Administrator
  * role on every one. `apps/web` holds no storage URL, presigned or otherwise,
  * and the `ReferenceImage` contract has nowhere to put one.
+ *
+ * **And the thumbnail opens full screen.** `--thumbnail-size` is enough to tell
+ * one range from another and not enough to tell two tiles of one range apart,
+ * which is the one job the picture on this row has (FR-7, AD-18) — so it is a
+ * button, and it opens the same `ImageViewer` the Results screen and Scan
+ * history open from a Candidate card. One component, so the verification
+ * moment behaves identically wherever it is reached from, and the overlay
+ * shows the picture the row already fetched rather than a second endpoint.
  *
  * **The row opens the tile, and so does a control at the end of it.**
  * EXPERIENCE.md line 71 asks for row click; lines 109-113 require a keyboard
@@ -189,6 +198,17 @@ const NO_TILES = 'No tiles yet.';
 /** The word on the row-end control, and the visible label of the accent one. */
 const EDIT = 'Edit';
 const ADD = '+ Add Tile';
+
+/**
+ * The verb on the thumbnail's accessible name, which is never visible.
+ *
+ * The control's visible content is the picture itself — a caption under every
+ * row's thumbnail would say the same three words as many times as there are
+ * rows — so the name is written here and carries the Code, the way the row-end
+ * Edit does: a screen reader hears which tile the picture belongs to rather
+ * than a column of identical "View image" buttons.
+ */
+const VIEW_IMAGE = 'View reference image of';
 
 /** The two page controls. Words rather than arrows: an arrow glyph has no
  *  accessible name, and `‹`/`›` are announced as punctuation or not at all. */
@@ -340,6 +360,18 @@ export function CatalogueScreen({
    * them somewhere they never chose.
    */
   const [page, setPage] = useState(0);
+  /**
+   * The tile whose reference image is open full screen, or `null`.
+   *
+   * The tile rather than a URL, so the overlay's label can name the Code the
+   * picture belongs to — an image with no Code beside it is a picture an
+   * Administrator cannot act on. `ResultsScreen` keeps the same state for the
+   * same reason, against the same `ImageViewer`.
+   *
+   * Not carried out to `App`: this is a look at one row, not a place in the
+   * catalogue, and it closes when the screen does.
+   */
+  const [viewing, setViewing] = useState<Tile | null>(null);
   /**
    * The re-entrancy guard for `Try again`, written synchronously.
    *
@@ -529,6 +561,10 @@ export function CatalogueScreen({
   // end is an empty table under a count that says there are rows.
   const current = Math.min(page, pages - 1);
   const visible = tiles.slice(current * PAGE_SIZE, current * PAGE_SIZE + PAGE_SIZE);
+  // The same path the row painted, resolved once here rather than twice: the
+  // overlay shows the picture that is already in the browser's cache, not a
+  // second endpoint and not a storage URL (AD-9).
+  const enlarged = viewing === null ? null : thumbnail(viewing);
 
   function goTo(wanted: number): void {
     // The refusal that makes `aria-disabled` honest: the first page's
@@ -727,12 +763,36 @@ export function CatalogueScreen({
                         // per request. `loading="lazy"` because a browse of
                         // the whole catalogue is a few hundred pictures and
                         // only the first screenful is being looked at.
-                        <img
-                          alt={`Reference image of ${tile.code}`}
-                          className={styles.image}
-                          loading="lazy"
-                          src={source}
-                        />
+                        // The thumbnail at `--thumbnail-size` is enough to
+                        // tell one range from another and not enough to tell
+                        // two tiles of one range apart, which is the whole job
+                        // the reference image has here (FR-7, AD-18) — so it
+                        // opens full screen, as the Candidate card does on
+                        // Results. A real `<button>`, not a click handler on
+                        // the `<img>`: the row is a mouse convenience with no
+                        // focus and no role, and a picture that only a mouse
+                        // could enlarge would fail the keyboard floor
+                        // (EXPERIENCE.md lines 109-113).
+                        //
+                        // `stopPropagation`, or the row's own handler fires
+                        // second and navigates to Edit Tile behind the
+                        // overlay.
+                        <button
+                          aria-label={`${VIEW_IMAGE} ${tile.code}`}
+                          className={styles.imageButton}
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setViewing(tile);
+                          }}
+                        >
+                          <img
+                            alt={`Reference image of ${tile.code}`}
+                            className={styles.image}
+                            loading="lazy"
+                            src={source}
+                          />
+                        </button>
                       )}
                     </td>
                     {/* The monospace role again: this is the value a member
@@ -842,6 +902,25 @@ export function CatalogueScreen({
             {NEXT}
           </button>
         </nav>
+      )}
+      {/* The full-screen look at one row's reference image (FR-7). The same
+          overlay the Results screen opens from a Candidate card — one
+          component, so the verification moment behaves identically wherever
+          it is reached from: Escape, a scrim click or Close dismisses it, and
+          focus returns to the thumbnail that opened it.
+
+          `enlarged` is `null` for a tile with no image, which is the same
+          unreachable case `thumbnail` handles: nothing can open the overlay
+          for a row that painted "No image", and a row that could would be one
+          `src=""` request against the proxy rather than a picture. */}
+      {viewing !== null && enlarged !== null && (
+        <ImageViewer
+          alt={`Reference image of ${viewing.code}`}
+          src={enlarged}
+          onClose={() => {
+            setViewing(null);
+          }}
+        />
       )}
     </section>
   );

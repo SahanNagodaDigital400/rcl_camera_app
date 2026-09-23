@@ -1,4 +1,4 @@
-import { ArrowsClockwise, Crop } from '@phosphor-icons/react';
+import { ArrowsClockwise, CaretDown, CaretUp, Crop } from '@phosphor-icons/react';
 import { useState } from 'react';
 import type { JSX } from 'react';
 
@@ -18,6 +18,15 @@ import type { ScanCandidate } from '@rocell/schema/scan';
  * `rank` (AD-20). **Order in the array is the rank**: the first element is
  * painted as "Best match" and the ordinal is never re-derived or displayed
  * anywhere else.
+ *
+ * **The best match is shown, the rest are one tap away.** The server still
+ * answers with three Candidates and this screen still holds all three — a
+ * single answer is confidently wrong often enough that the alternatives can
+ * never be dropped (PRD product rule). They are collapsed, not discarded:
+ * the disclosure under the card says how many there are and reveals them in
+ * place, so the common case (the first card is right) is one glance and the
+ * uncommon one is one tap. No threshold decides this and nothing is hidden
+ * on the strength of a score.
  *
  * **Each card is a distinct Tile, never deduplicated, collapsed or
  * diversified by Category** (AD-18) — two Candidates from one Category folder
@@ -52,6 +61,12 @@ const RETAKE = 'Retake';
 const SCAN_AGAIN = 'Scan again';
 const ADJUST_CROP = 'Adjust crop';
 const HOW_TO_VERIFY = 'Tap a candidate to view its reference image full-screen.';
+const HIDE_OTHERS = 'Hide other matches';
+
+/** "Show 2 other matches" — the count is the point: it says what is behind it. */
+function showOthersLabel(count: number): string {
+  return `Show ${count} other match${count === 1 ? '' : 'es'}`;
+}
 
 function imageSrc(candidate: ScanCandidate): string {
   return `${API_PREFIX}/tiles/${candidate.tile_id}/images/${candidate.image_id}`;
@@ -80,6 +95,8 @@ export function ResultsScreen({
 }: ResultsScreenProps): JSX.Element {
   /** The Candidate whose reference image is open full-screen, or `null`. */
   const [viewing, setViewing] = useState<ScanCandidate | null>(null);
+  /** Whether the Candidates below the best match are revealed. */
+  const [showOthers, setShowOthers] = useState(false);
 
   const adjust =
     onAdjustCrop === undefined ? null : (
@@ -88,6 +105,11 @@ export function ResultsScreen({
         {ADJUST_CROP}
       </button>
     );
+
+  /* All three are held and none is thrown away — only the alternatives are
+     folded up until asked for. */
+  const others = candidates.length - 1;
+  const shown = showOthers ? candidates : candidates.slice(0, 1);
 
   if (candidates.length === 0) {
     return (
@@ -113,7 +135,7 @@ export function ResultsScreen({
         <p className={styles.subheading}>{HOW_TO_VERIFY}</p>
       </div>
       <div className={styles.list}>
-        {candidates.map((candidate, index) => (
+        {shown.map((candidate, index) => (
           <button
             className={index === 0 ? `${styles.card} ${styles.cardBest}` : styles.card}
             key={candidate.tile_id}
@@ -132,6 +154,23 @@ export function ResultsScreen({
             </span>
           </button>
         ))}
+        {others > 0 && (
+          /* A disclosure, not a navigation: the other Candidates open in
+             place, under the card they are alternatives to. */
+          <button
+            className={styles.more}
+            type="button"
+            aria-expanded={showOthers}
+            onClick={() => setShowOthers(!showOthers)}
+          >
+            {showOthers ? (
+              <CaretUp className={styles.buttonIcon} aria-hidden="true" />
+            ) : (
+              <CaretDown className={styles.buttonIcon} aria-hidden="true" />
+            )}
+            {showOthers ? HIDE_OTHERS : showOthersLabel(others)}
+          </button>
+        )}
       </div>
       <div className={styles.actions}>
         <button className={styles.rescan} type="button" onClick={onBack}>

@@ -258,7 +258,7 @@
   --hover-overlay: linear-gradient(var(--color-hover-tint), var(--color-hover-tint));
 
   /* Scan's overlaid controls: the mockup's gradient behind the shutter and
-   * the dark pill behind "Fill the frame with the tile face." */
+   * the dark pill behind "Fill the box with the tile face." */
   --viewfinder-controls-gradient: linear-gradient(to top, rgba(10, 10, 16, 0.65), rgba(10, 10, 16, 0));
   --color-viewfinder-copy-bg: rgba(10, 10, 16, 0.5);
 

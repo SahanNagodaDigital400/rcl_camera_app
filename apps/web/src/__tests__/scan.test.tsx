@@ -219,10 +219,17 @@ function stubCamera(outcome: MediaStream | 'denied' = fakeStream()): ReturnType<
   return getUserMedia;
 }
 
-/** Stubs the canvas draw/encode step `downscaleToBlob` depends on. */
-function stubCanvas(blob: Blob = new Blob(['frame'], { type: 'image/jpeg' })): void {
+/**
+ * Stubs the canvas draw/encode step `downscaleToBlob` depends on, and returns
+ * the `drawImage` spy — the only place the region a capture actually read
+ * from the camera frame is observable, since the encoded blob is a stub.
+ */
+function stubCanvas(blob: Blob = new Blob(['frame'], { type: 'image/jpeg' })): {
+  drawImage: ReturnType<typeof vi.fn>;
+} {
+  const drawImage = vi.fn();
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-    drawImage: vi.fn(),
+    drawImage,
   } as unknown as CanvasRenderingContext2D);
   vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function toBlob(
     this: HTMLCanvasElement,
@@ -230,6 +237,7 @@ function stubCanvas(blob: Blob = new Blob(['frame'], { type: 'image/jpeg' })): v
   ) {
     callback(blob);
   });
+  return { drawImage };
 }
 
 /** Stubs `URL.createObjectURL`/`revokeObjectURL`, which jsdom has neither of. */
@@ -529,6 +537,89 @@ describe('the capture path', () => {
 
     expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(calls.filter(([path]) => path === '/api/scans')).toHaveLength(0);
+  });
+});
+
+describe('the framing guide', () => {
+  /**
+   * A 2000×1000 stream in a 400×400 viewfinder: `object-fit: cover` scales by
+   * 0.4, so 200 CSS pixels of frame hang off each side and one displayed
+   * pixel is 2.5 camera pixels. A guide 40px in from the left, 40px down, and
+   * 320×240 is therefore the camera's own 600,100 800×600.
+   */
+  function frameViewfinder(video: HTMLElement, guide: HTMLElement): void {
+    overrideRect(video, { width: 400, height: 400 });
+    overrideRect(guide, { left: 40, top: 40, width: 320, height: 240 });
+    Object.defineProperty(video, 'videoWidth', { value: 2000, configurable: true });
+    Object.defineProperty(video, 'videoHeight', { value: 1000, configurable: true });
+  }
+
+  it('captures the region the guide marks out, at full camera resolution', async () => {
+    stubCamera();
+    const { drawImage } = stubCanvas();
+    stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
+    render(<App />);
+    await openScan();
+
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('viewfinder-video');
+    frameViewfinder(video, screen.getByTestId('framing-guide-overlay'));
+
+    fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
+
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
+    // Read from the camera frame's 600,100 800×600 — the crop is taken before
+    // the downscale, so the 800×600 region is under the 1024px cap and is
+    // written whole rather than being a third of a shrunken frame.
+    expect(drawImage).toHaveBeenCalledWith(video, 600, 100, 800, 600, 0, 0, 800, 600);
+  });
+
+  it('submits the captured region whole: the guide is the crop, so no second one', async () => {
+    stubCamera();
+    stubCanvas();
+    const { calls } = stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
+    render(<App />);
+    await openScan();
+
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('viewfinder-video');
+    frameViewfinder(video, screen.getByTestId('framing-guide-overlay'));
+
+    fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
+
+    await screen.findByRole('heading', { name: /^results$/i });
+    // The rectangle is normalized against the image submitted, and that image
+    // is already the guide's region: the server crops nothing further.
+    expectFullFrame(calls.find(([path]) => path === '/api/scans')?.[1].body as FormData);
+  });
+
+  it('falls back to the whole frame when the guide cannot be measured', async () => {
+    // jsdom lays nothing out, so every rectangle is zero unless overridden —
+    // the same state a capture would hit before the viewfinder's first paint.
+    stubCamera();
+    const { drawImage } = stubCanvas();
+    stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
+    render(<App />);
+    await openScan();
+
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('viewfinder-video');
+    Object.defineProperty(video, 'videoWidth', { value: 2000, configurable: true });
+    Object.defineProperty(video, 'videoHeight', { value: 1000, configurable: true });
+
+    fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
+
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
+    expect(drawImage).toHaveBeenCalledWith(video, 0, 0, 2000, 1000, 0, 0, 1024, 512);
   });
 });
 
@@ -1416,4 +1507,78 @@ describe('the tap-to-fullscreen viewer', () => {
       expect(document.activeElement).toBe(card);
     },
   );
+});
+
+describe('the other candidates', () => {
+  /** Two more Tiles from the same Category folder — AD-18's own case. */
+  const A_SECOND_CANDIDATE = {
+    tile_id: '33333333-3333-4333-8333-333333333333',
+    code: 'RP.CMA.0008DJ.SM.0T',
+    size: '45X90',
+    category: 'CREMA MARMOL',
+    image_id: '44444444-4444-4444-8444-444444444444',
+  };
+  const A_THIRD_CANDIDATE = {
+    tile_id: '55555555-5555-4555-8555-555555555555',
+    code: 'RP.CMA.0011DJ.SM.0T',
+    size: '45X90',
+    category: 'CREMA MARMOL',
+    image_id: '66666666-6666-4666-8666-666666666666',
+  };
+  const THREE = [A_CANDIDATE, A_SECOND_CANDIDATE, A_THIRD_CANDIDATE];
+
+  async function reachResultsWith(body: unknown[]): Promise<void> {
+    stubCanvas();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body }],
+    });
+    await reachResults();
+  }
+
+  it('shows the best match alone, with the rest one tap away', async () => {
+    await reachResultsWith(THREE);
+
+    expect(screen.getByText(A_CANDIDATE.code)).toBeTruthy();
+    expect(screen.getByText(/best match/i)).toBeTruthy();
+    // Held, not discarded — but not competing with the answer either.
+    expect(screen.queryByText(A_SECOND_CANDIDATE.code)).toBeNull();
+    expect(screen.queryByText(A_THIRD_CANDIDATE.code)).toBeNull();
+
+    const disclosure = screen.getByRole('button', { name: /show 2 other matches/i });
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(disclosure);
+
+    // Every Candidate the server sent, in the order it sent them, each its own
+    // card: two from one Category folder are two different Tiles (AD-18).
+    expect(screen.getByText(A_SECOND_CANDIDATE.code)).toBeTruthy();
+    expect(screen.getByText(A_THIRD_CANDIDATE.code)).toBeTruthy();
+    expect(
+      screen.getAllByAltText(/^Reference image of /).map((img) => img.getAttribute('alt')),
+    ).toEqual(THREE.map((candidate) => `Reference image of ${candidate.code}`));
+    // Still exactly one best match: revealing the alternatives re-ranks nothing.
+    expect(screen.getAllByText(/best match/i)).toHaveProperty('length', 1);
+
+    const hide = screen.getByRole('button', { name: /hide other matches/i });
+    expect(hide.getAttribute('aria-expanded')).toBe('true');
+
+    fireEvent.click(hide);
+
+    expect(screen.queryByText(A_SECOND_CANDIDATE.code)).toBeNull();
+  });
+
+  it('singularises the disclosure when the server sent only one alternative', async () => {
+    await reachResultsWith([A_CANDIDATE, A_SECOND_CANDIDATE]);
+
+    expect(screen.getByRole('button', { name: /^show 1 other match$/i })).toBeTruthy();
+  });
+
+  it('offers no disclosure when the best match is the only candidate', async () => {
+    await reachResultsWith([A_CANDIDATE]);
+
+    expect(screen.getByText(A_CANDIDATE.code)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /other match/i })).toBeNull();
+  });
 });
