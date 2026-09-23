@@ -121,6 +121,55 @@ const FILE_TOO_LARGE = `Each reference image must be under ${
   MAX_IMAGE_BYTES / (1024 * 1024)
 } MB.`;
 
+/**
+ * The starter sheet this screen hands out, and the name it saves under.
+ *
+ * **A template is not a second reader.** The columns are the three
+ * `catalogue.py` requires (`MANIFEST_COLUMNS`) plus the one it may take
+ * (`MANIFEST_OPTIONAL_COLUMN`); nothing here parses, validates or infers
+ * anything, and a sheet built from this template is read by the server exactly
+ * as a hand-made one is. `error-code-parity.test.ts` pins the header line
+ * against those two Python constants, so a column renamed on the server fails a
+ * test rather than leaving a template that quietly teaches the wrong header.
+ *
+ * The example lines are shapes the source tree really carries rather than
+ * `foo,bar`: a structured Code, an underscore-suffixed one, a bare one whose
+ * case is part of it (`1Jk`), a `.tif` beside the `.jpg`s, and a last line that
+ * leaves the Category empty — which is not an error (AD-18) and is the one
+ * thing about this sheet nobody guesses unprompted.
+ *
+ * No value here contains a comma or a quotation mark, so the lines are written
+ * out rather than assembled by an escaper this screen would otherwise have to
+ * own. A Code that needed one is the Administrator's to quote in their own
+ * spreadsheet, which is what a spreadsheet does on export.
+ */
+const TEMPLATE_COLUMNS = ['file', 'code', 'size', 'category'];
+const TEMPLATE_LINES = [
+  'RP.CMA.0008DJ.SM.0T.jpg,RP.CMA.0008DJ.SM.0T,45X90,CREMA MARMOL',
+  '77DH.MA_F3.jpg,77DH.MA_F3,60X60,ASTORIA',
+  '1Jk.jpg,1Jk,45X90,POLISH',
+  '279.tif,279,40X40,',
+];
+const TEMPLATE_NAME = 'rocell-bulk-upload-template.csv';
+const TEMPLATE_CSV = `${[TEMPLATE_COLUMNS.join(','), ...TEMPLATE_LINES].join('\n')}\n`;
+
+/**
+ * The template as something a browser will save, built once at module scope.
+ *
+ * **A `data:` URL rather than a `Blob` and `URL.createObjectURL`.** The bytes
+ * are five lines of text known at build time, so the blob apparatus — a
+ * creation per click, an object URL to revoke, a lifetime tied to the document
+ * — buys nothing and leaks something: an unrevoked object URL is held until the
+ * page goes away, and this is a control an Administrator may press twice.
+ *
+ * Nothing is fetched and no request leaves the app, which is how this keeps
+ * AD-6 ("apps/web talks to nothing but apps/api") — by talking to nobody. It is
+ * also why the download needs no session: the file is this screen's own source,
+ * not catalogue data, and it says nothing a signed-out visitor could not read
+ * off the hint above it.
+ */
+const TEMPLATE_HREF = `data:text/csv;charset=utf-8,${encodeURIComponent(TEMPLATE_CSV)}`;
+
 /** The spoken states of the progress line. See `progress` below. */
 const UPLOADING = 'Uploading…';
 const FINISHED = 'Finished.';
@@ -641,6 +690,16 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
             refused only after it has been sent. Category is optional — a row without one is filed
             under UNKNOWN and flagged. Export a spreadsheet as CSV and upload that.
           </p>
+          {/* The template. An anchor and not a button: there is nothing to
+              fetch and nothing to generate, and saving a file is what a browser
+              already knows how to do with one — no click handler, no state, and
+              it keeps working under a middle-click or a right-click Save as.
+              Navy rather than accent: Upload is this screen's one orange action
+              (DESIGN.md), and the budget here is tighter than anywhere else
+              because orange is also the flagged-row signal below. */}
+          <a className={styles.template} href={TEMPLATE_HREF} download={TEMPLATE_NAME}>
+            Download a template sheet
+          </a>
           {error?.fieldAtFault === 'manifest' && alert}
         </div>
 

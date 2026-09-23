@@ -762,19 +762,22 @@ describe('the screen’s controls', () => {
       screen.queryAllByRole(role).map((element) => `${role}: ${element.textContent ?? ''}`),
     );
 
-    // Two buttons and nothing else. The two file inputs are deliberately not in
-    // this count: `<input type="file">` has no implicit ARIA role, so each is
-    // unreachable by role and is asserted by its label instead — which is also
-    // why those labels have to be right.
+    // Two buttons and one link, and nothing else. The two file inputs are
+    // deliberately not in this count: `<input type="file">` has no implicit
+    // ARIA role, so each is unreachable by role and is asserted by its label
+    // instead — which is also why those labels have to be right.
     //
     // There is no text field at all on this screen, and that is the design: the
     // Code, the Size and the Category arrive in the manifest, and a box to
     // retype one of them here would be a second way to state what the sheet
-    // already says. A third button would be a control nobody specified, and on
-    // a screen limited to one accent fill it is how a second primary arrives.
-    expect(found).toHaveLength(2);
+    // already says. A third *button* would be a control nobody specified, and
+    // on a screen limited to one accent fill it is how a second primary
+    // arrives — which is why the template is a link and is counted as one: it
+    // saves a file, it sends nothing, and it is not an action of this form.
+    expect(found).toHaveLength(3);
     expect(screen.getByRole('button', { name: /^upload$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^back$/i })).toBeTruthy();
+    expect(screen.getByRole('link', { name: /template/i })).toBeTruthy();
     expect(screen.getByLabelText(/sheet of codes/i).getAttribute('type')).toBe('file');
     expect(screen.getByLabelText(/reference images/i).getAttribute('type')).toBe('file');
   });
@@ -852,6 +855,88 @@ describe('the screen’s controls', () => {
     const { container } = render(<BulkUploadScreen onBack={(): void => undefined} />);
 
     expect(container.querySelector('main')).toBeNull();
+  });
+});
+
+/** The template as the browser would save it, decoded from the offered URL. */
+function templateCsv(): string {
+  const href = screen.getByRole('link', { name: /template/i }).getAttribute('href') ?? '';
+  const [scheme, encoded] = href.split(',', 2);
+
+  // Asserted rather than assumed: a `blob:` href would decode to nothing here
+  // and every check below would then be reading an empty string.
+  expect(scheme).toBe('data:text/csv;charset=utf-8');
+  return decodeURIComponent(encoded ?? '');
+}
+
+describe('the template sheet', () => {
+  it('is offered as a file to save, under a name that says what it is', () => {
+    renderScreen();
+
+    const link = screen.getByRole('link', { name: /template/i });
+
+    // `download` is what makes this a save rather than a navigation. Without
+    // it the browser renders four lines of CSV in place of the screen and the
+    // batch in flight — if there is one — goes with it.
+    expect(link.getAttribute('download')).toMatch(/\.csv$/);
+  });
+
+  it('asks the server for nothing', () => {
+    // The bytes are this screen's own source, so the template is available to
+    // an Administrator whose session has just expired and costs the API
+    // nothing per press. A `/api/` href here would be a second endpoint nobody
+    // specified; an object URL would be a leak per press.
+    const stub = stubFetch({ status: 200, text: '' });
+    renderScreen();
+
+    fireEvent.click(screen.getByRole('link', { name: /template/i }));
+
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  it('carries the header the server parses, and only that', () => {
+    renderScreen();
+
+    const [header] = templateCsv().split('\n');
+
+    // The three columns `_manifest_rows` requires plus the one it may take.
+    // `error-code-parity.test.ts` is what holds this against `catalogue.py`;
+    // this one holds it against the file an Administrator actually receives,
+    // which is the assembled string rather than the constant behind it.
+    expect(header).toBe('file,code,size,category');
+  });
+
+  it('shows a row per file, each one a shape the catalogue really holds', () => {
+    renderScreen();
+
+    const lines = templateCsv().trimEnd().split('\n');
+    const rows = lines.slice(1);
+
+    // Four examples, every one of them four cells wide. A row short of a cell
+    // in the file the product hands out is a row the server refuses by the
+    // rule the template exists to teach.
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) expect(row.split(',')).toHaveLength(4);
+
+    // One Code per line and no line standing for a range: AD-18's identity
+    // model, stated in the one artefact an Administrator copies before they
+    // have read a word of it. Two example lines share neither their Size nor
+    // their Code.
+    const codes = rows.map((row) => row.split(',')[1]);
+    expect(new Set(codes).size).toBe(rows.length);
+  });
+
+  it('leaves one example Category empty, because an empty one is legal', () => {
+    // AD-18: a row with no recoverable Category is filed under `UNKNOWN` and
+    // flagged, never refused. It is the one rule about this sheet nobody
+    // guesses, and a template whose every row is filled in teaches the
+    // opposite — an Administrator inventing a Category to fill a cell is how a
+    // catalogue acquires a range that does not exist.
+    renderScreen();
+
+    const rows = templateCsv().trimEnd().split('\n').slice(1);
+
+    expect(rows.some((row) => row.endsWith(','))).toBe(true);
   });
 });
 

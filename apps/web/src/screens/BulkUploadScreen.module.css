@@ -78,6 +78,35 @@
   line-height: var(--type-caption-line);
 }
 
+/* The template link, sitting under the sheet picker's hint because a starter
+ * sheet is guidance about that picker rather than an action of the form.
+ *
+ * Navy and underlined, never the accent: Upload is this screen's one orange
+ * control, and orange is also the flagged-row signal below — a third one here
+ * would be the same hue meaning "press this", "save this" and "review this row"
+ * on one screen. Underlined rather than coloured alone for the reason the report
+ * rows carry a word beside each colour: a link a colour-blind reader cannot
+ * distinguish from the hint above it is not a link they will find.
+ *
+ * `align-self` keeps the target to the words rather than stretching it across
+ * the column, and the padding is what carries it to the touch-target floor —
+ * global.css puts that floor on `button` and `input`, and an anchor is neither.
+ * The negative inline margin pulls the text back into line with the hint above
+ * it, so the padding is hit area and not indentation. */
+.template {
+  align-self: flex-start;
+  margin-inline: calc(-1 * var(--space-2));
+  padding: var(--space-2);
+  min-height: var(--touch-target-min);
+  display: flex;
+  align-items: center;
+  color: var(--color-primary);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-caption-line);
+  text-decoration: underline;
+}
+
 /* The rejection, carrying the API's own sentence — which names the rule that
  * failed (EXPERIENCE.md:87). Red is destructive-or-failed in this system and
  * nothing else, and it is never the only signal: the text says what happened

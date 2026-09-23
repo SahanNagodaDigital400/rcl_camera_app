@@ -547,3 +547,63 @@ describe('the admin form bounds are one contract in two languages', () => {
     },
   );
 });
+
+/**
+ * The value of a module-level `NAME = ("a", "b")` tuple in a Python source file.
+ *
+ * Only the string members are read, which is all `MANIFEST_COLUMNS` holds.
+ */
+function pythonTuple(source: string, name: string): string[] | null {
+  const found = new RegExp(String.raw`^${name}\s*=\s*\(([^)]*)\)`, 'm').exec(source);
+  const body = found?.[1];
+  if (body === undefined) return null;
+  return [...body.matchAll(/"([^"]*)"/g)].map((match) => match[1] ?? '');
+}
+
+/** The members of a module-level `const NAME = ['a', 'b'];` array in TypeScript. */
+function typescriptArray(source: string, name: string): string[] | null {
+  const found = new RegExp(String.raw`^const ${name}\s*=\s*\[([^\]]*)\];`, 'm').exec(source);
+  const body = found?.[1];
+  if (body === undefined) return null;
+  return [...body.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? '');
+}
+
+describe('the template sheet teaches the header the server actually reads', () => {
+  // The third kind of contract this file pins, and the one with the quietest
+  // failure of the three. A drifted *code* stops a screen recognising a
+  // refusal; a drifted *bound* sends a batch that was never going to be taken.
+  // A drifted template header is worse than either, because the screen itself
+  // stays correct: it hands out a sheet whose first line names columns the
+  // parser no longer looks for, and every Administrator who starts from that
+  // sheet is refused with `invalid_manifest` for a file the product gave them.
+  //
+  // Read from `catalogue.py` rather than from `tile.py`: the manifest's columns
+  // are the endpoint's, not the Tile contract's, and the parser that requires
+  // them is `_manifest_rows` in that file.
+  const CATALOGUE = join(API, 'catalogue.py');
+
+  it('names the three required columns and the one optional one, in that order', () => {
+    const python = pythonTuple(read(CATALOGUE), 'MANIFEST_COLUMNS');
+    const optional = pythonConstant(read(CATALOGUE), 'MANIFEST_OPTIONAL_COLUMN');
+    const typescript = typescriptArray(read(screenPath(BULK_UPLOAD_SCREEN)), 'TEMPLATE_COLUMNS');
+
+    // Each half asserted present first, for the reason the codes above give: a
+    // comparison of `null` with `null` passes forever, so a renamed or moved
+    // constant has to fail here as a missing one rather than as a match.
+    expect(python).not.toBeNull();
+    expect(optional).not.toBeNull();
+    expect(typescript).not.toBeNull();
+    expect(typescript).toEqual([...(python ?? []), optional]);
+  });
+
+  it('is offered under a name the picker beside it would accept', () => {
+    // `.csv`, because the sheet input's `accept` is `.csv,text/csv` and a
+    // template saved as anything else is a file the screen that produced it
+    // would then filter out of its own picker.
+    const screen = read(screenPath(BULK_UPLOAD_SCREEN));
+    const name = /^const TEMPLATE_NAME = '([^']*)';/m.exec(screen)?.[1];
+
+    expect(name).toBeTruthy();
+    expect(name?.endsWith('.csv')).toBe(true);
+  });
+});
