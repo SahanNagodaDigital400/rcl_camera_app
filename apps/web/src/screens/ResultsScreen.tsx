@@ -1,4 +1,4 @@
-import { ArrowLeft } from '@phosphor-icons/react';
+import { ArrowsClockwise, Crop } from '@phosphor-icons/react';
 import { useState } from 'react';
 import type { JSX } from 'react';
 
@@ -11,12 +11,13 @@ import type { ScanCandidate } from '@rocell/schema/scan';
 /**
  * Results — up to three ranked Candidates from a submitted Scan (Story 3.4).
  *
- * Reached only from a successful `CropScreen` confirm (`App`'s `showResults`,
- * `showCrop`'s own pattern: candidates first, then the section). Renders the
- * closed `ScanCandidate` array `POST /scans` answered — `tile_id`, `code`,
- * `size`, `category`, `image_id`, never a `score` or a `rank` (AD-20). **Order
- * in the array is the rank**: the first element is painted as "Best match"
- * and the ordinal is never re-derived or displayed anywhere else.
+ * Reached from a capture on Scan (the whole frame, submitted directly) or
+ * from a confirmed crop (`App`'s `showResults`, candidates first, then the
+ * section). Renders the closed `ScanCandidate` array `POST /scans` answered —
+ * `tile_id`, `code`, `size`, `category`, `image_id`, never a `score` or a
+ * `rank` (AD-20). **Order in the array is the rank**: the first element is
+ * painted as "Best match" and the ordinal is never re-derived or displayed
+ * anywhere else.
  *
  * **Each card is a distinct Tile, never deduplicated, collapsed or
  * diversified by Category** (AD-18) — two Candidates from one Category folder
@@ -33,16 +34,23 @@ import type { ScanCandidate } from '@rocell/schema/scan';
  * card is a real `<button>` for that reason, at the touch-target floor, and
  * the line under the heading says so (`mockups/key-results.html`).
  *
+ * **Two ways forward, both secondary.** "Scan again" returns to the live
+ * viewfinder; "Adjust crop" opens the optional crop editor on the very frame
+ * these candidates came from, for the case where the tile was small in it.
+ * Neither takes the accent: the cards are what this screen is for.
+ *
  * **An empty array is not an empty screen.** "No confident match" is the
  * PRD's own answer for a catalogue with nothing indexed yet, and it is
  * rendered as EXPERIENCE.md's verbatim sentence plus a single Retake action
- * — never a blank surface with nothing to look at and no way to try again.
+ * — with the crop offered beside it, since a tighter frame is the other
+ * thing that can rescue a photo.
  */
 
 const NO_MATCH = 'No confident match — retake, or ask a colleague.';
 const BEST_MATCH = 'Best match';
 const RETAKE = 'Retake';
-const BACK = 'Back';
+const SCAN_AGAIN = 'Scan again';
+const ADJUST_CROP = 'Adjust crop';
 const HOW_TO_VERIFY = 'Tap a candidate to view its reference image full-screen.';
 
 function imageSrc(candidate: ScanCandidate): string {
@@ -55,12 +63,31 @@ function imageAlt(candidate: ScanCandidate): string {
 
 interface ResultsScreenProps {
   candidates: ScanCandidate[];
+  /** Back to the live viewfinder for another photo. */
   onBack: () => void;
+  /**
+   * Open the crop editor on the frame these candidates came from. Omitted
+   * when no frame is held (there is always one today), and then no control
+   * is rendered.
+   */
+  onAdjustCrop?: (() => void) | undefined;
 }
 
-export function ResultsScreen({ candidates, onBack }: ResultsScreenProps): JSX.Element {
+export function ResultsScreen({
+  candidates,
+  onBack,
+  onAdjustCrop,
+}: ResultsScreenProps): JSX.Element {
   /** The Candidate whose reference image is open full-screen, or `null`. */
   const [viewing, setViewing] = useState<ScanCandidate | null>(null);
+
+  const adjust =
+    onAdjustCrop === undefined ? null : (
+      <button className={styles.adjust} type="button" onClick={onAdjustCrop}>
+        <Crop className={styles.buttonIcon} aria-hidden="true" />
+        {ADJUST_CROP}
+      </button>
+    );
 
   if (candidates.length === 0) {
     return (
@@ -68,11 +95,12 @@ export function ResultsScreen({ candidates, onBack }: ResultsScreenProps): JSX.E
         <h1 className={styles.title}>Results</h1>
         <p className={styles.empty}>{NO_MATCH}</p>
         <div className={styles.actions}>
-          {/* One action, not Retake beside a Back that leads nowhere useful:
-              there is nothing on this screen to go back to look at. */}
+          {/* Retake is the one accent action: the camera is the answer to a
+              photo nothing matched. The crop is the quieter alternative. */}
           <button className={styles.confirm} type="button" onClick={onBack}>
             {RETAKE}
           </button>
+          {adjust}
         </div>
       </section>
     );
@@ -106,10 +134,11 @@ export function ResultsScreen({ candidates, onBack }: ResultsScreenProps): JSX.E
         ))}
       </div>
       <div className={styles.actions}>
-        <button className={styles.back} type="button" onClick={onBack}>
-          <ArrowLeft className={styles.backIcon} aria-hidden="true" />
-          {BACK}
+        <button className={styles.rescan} type="button" onClick={onBack}>
+          <ArrowsClockwise className={styles.buttonIcon} aria-hidden="true" />
+          {SCAN_AGAIN}
         </button>
+        {adjust}
       </div>
       {viewing !== null && (
         <ImageViewer

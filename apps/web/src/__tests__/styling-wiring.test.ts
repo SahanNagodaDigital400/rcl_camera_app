@@ -45,7 +45,9 @@ function token(name: string, seen: Set<string> = new Set()): string | null {
   seen.add(name);
 
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const declarations = [...TOKENS_CSS.matchAll(new RegExp(`^\\s*${escaped}\\s*:\\s*([^;]+);`, 'gm'))];
+  const declarations = [
+    ...TOKENS_CSS.matchAll(new RegExp(`^\\s*${escaped}\\s*:\\s*([^;]+);`, 'gm')),
+  ];
 
   // The browser applies the last declaration; a test that read the first would
   // assert a value nothing renders with.
@@ -86,7 +88,9 @@ function rule(css: string, selector: string): string {
 /** Every rule body in `css` whose selector list names `.<className>`. */
 function rulesFor(css: string, className: string): string[] {
   return [...css.matchAll(/([^{}]*)\{([^}]*)\}/g)]
-    .filter((block) => new RegExp(String.raw`(^|[\s,])\.${className}(?![\w-])`).test(block[1] ?? ''))
+    .filter((block) =>
+      new RegExp(String.raw`(^|[\s,])\.${className}(?![\w-])`).test(block[1] ?? ''),
+    )
     .map((block) => block[2] ?? '');
 }
 
@@ -389,7 +393,7 @@ describe('a rejection is written in the colour the matrix specifies', () => {
     // because the same element carries the consequence sentence in the confirm
     // state — one node, two states, and only the refusal is announced.
     ['ConfirmDialog', join('components', 'ConfirmDialog.tsx'), 'body'],
-  ])('is the class %s\'s alert element actually carries', (_label, file, className) => {
+  ])("is the class %s's alert element actually carries", (_label, file, className) => {
     // The rules above are inert if the element points somewhere else. The
     // dangling-reference check upstream proves the class resolves to a declared
     // one; this proves it is the class on the live region.
@@ -430,7 +434,7 @@ describe("the Crop screen's retake prompt paints DESIGN.md's retake-prompt block
   });
 });
 
-describe('the confirmation dialog paints DESIGN.md\'s confirmation-dialog block', () => {
+describe("the confirmation dialog paints DESIGN.md's confirmation-dialog block", () => {
   // The product's first modal, and the first reference to `--scrim` — declared
   // in `tokens.css` for exactly this and pointed at by nothing until now.
   // Nothing else in the suite can see any of it: `vite.config.ts` sets
@@ -627,7 +631,7 @@ describe('adding a user is the one action on the create user screen', () => {
     expect(declaration(back, 'background')).not.toBe('var(--color-accent)');
   });
 
-  it('gives the result panel DESIGN.md\'s card treatment', () => {
+  it("gives the result panel DESIGN.md's card treatment", () => {
     // White surface, hairline border, `md` radius, navy-tinted shadow. Nothing
     // else in the suite can see a background, so without this the card can
     // quietly become a bare block of prose the reader scrolls past — on the one
@@ -652,7 +656,6 @@ describe('adding a user is the one action on the create user screen', () => {
 
     expect(accents).toHaveLength(1);
   });
-
 });
 
 describe('saving is the one action on the edit user screen', () => {
@@ -673,9 +676,7 @@ describe('saving is the one action on the edit user screen', () => {
 
     expect(declaration(back, 'color')).toBe('var(--color-primary)');
     expect(declaration(back, 'background')).toBe('transparent');
-    expect(declaration(back, 'border')).toBe(
-      'var(--border-hairline) solid var(--color-primary)',
-    );
+    expect(declaration(back, 'border')).toBe('var(--border-hairline) solid var(--color-primary)');
   });
 
   it('writes the save indicator in the brand primary once it has saved', () => {
@@ -728,7 +729,7 @@ describe('saving is the one action on the add tile screen', () => {
     expect(declaration(rule(css(), '.saved'), 'color')).toBe('var(--color-primary)');
   });
 
-  it('gives the result panel DESIGN.md\'s card treatment', () => {
+  it("gives the result panel DESIGN.md's card treatment", () => {
     const result = rule(css(), '.result');
 
     expect(declaration(result, 'background')).toBe('var(--color-surface)');
@@ -845,9 +846,7 @@ describe('saving is the one accented action on the edit tile screen', () => {
     expect(declaration(rule(css(), '.remove'), 'color')).toBe('var(--color-destructive)');
     // And the marked card is outlined in the same red, as the second signal
     // beside the checked box rather than instead of it.
-    expect(declaration(rule(css(), '.pending'), 'border-color')).toBe(
-      'var(--color-destructive)',
-    );
+    expect(declaration(rule(css(), '.pending'), 'border-color')).toBe('var(--color-destructive)');
   });
 
   it('meets the touch-target floor on the removal toggle', () => {
@@ -860,9 +859,7 @@ describe('saving is the one accented action on the edit tile screen', () => {
     // `no-raw-values.test.ts` forbids a dimension literal outside `tokens.css`,
     // and this is the rule that would otherwise carry one.
     expect(rulesFor(css(), 'gallery').join('\n')).toContain('var(--thumbnail-size)');
-    expect(magnitude('--thumbnail-size')).toBeGreaterThanOrEqual(
-      magnitude('--touch-target-min'),
-    );
+    expect(magnitude('--thumbnail-size')).toBeGreaterThanOrEqual(magnitude('--touch-target-min'));
   });
 
   it('shows the whole tile face rather than cropping it to fill', () => {
@@ -896,9 +893,7 @@ describe('saving is the one accented action on the edit tile screen', () => {
     // Stated on the rule rather than left to `global.css`'s floor on `button`:
     // this is the one control on the screen whose press cannot be taken back,
     // so the hit area is part of the control and not of the reset.
-    expect(declaration(rule(css(), '.destructive'), 'min-height')).toBe(
-      'var(--touch-target-min)',
-    );
+    expect(declaration(rule(css(), '.destructive'), 'min-height')).toBe('var(--touch-target-min)');
   });
 
   it('sets the removal apart from the form it is not part of', () => {
@@ -1025,7 +1020,7 @@ describe('uploading is the one accented action on the bulk upload screen', () =>
     expect(declaration(indicator, 'color')).not.toBe('var(--color-accent)');
   });
 
-  it('gives the report DESIGN.md\'s card treatment', () => {
+  it("gives the report DESIGN.md's card treatment", () => {
     const report = rule(css(), '.report');
 
     expect(declaration(report, 'background')).toBe('var(--color-surface)');
@@ -1074,7 +1069,7 @@ describe('uploading is the one accented action on the bulk upload screen', () =>
   });
 });
 
-describe('the home panel\'s admin entries', () => {
+describe("the home panel's admin entries", () => {
   it('are outlined, never filled', () => {
     // A door on the home panel is a secondary control: the shell's landing
     // surface has no primary action of its own beyond Scan (below), and an
@@ -1159,11 +1154,11 @@ describe('the accent budget on the Scan screen itself', () => {
     expect(declaration(primary, 'color')).toBe('var(--color-accent-foreground)');
   });
 
-  it('leaves Back as the navy outline, not a third accented thing', () => {
-    const back = rule(css(), '.back');
-
-    expect(declaration(back, 'color')).toBe('var(--color-primary)');
-    expect(declaration(back, 'background')).toBe('transparent');
+  it('has no Back control at all: Scan is the landing surface and the nav leaves it', () => {
+    // A `.back` rule here would be a control leading "back" from the place a
+    // shift starts, on the one phone screen whose every row belongs to the
+    // camera. The nav (tab bar, sidebar, brand) is how a user leaves Scan.
+    expect(css()).not.toMatch(/^\.back\b/m);
   });
 
   it('uses the accent only for the frame guide and the primary control', () => {
@@ -1195,9 +1190,7 @@ describe('Confirm Crop is the one accent action on the Crop screen', () => {
 
     expect(declaration(back, 'color')).toBe('var(--color-primary)');
     expect(declaration(back, 'background')).toBe('transparent');
-    expect(declaration(back, 'border')).toBe(
-      'var(--border-hairline) solid var(--color-primary)',
-    );
+    expect(declaration(back, 'border')).toBe('var(--border-hairline) solid var(--color-primary)');
   });
 
   it('outlines the selection and every handle with the accent, never fills them', () => {
@@ -1277,9 +1270,7 @@ describe('adding a user is the one action on the user list', () => {
 
     expect(declaration(edit, 'background')).toBe('transparent');
     expect(declaration(edit, 'color')).toBe('var(--color-primary)');
-    expect(declaration(edit, 'border')).toBe(
-      'var(--border-hairline) solid var(--color-primary)',
-    );
+    expect(declaration(edit, 'border')).toBe('var(--border-hairline) solid var(--color-primary)');
   });
 
   it('keeps the wait muted and the refusal destructive, never the other way round', () => {
@@ -1292,7 +1283,7 @@ describe('adding a user is the one action on the user list', () => {
     expect(declaration(rule(css(), '.error'), 'color')).toBe('var(--color-destructive)');
   });
 
-  it('gives the Administrator badge DESIGN.md\'s navy fill', () => {
+  it("gives the Administrator badge DESIGN.md's navy fill", () => {
     // `badge-role-admin`: navy fill, its own foreground, pill. Deliberately the
     // heavier of the two roles, so it reads as the weightier one at a glance.
     const badge = rule(css(), '.roleAdmin');
@@ -1341,16 +1332,14 @@ describe('adding a user is the one action on the user list', () => {
     expect(declaration(rule(css(), '.deactivatedRow'), 'color')).toBe('var(--color-muted-text)');
   });
 
-  it('gives the rows DESIGN.md\'s data-table-row treatment', () => {
+  it("gives the rows DESIGN.md's data-table-row treatment", () => {
     // Surface background, a hairline `{colors.border}` between rows and
     // `{colors.background}` on hover — a table, not a stack of cards, and no
     // shadow anywhere on it.
     const row = rule(css(), '.row');
 
     expect(declaration(row, 'background')).toBe('var(--color-surface)');
-    expect(declaration(row, 'border-top')).toBe(
-      'var(--border-hairline) solid var(--color-border)',
-    );
+    expect(declaration(row, 'border-top')).toBe('var(--border-hairline) solid var(--color-border)');
     expect(declaration(rule(css(), '.row:hover'), 'background')).toBe('var(--color-background)');
     expect(css()).not.toContain('box-shadow');
   });
@@ -1419,16 +1408,14 @@ describe('adding a tile is the one action on the catalogue', () => {
     expect([...css().matchAll(/var\(--color-destructive\)/g)]).toHaveLength(1);
   });
 
-  it('gives the rows DESIGN.md\'s data-table-row treatment', () => {
+  it("gives the rows DESIGN.md's data-table-row treatment", () => {
     // Surface background, a hairline `{colors.border}` between rows and
     // `{colors.background}` on hover — a table, not a stack of cards, and no
     // shadow anywhere on it (DESIGN.md:107,212).
     const row = rule(css(), '.row');
 
     expect(declaration(row, 'background')).toBe('var(--color-surface)');
-    expect(declaration(row, 'border-top')).toBe(
-      'var(--border-hairline) solid var(--color-border)',
-    );
+    expect(declaration(row, 'border-top')).toBe('var(--border-hairline) solid var(--color-border)');
     expect(declaration(rule(css(), '.row:hover'), 'background')).toBe('var(--color-background)');
     expect(css()).not.toContain('box-shadow');
   });
@@ -1476,7 +1463,7 @@ describe('the audit log is a record, not a surface with an action', () => {
   // them: `vite.config.ts` sets `css: false`, and jsdom applies no stylesheet.
   const css = (): string => read(join(SRC, 'screens', 'AuditLogScreen.module.css'));
 
-  it('gives the rows DESIGN.md\'s audit-log-row treatment', () => {
+  it("gives the rows DESIGN.md's audit-log-row treatment", () => {
     // Surface background, a hairline `{colors.border}` between rows, and
     // **`{colors.muted-text}`** as the foreground — deliberately not
     // `{colors.text}`, which is what `data-table-row` uses. DESIGN.md:212: the
@@ -1485,9 +1472,7 @@ describe('the audit log is a record, not a surface with an action', () => {
     const row = rule(css(), '.row');
 
     expect(declaration(row, 'background')).toBe('var(--color-surface)');
-    expect(declaration(row, 'border-top')).toBe(
-      'var(--border-hairline) solid var(--color-border)',
-    );
+    expect(declaration(row, 'border-top')).toBe('var(--border-hairline) solid var(--color-border)');
     expect(declaration(row, 'color')).toBe('var(--color-muted-text)');
   });
 
@@ -1544,7 +1529,7 @@ describe('the audit log is a record, not a surface with an action', () => {
     // directly rather than through `rule()`, which requires the selector to
     // be exactly `.flaggedFilter` and would not find this one.
     const match = /\.flaggedFilter\[aria-pressed='true'\]\s*\{([^}]*)\}/.exec(css())?.[1];
-    expect(match, 'no .flaggedFilter[aria-pressed=\'true\'] rule found').toBeTruthy();
+    expect(match, "no .flaggedFilter[aria-pressed='true'] rule found").toBeTruthy();
     const pressed = match ?? '';
 
     expect(declaration(pressed, 'background')).toBe('var(--color-primary)');
@@ -1637,7 +1622,9 @@ describe('the base stylesheet backs what the CSS modules compose from it', () =>
   it('paints a visible focus state', () => {
     // "Interactive elements carry a visible focus state" is stated in the spec
     // and implemented once, here. Nothing else would notice its removal.
-    expect(declaration(rule(global(), ':focus-visible'), 'outline')).toContain('var(--color-accent)');
+    expect(declaration(rule(global(), ':focus-visible'), 'outline')).toContain(
+      'var(--color-accent)',
+    );
   });
 });
 

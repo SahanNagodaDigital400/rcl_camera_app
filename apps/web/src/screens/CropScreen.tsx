@@ -69,6 +69,12 @@ interface CropScreenProps {
    * discarded nothing by the time this rejects, but it has also not been
    * asked to keep anything around for a retry.
    */
+  /**
+   * Take another photo after a quality refusal. Distinct from `onBack`
+   * because a crop opened from Results should not "retake" back to Results:
+   * the answer to a blurry frame is the camera. Falls back to `onBack`.
+   */
+  onRetake?: (() => void) | undefined;
   onConfirm: (rect: NormalizedCropRect) => Promise<ScanCandidate[]>;
 }
 
@@ -188,7 +194,7 @@ function release(target: Element, pointerId: number): void {
   }
 }
 
-export function CropScreen({ image, onBack, onConfirm }: CropScreenProps): JSX.Element {
+export function CropScreen({ image, onBack, onRetake, onConfirm }: CropScreenProps): JSX.Element {
   const imgRef = useRef<HTMLImageElement>(null);
   const dragRef = useRef<DragState | null>(null);
 
@@ -416,7 +422,7 @@ export function CropScreen({ image, onBack, onConfirm }: CropScreenProps): JSX.E
             // rather than `handleConfirm` — a resubmission of the same photo
             // would only fail again — and the secondary Back control is
             // redundant with it, so it is not rendered alongside this one.
-            <button className={styles.confirm} type="button" onClick={onBack}>
+            <button className={styles.confirm} type="button" onClick={onRetake ?? onBack}>
               Retake
             </button>
           ) : (

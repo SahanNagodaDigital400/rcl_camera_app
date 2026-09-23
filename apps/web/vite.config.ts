@@ -68,6 +68,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    // Runs before every test file; see the file's own comment for why the
+    // Testing Library async budget is raised for this parallel suite.
+    setupFiles: ['./src/test-setup.ts'],
     css: false,
     restoreMocks: true,
   },

@@ -12,6 +12,7 @@ import type { JSX } from 'react';
 
 import styles from './App.module.css';
 import { ApiRequestError, HTTP_UNAUTHORIZED, submitScan } from './api/client';
+import type { NormalizedCropRect } from './api/client';
 import { useSession, SessionProvider } from './auth/SessionProvider';
 import type { SessionStatus } from './auth/SessionProvider';
 import { AppShell, MAIN_REGION_ID } from './components/AppShell';
@@ -37,6 +38,19 @@ import type { Role, User } from '@rocell/schema/user';
 
 /** Shown when signing out fails as something other than an `ApiRequestError`. */
 const SIGN_OUT_FAILED = 'Could not sign out. Try again.';
+
+/**
+ * The whole downscaled frame, as the crop rectangle a capture is submitted
+ * with. Cropping is optional: a scan goes straight from the shutter to
+ * matching, and `CropScreen` is reached only when the staff member asks for
+ * it (from Results, or after a quality refusal). `shared_vision.crop_to_rect`
+ * accepts this rectangle as it accepts any other — the origin is in range and
+ * `x + width` does not exceed the image — so the server path is one path.
+ */
+const FULL_FRAME: NormalizedCropRect = { x: 0, y: 0, width: 1, height: 1 };
+
+/** Where the crop editor was opened from, and therefore where its Back returns. */
+type CropOrigin = 'scan' | 'results';
 
 /**
  * Which surface inside the shell is showing.
@@ -291,6 +305,12 @@ function Gate(): JSX.Element {
    * change — can never render an image from a scan somebody already left.
    */
   const [capturedImage, setCapturedImage] = useState<Blob | null>(null);
+  /**
+   * Which surface opened the crop editor. `'results'` keeps the candidates
+   * and the frame in place so Back can return to them; `'scan'` has nothing
+   * to return to but the viewfinder.
+   */
+  const [cropOrigin, setCropOrigin] = useState<CropOrigin>('scan');
   /**
    * `submitScan`'s answer to the crop just confirmed, or `null`.
    *
@@ -601,35 +621,37 @@ function Gate(): JSX.Element {
     setSection('edit-user');
   }
 
-  function showCrop(image: Blob): void {
+  function showCrop(image: Blob, origin: CropOrigin): void {
     // The image first, then the section — `showEditTile`'s reason:
     // `currentScreen` reads both, and setting the section first would give it
     // one render with `'crop'` and no image, which it answers with Scan, so
     // the screen would flicker back to where the shutter was just pressed.
     setSignOutError(null);
     // The other selections go with the move, exactly as `showEditTile` clears
-    // them for its own.
+    // them for its own — except the candidates when the crop is refining a
+    // Result, which Back has to be able to return to.
     setEditing(null);
     setEditingTile(null);
-    setCandidates(null);
+    if (origin === 'scan') setCandidates(null);
+    setCropOrigin(origin);
     setCapturedImage(image);
     setSection('crop');
   }
 
-  function showResults(result: ScanCandidate[]): void {
+  function showResults(result: ScanCandidate[], image: Blob): void {
     // The candidates first, then the section — `showCrop`'s own reason:
     // `currentScreen` reads both, and setting the section first would give it
     // one render with `'results'` and nothing captured, which it answers with
-    // Scan, so the screen would flicker back to where the crop was just
-    // confirmed.
+    // Scan, so the screen would flicker back to where the shutter was just
+    // pressed.
     setSignOutError(null);
     // The other selections go with the move, exactly as `showCrop` clears
-    // them for its own — including the image that produced this answer: the
-    // crop it was confirmed from is done, and `ResultsScreen` needs the
-    // candidates, not the photo.
+    // them for its own. **The frame stays**: it is what "Adjust crop" on
+    // Results opens, and it goes with the candidates the moment the user
+    // leaves them (`showSection` clears both).
     setEditing(null);
     setEditingTile(null);
-    setCapturedImage(null);
+    setCapturedImage(image);
     setCandidates(result);
     setSection('results');
   }
@@ -692,7 +714,17 @@ function Gate(): JSX.Element {
     return (
       <AppShell {...frame('scan')}>
         {signOutFailure}
-        <ScanScreen onCaptured={showCrop} onBack={() => showSection('home')} />
+        <ScanScreen
+          // The whole frame, straight to matching: `submitScan` runs the
+          // request and `showResults` lands once it resolves. A rejection
+          // propagates back to `ScanScreen`, which renders it beside a live
+          // viewfinder — the retake is the shutter, and the crop is offered.
+          onCaptured={async (image) => {
+            const result = await submitScan(image, FULL_FRAME);
+            showResults(result, image);
+          }}
+          onCrop={(image) => showCrop(image, 'scan')}
+        />
       </AppShell>
     );
   }
@@ -705,24 +737,29 @@ function Gate(): JSX.Element {
     // redundant breaks the build, so it says why, exactly as the `edit-tile`
     // branch below does for `editingTile`.
     //
-    // Back goes to Scan, not to the home panel: Scan is where the capture was
-    // made, and the AC is explicit that Back discards the image rather than
-    // preserving anything to come back to.
+    // Back returns to wherever the editor was opened from: the Results it is
+    // refining (candidates and frame still held), or the viewfinder. Retake
+    // after a quality refusal always goes to the viewfinder — the answer to a
+    // blurry frame is the camera, not the result it came from.
     return (
       <AppShell {...frame('scan')}>
         {signOutFailure}
         <CropScreen
           image={capturedImage}
-          onBack={() => showSection('scan')}
-          // Story 3.2's submission path, now matching the crop against the
-          // catalogue too (Story 3.4). `submitScan` runs the request;
-          // `showResults` only runs once it resolves — a rejection propagates
-          // straight back to `CropScreen`, which is what leaves the image and
-          // the selection in place with Confirm re-enabled rather than this
-          // function clearing them on a failed request.
+          onBack={() =>
+            cropOrigin === 'results' && candidates !== null
+              ? setSection('results')
+              : showSection('scan')
+          }
+          onRetake={() => showSection('scan')}
+          // `submitScan` runs the request; `showResults` only runs once it
+          // resolves — a rejection propagates straight back to `CropScreen`,
+          // which is what leaves the image and the selection in place with
+          // Confirm re-enabled rather than this function clearing them on a
+          // failed request.
           onConfirm={async (rect) => {
             const result = await submitScan(capturedImage, rect);
-            showResults(result);
+            showResults(result, capturedImage);
             return result;
           }}
         />
@@ -743,7 +780,16 @@ function Gate(): JSX.Element {
     return (
       <AppShell {...frame('scan')}>
         {signOutFailure}
-        <ResultsScreen candidates={candidates} onBack={() => showSection('scan')} />
+        <ResultsScreen
+          candidates={candidates}
+          onBack={() => showSection('scan')}
+          // The optional crop, on the frame these candidates came from. The
+          // frame is always held alongside a result today; the guard is what
+          // narrows it for the call.
+          onAdjustCrop={
+            capturedImage === null ? undefined : () => showCrop(capturedImage, 'results')
+          }
+        />
       </AppShell>
     );
   }

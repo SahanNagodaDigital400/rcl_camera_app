@@ -14,6 +14,7 @@
  * rather than exercising the real API.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../App';
@@ -26,6 +27,7 @@ afterEach(() => {
   Reflect.deleteProperty(navigator, 'mediaDevices');
   Reflect.deleteProperty(URL, 'createObjectURL');
   Reflect.deleteProperty(URL, 'revokeObjectURL');
+  Reflect.deleteProperty(navigator, 'permissions');
 });
 
 const ADMIN: User = {
@@ -73,7 +75,12 @@ function stubFetch(replies: Record<string, Reply[]>): void {
 }
 
 function stubSession(user: User): void {
-  stubFetch({ '/api/auth/session': [{ status: 200, body: user }] });
+  // A scan answered with no match, so a capture or an upload reaches Results
+  // in the tests that only need to get past it.
+  stubFetch({
+    '/api/auth/session': [{ status: 200, body: user }],
+    '/api/scans': [{ status: 200, body: [] }],
+  });
 }
 
 /**
@@ -181,9 +188,25 @@ function fakeStream(): MediaStream {
 }
 
 /** Stubs `navigator.mediaDevices.getUserMedia`, and returns the spy. */
-function stubCamera(
-  outcome: MediaStream | 'denied' = fakeStream(),
-): ReturnType<typeof vi.fn> {
+/**
+ * The Permissions API's answer for the camera, and a way to change it — the
+ * browser's own record of a grant, which is what lets the viewfinder open
+ * without a tap on a later visit.
+ */
+function stubPermission(state: PermissionState): { grant: () => void } {
+  const record = { state };
+  Object.defineProperty(navigator, 'permissions', {
+    value: { query: vi.fn(() => Promise.resolve(record)) },
+    configurable: true,
+  });
+  return {
+    grant: () => {
+      record.state = 'granted';
+    },
+  };
+}
+
+function stubCamera(outcome: MediaStream | 'denied' = fakeStream()): ReturnType<typeof vi.fn> {
   const getUserMedia = vi.fn(() =>
     outcome === 'denied'
       ? Promise.reject(new Error('Permission denied'))
@@ -246,18 +269,21 @@ describe('reaching Scan', () => {
   it.each([
     ['an Administrator', ADMIN],
     ['a Staff user', STAFF],
-  ])('is a door on the home panel for %s', async (_label, user) => {
+  ])('is the landing surface for %s, and the nav returns to it', async (_label, user) => {
     // Unlike every admin surface, `reachableBy`'s default covers this: there
-    // is no role guard on the way in, and both roles should see the same
-    // control.
+    // is no role guard on the way in, and both roles land on the same screen.
     stubSession(user);
     render(<App />);
 
-    expect(await screen.findByRole('button', { name: /^scan$/i })).toBeTruthy();
+    // Landed on it without navigating.
+    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
 
-    await openScan();
+    // And the nav entry comes back to it from elsewhere.
+    fireEvent.click(screen.getByRole('button', { name: /^history$/i }));
+    await screen.findByRole('heading', { name: /^history$/i });
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }));
 
-    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
   });
 });
 
@@ -295,14 +321,25 @@ describe('camera permission', () => {
     expect(picker).toHaveProperty('disabled', false);
   });
 });
+const A_CANDIDATE = {
+  tile_id: '11111111-1111-4111-8111-111111111111',
+  code: 'RP.CMA.0001DJ.SM.0T',
+  size: '45X90',
+  category: 'CREMA MARMOL',
+  image_id: '22222222-2222-4222-8222-222222222222',
+};
+
+/** The frame every capture is submitted with: the whole downscaled image. */
+function expectFullFrame(body: FormData): void {
+  expect(body.get('crop_x')).toBe('0');
+  expect(body.get('crop_y')).toBe('0');
+  expect(body.get('crop_width')).toBe('1');
+  expect(body.get('crop_height')).toBe('1');
+  expect(body.get('image')).toBeInstanceOf(Blob);
+}
 
 describe('the capture path', () => {
   it('binds the granted stream to the rendered video element', async () => {
-    // Regression: `enableCamera` used to assign `videoRef.current.srcObject`
-    // synchronously, before `setCameraState('granted')` — but `<video>` only
-    // mounts in the `'granted'` branch, so the ref was always `null` at that
-    // point and the stream was never attached. The binding must happen once
-    // the element actually exists, after the state transition.
     const stream = fakeStream();
     stubCamera(stream);
     stubSession(STAFF);
@@ -315,11 +352,100 @@ describe('the capture path', () => {
     expect(video).toHaveProperty('srcObject', stream);
   });
 
-  it('shows the framing guide once granted, and hands the downscaled frame to Crop', async () => {
+  it('still binds the stream under StrictMode, which mounts the screen twice', async () => {
+    const stream = fakeStream();
+    stubCamera(stream);
+    stubSession(STAFF);
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await openScan();
+
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+
+    const video = await screen.findByTestId('viewfinder-video');
+    expect(video).toHaveProperty('srcObject', stream);
+  });
+
+  it('explains first while the browser would prompt, then opens without a tap once granted', async () => {
+    const permission = stubPermission('prompt');
+    const getUserMedia = stubCamera();
+    stubSession(STAFF);
+    render(<App />);
+    await openScan();
+
+    expect(await screen.findByText(/needs your camera/i)).toBeTruthy();
+    expect(getUserMedia).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    await screen.findByTestId('viewfinder-video');
+    // The browser now holds the grant; nothing is written by page script.
+    permission.grant();
+
+    // Leave for History and come back: no explanation, no tap, a live feed.
+    fireEvent.click(screen.getByRole('button', { name: /^history$/i }));
+    await screen.findByRole('heading', { name: /^history$/i });
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }));
+
+    expect(await screen.findByTestId('viewfinder-video')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /enable camera/i })).toBeNull();
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts the camera on arrival when the browser already holds the grant', async () => {
+    stubPermission('granted');
+    const getUserMedia = stubCamera();
+    stubSession(STAFF);
+    render(<App />);
+
+    expect(await screen.findByTestId('viewfinder-video')).toBeTruthy();
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/needs your camera/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /enable camera/i })).toBeNull();
+  });
+
+  it('starts the camera exactly once under StrictMode when the grant is held', async () => {
+    stubPermission('granted');
+    const getUserMedia = stubCamera();
+    stubSession(STAFF);
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+
+    expect(await screen.findByTestId('viewfinder-video')).toBeTruthy();
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls into the denial state, fallback intact, when a held grant is refused after all', async () => {
+    stubPermission('granted');
+    stubCamera('denied');
+    stubSession(STAFF);
+    render(<App />);
+
+    expect(await screen.findByText(/was not granted/i)).toBeTruthy();
+    expect(screen.getByLabelText(/choose a photo/i)).toHaveProperty('disabled', false);
+  });
+
+  it('explains and waits for a tap when the browser has no Permissions API', async () => {
+    const getUserMedia = stubCamera();
+    stubSession(STAFF);
+    render(<App />);
+
+    expect(await screen.findByText(/needs your camera/i)).toBeTruthy();
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it('submits the whole frame straight from the shutter and shows the ranked candidates', async () => {
     stubCamera();
     stubCanvas();
-    stubObjectUrl();
-    stubSession(STAFF);
+    const { calls } = stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
     render(<App />);
     await openScan();
 
@@ -333,64 +459,115 @@ describe('the capture path', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
 
-    expect(await screen.findByRole('heading', { name: /^crop$/i })).toBeTruthy();
-    // Story 3.2: Back stays the secondary control, and Confirm Crop is now
-    // the screen's one accent action.
-    expect(screen.getByRole('button', { name: /^back$/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /confirm crop/i })).toBeTruthy();
+    // No crop step in between: the shutter is the last tap before the answer.
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /^crop$/i })).toBeNull();
+    expect(screen.getByText(A_CANDIDATE.code)).toBeTruthy();
+    expect(screen.getByText(/best match/i)).toBeTruthy();
+
+    const submitted = calls.find(([path]) => path === '/api/scans');
+    expect(submitted).toBeTruthy();
+    expectFullFrame(submitted?.[1].body as FormData);
+  });
+
+  it('announces the wait and disables the shutter while the frame is being matched', async () => {
+    stubCamera();
+    stubCanvas();
+    const scanResolver: { resolve: ((value: Response) => void) | null } = { resolve: null };
+    vi.stubGlobal('fetch', (input: string) => {
+      if (input === '/api/auth/session') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(STAFF),
+        } as Response);
+      }
+      if (input === '/api/scans') {
+        return new Promise<Response>((resolve) => {
+          scanResolver.resolve = resolve;
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: { code: 'not_found', message: 'No such route.' } }),
+      } as Response);
+    });
+    render(<App />);
+    await openScan();
+
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('viewfinder-video');
+    Object.defineProperty(video, 'videoWidth', { value: 2000, configurable: true });
+    Object.defineProperty(video, 'videoHeight', { value: 1000, configurable: true });
+
+    fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
+
+    expect(await screen.findByRole('status')).toHaveProperty('textContent', 'Matching…');
+    expect(screen.getByRole('button', { name: /^capture$/i })).toHaveProperty('disabled', true);
+    expect(screen.getByLabelText(/choose a photo/i)).toHaveProperty('disabled', true);
+
+    scanResolver.resolve?.({ ok: true, status: 200, json: () => Promise.resolve([]) } as Response);
+
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
   });
 
   it('no-ops if the shutter is tapped before video metadata has loaded', async () => {
     stubCamera();
     stubCanvas();
-    stubSession(STAFF);
+    const { calls } = stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [] }],
+    });
     render(<App />);
     await openScan();
 
     fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
     await screen.findByTestId('viewfinder-video');
-    // `videoWidth`/`videoHeight` default to 0 in jsdom — no override here.
 
     fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
 
-    // Still on Scan: no Crop heading appeared, so nothing was handed off.
-    expect(screen.queryByRole('heading', { name: /^crop$/i })).toBeNull();
+    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    expect(calls.filter(([path]) => path === '/api/scans')).toHaveLength(0);
   });
 });
 
 describe('leaving Scan', () => {
-  it('returns to the home panel when Back is pressed', async () => {
+  it('offers no Back control: the nav is the way out of the landing surface', async () => {
     stubSession(STAFF);
     render(<App />);
     await openScan();
 
-    fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
+    expect(screen.queryByRole('button', { name: /^back$/i })).toBeNull();
 
-    expect(await screen.findByRole('button', { name: /^scan$/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^history$/i }));
+
+    expect(await screen.findByRole('heading', { name: /^history$/i })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /^scan$/i })).toBeNull();
   });
 });
 
 describe('the upload path', () => {
-  it('downscales a chosen file the same way, reaching an identical Crop screen', async () => {
+  it('downscales a chosen file the same way and submits it whole, reaching Results', async () => {
     stubCanvas();
-    stubObjectUrl();
     const createImageBitmap = stubImageBitmap({ width: 3000, height: 4000 });
-    stubSession(STAFF);
+    const { calls } = stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
     render(<App />);
     await openScan();
 
     fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
 
-    expect(await screen.findByRole('heading', { name: /^crop$/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^back$/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /confirm crop/i })).toBeTruthy();
-    // EXIF-oriented phone photos must decode upright, consistently across
-    // browsers, rather than however each one defaults without this option.
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /^crop$/i })).toBeNull();
     expect(createImageBitmap).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ imageOrientation: 'from-image' }),
     );
+    const submitted = calls.find(([path]) => path === '/api/scans');
+    expectFullFrame(submitted?.[1].body as FormData);
   });
 
   it('shows an inline error for a file that fails to decode, and lets another be chosen', async () => {
@@ -407,42 +584,295 @@ describe('the upload path', () => {
       'textContent',
       'That file is not a readable image. Choose another.',
     );
-    // Never a crash or a blank screen: still on Scan, picker still usable.
     expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(screen.getByLabelText(/choose a photo/i)).toHaveProperty('disabled', false);
+    // Nothing was submitted, so there is nothing to retry or crop.
+    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /crop this photo/i })).toBeNull();
   });
 });
 
-describe('leaving Crop', () => {
-  it('returns to Scan and discards the held image when Back is pressed', async () => {
+describe('a submission refused on Scan', () => {
+  it('shows the retake prompt beside the live picker on scan_quality_too_low, and offers the crop', async () => {
     stubCanvas();
-    const { revoke } = stubObjectUrl();
     stubImageBitmap({ width: 1000, height: 1000 });
-    stubSession(STAFF);
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [
+        {
+          status: 422,
+          body: {
+            error: {
+              code: 'scan_quality_too_low',
+              message: "This photo's a little blurry — try again.",
+            },
+          },
+        },
+        { status: 200, body: [A_CANDIDATE] },
+      ],
+    });
     render(<App />);
     await openScan();
 
     fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
-    await screen.findByRole('heading', { name: /^crop$/i });
+
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      "This photo's a little blurry — try again.",
+    );
+    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /crop this photo/i })).toBeTruthy();
+    // Retaking is the picker (or the shutter) itself; no second control says so.
+    expect(screen.queryByRole('button', { name: /^retake$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull();
+
+    fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
+
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
+  });
+
+  it('lets the refusal be dismissed, clearing the viewfinder without taking another photo', async () => {
+    stubCanvas();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [
+        {
+          status: 422,
+          body: {
+            error: {
+              code: 'scan_quality_too_low',
+              message: "This photo's a little blurry — try again.",
+            },
+          },
+        },
+      ],
+    });
+    render(<App />);
+    await openScan();
+
+    fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
+    await screen.findByRole('alert');
+
+    fireEvent.click(screen.getByRole('button', { name: /^dismiss$/i }));
+
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: /crop this photo/i })).toBeNull();
+    // Still on Scan, with the picker live for the next attempt.
+    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    expect(screen.getByLabelText(/choose a photo/i)).toHaveProperty('disabled', false);
+  });
+
+  it('lets a failure be dismissed the same way', async () => {
+    stubCanvas();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [
+        {
+          status: 503,
+          body: {
+            error: {
+              code: 'matching_unavailable',
+              message: 'The image matching service is not set up on this server.',
+            },
+          },
+        },
+      ],
+    });
+    render(<App />);
+    await openScan();
+
+    fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
+    await screen.findByRole('alert');
+
+    fireEvent.click(screen.getByRole('button', { name: /^dismiss$/i }));
+
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull();
+    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
+  });
+
+  it('opens the crop editor on the refused frame from "Crop this photo", with Back returning to Scan', async () => {
+    stubCanvas();
+    const { revoke } = stubObjectUrl();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [
+        {
+          status: 422,
+          body: {
+            error: {
+              code: 'scan_quality_too_low',
+              message: "This photo's a little blurry — try again.",
+            },
+          },
+        },
+      ],
+    });
+    render(<App />);
+    await openScan();
+
+    fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
+    await screen.findByRole('alert');
+
+    fireEvent.click(screen.getByRole('button', { name: /crop this photo/i }));
+
+    expect(await screen.findByRole('heading', { name: /^crop$/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /confirm crop/i })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
 
     expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /^crop$/i })).toBeNull();
-    // The preview's object URL was actually released, not just navigated away
-    // from — the evidence that the held image was discarded rather than kept
-    // around in state.
     expect(revoke).toHaveBeenCalledWith('blob:mock-preview');
+  });
+
+  it("shows the server's own message and resubmits the same frame from Try again", async () => {
+    stubCanvas();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    const { calls } = stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [
+        {
+          status: 503,
+          body: {
+            error: {
+              code: 'matching_unavailable',
+              message: 'The image matching service is not set up on this server.',
+            },
+          },
+        },
+        { status: 200, body: [A_CANDIDATE] },
+      ],
+    });
+    render(<App />);
+    await openScan();
+
+    fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
+
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      'The image matching service is not set up on this server.',
+    );
+    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /crop this photo/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
+    const submissions = calls.filter(([path]) => path === '/api/scans');
+    expect(submissions).toHaveLength(2);
+    expect(submissions[0]?.[1].body).toBeInstanceOf(FormData);
+    expect(submissions[1]?.[1].body).toBeInstanceOf(FormData);
+  });
+
+  it('stays on Scan with a plain message on a network failure', async () => {
+    stubCanvas();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    vi.stubGlobal('fetch', (input: string) => {
+      if (input === '/api/auth/session') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(STAFF),
+        } as Response);
+      }
+      if (input === '/api/scans') {
+        return Promise.reject(new Error('the network is down'));
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: { code: 'not_found', message: 'No such route.' } }),
+      } as Response);
+    });
+    render(<App />);
+    await openScan();
+
+    fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
+
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      'Could not reach the server. Check your connection and try again.',
+    );
+    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /try again/i })).toHaveProperty('disabled', false);
   });
 });
 
-/** Renders `App`, reaches Scan, and uploads a file to land on Crop. */
-async function reachCrop(): Promise<void> {
+/** Upload a frame and land on Results — the whole staff flow, two taps. */
+async function reachResults(): Promise<void> {
   render(<App />);
   await openScan();
   fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
+  await screen.findByRole('heading', { name: /^results$/i });
+}
+
+/** The optional crop, opened from Results on the frame it came from. */
+async function reachCrop(): Promise<void> {
+  await reachResults();
+  fireEvent.click(screen.getByRole('button', { name: /adjust crop/i }));
   await screen.findByRole('heading', { name: /^crop$/i });
 }
+
+describe('the optional crop', () => {
+  it('is offered on Results, never before it', async () => {
+    stubCanvas();
+    stubObjectUrl();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
+
+    await reachResults();
+
+    expect(screen.getByRole('button', { name: /adjust crop/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /scan again/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /adjust crop/i }));
+
+    expect(await screen.findByRole('heading', { name: /^crop$/i })).toBeTruthy();
+    expect(screen.getByTestId('crop-selection')).toBeTruthy();
+  });
+
+  it('returns to the Results it was opened from when Back is pressed, releasing the preview', async () => {
+    stubCanvas();
+    const { revoke } = stubObjectUrl();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
+
+    await reachCrop();
+
+    fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
+
+    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
+    expect(screen.getByText(A_CANDIDATE.code)).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /^crop$/i })).toBeNull();
+    expect(revoke).toHaveBeenCalledWith('blob:mock-preview');
+  });
+
+  it('returns to the viewfinder from "Scan again"', async () => {
+    stubCanvas();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    stubFetch({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
+
+    await reachResults();
+
+    fireEvent.click(screen.getByRole('button', { name: /scan again/i }));
+
+    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /^results$/i })).toBeNull();
+  });
+});
 
 describe("the Crop screen's selection", () => {
   it('is pre-filled with an inset selection over the image', async () => {
@@ -600,7 +1030,7 @@ describe("the Crop screen's selection", () => {
     expect(selection.style.height).toBe(pct(0.8));
   });
 
-  it('measures a drag against the image\'s own rendered box, not the (possibly taller) stage', async () => {
+  it("measures a drag against the image's own rendered box, not the (possibly taller) stage", async () => {
     stubCanvas();
     stubObjectUrl();
     stubImageBitmap({ width: 1000, height: 1000 });
@@ -642,22 +1072,14 @@ describe("the Crop screen's selection", () => {
 
     // The rectangle actually sent to the server carries the same, correct
     // fractions — not just the on-screen style.
-    const submitted = calls.find(([path]) => path === '/api/scans');
-    const body = submitted?.[1].body as FormData;
+    const submissions = calls.filter(([path]) => path === '/api/scans');
+    const body = submissions[submissions.length - 1]?.[1].body as FormData;
     expect(body.get('crop_width')).toBe('0.85');
     expect(body.get('crop_height')).toBe('0.85');
   });
 });
 
 /** A closed `ScanCandidate`, valid enough for `isScanCandidate` to accept. */
-const A_CANDIDATE = {
-  tile_id: '11111111-1111-4111-8111-111111111111',
-  code: 'RP.CMA.0001DJ.SM.0T',
-  size: '45X90',
-  category: 'CREMA MARMOL',
-  image_id: '22222222-2222-4222-8222-222222222222',
-};
-
 describe('confirming a crop', () => {
   it('sends a normalized rect matching the on-screen selection, and shows the ranked candidates on Results', async () => {
     stubCanvas();
@@ -665,58 +1087,46 @@ describe('confirming a crop', () => {
     stubImageBitmap({ width: 1000, height: 1000 });
     const { calls } = stubFetchWithCalls({
       '/api/auth/session': [{ status: 200, body: STAFF }],
-      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+      '/api/scans': [
+        { status: 200, body: [] },
+        { status: 200, body: [A_CANDIDATE] },
+      ],
     });
 
     await reachCrop();
 
     fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
 
-    // On Results, not back on Scan: `POST /scans` (Story 3.4) now fully
-    // resolves the match before answering. The image is not carried back
-    // with it — `showResults` clears `capturedImage` on every move away from
-    // Crop, the same way `showSection` always did.
     expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /^crop$/i })).toBeNull();
     expect(screen.getByText(A_CANDIDATE.code)).toBeTruthy();
     expect(screen.getByText(/best match/i)).toBeTruthy();
-    // No similarity value anywhere on screen (AD-20).
     expect(document.body.textContent).not.toMatch(/\d+%|score|confidence/i);
 
-    const submitted = calls.find(([path]) => path === '/api/scans');
-    expect(submitted).toBeTruthy();
-    const body = submitted?.[1].body as FormData;
-    // The default inset rect, sent as the normalized fractions this screen
-    // renders it with — never absolute pixels (AD-11).
+    // The first submission was the whole frame; the crop's own is the last.
+    const submissions = calls.filter(([path]) => path === '/api/scans');
+    expect(submissions).toHaveLength(2);
+    const body = submissions[1]?.[1].body as FormData;
     expect(body.get('crop_x')).toBe('0.1');
     expect(body.get('crop_y')).toBe('0.1');
     expect(body.get('crop_width')).toBe('0.8');
     expect(body.get('crop_height')).toBe('0.8');
-    // The whole downscaled image travels too, unmodified — never a
-    // client-side pixel crop (AD-11).
     expect(body.get('image')).toBeInstanceOf(Blob);
   });
 
-  it('shows the empty-match message and a single Retake action when nothing matches', async () => {
+  it('shows the empty-match message with Retake and the crop when nothing matches', async () => {
     stubCanvas();
-    stubObjectUrl();
     stubImageBitmap({ width: 1000, height: 1000 });
     stubFetch({
       '/api/auth/session': [{ status: 200, body: STAFF }],
       '/api/scans': [{ status: 200, body: [] }],
     });
 
-    await reachCrop();
+    await reachResults();
 
-    fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
-
-    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
-    expect(
-      screen.getByText('No confident match — retake, or ask a colleague.'),
-    ).toBeTruthy();
-    // The empty state's one action is Retake, never an empty screen with
-    // nothing to look at and never a Back beside it.
+    expect(screen.getByText('No confident match — retake, or ask a colleague.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^back$/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /adjust crop/i })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /^retake$/i }));
 
@@ -729,13 +1139,10 @@ describe('confirming a crop', () => {
     stubObjectUrl();
     stubImageBitmap({ width: 1000, height: 1000 });
 
-    // Held open deliberately: the in-flight state is the half of the
-    // contract a settled request cannot show. `add-tile.test.tsx`'s pattern.
-    // A wrapper object, not a bare `let`: TypeScript's narrowing of a
-    // closed-over variable loses track of the reassignment that happens
-    // inside the `fetch` stub below, and a plain `let` reads back as `null`
-    // at the call site even though the stub has long since set it.
+    // The first scan (the whole frame, on the way to Results) answers at once;
+    // the crop's own submission is the one held open.
     const scanResolver: { resolve: ((value: Response) => void) | null } = { resolve: null };
+    let scans = 0;
     vi.stubGlobal('fetch', (input: string) => {
       if (input === '/api/auth/session') {
         return Promise.resolve({
@@ -745,6 +1152,14 @@ describe('confirming a crop', () => {
         } as Response);
       }
       if (input === '/api/scans') {
+        scans += 1;
+        if (scans === 1) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve([]),
+          } as Response);
+        }
         return new Promise<Response>((resolve) => {
           scanResolver.resolve = resolve;
         });
@@ -772,7 +1187,7 @@ describe('confirming a crop', () => {
 
   it(
     'shows the retake prompt and relabels the action "Retake" on a ' +
-      'scan_quality_too_low refusal, discarding the image on tap',
+      'scan_quality_too_low refusal, returning to the viewfinder on tap',
     async () => {
       stubCanvas();
       const { revoke } = stubObjectUrl();
@@ -780,6 +1195,7 @@ describe('confirming a crop', () => {
       stubFetch({
         '/api/auth/session': [{ status: 200, body: STAFF }],
         '/api/scans': [
+          { status: 200, body: [] },
           {
             status: 422,
             body: {
@@ -789,9 +1205,7 @@ describe('confirming a crop', () => {
               },
             },
           },
-          // The AC's third clause: a later, ordinary submission still works —
-          // nothing about the retake state lingers and breaks it.
-          { status: 200, body: [] },
+          { status: 200, body: [A_CANDIDATE] },
         ],
       });
 
@@ -803,8 +1217,6 @@ describe('confirming a crop', () => {
         'textContent',
         "This photo's a little blurry — try again.",
       );
-      // Still on Crop — the failure did not navigate away — but the action
-      // row is now the single "Retake" control, not Confirm/Back.
       expect(screen.getByRole('heading', { name: /^crop$/i })).toBeTruthy();
       expect(screen.queryByRole('button', { name: /confirm crop/i })).toBeNull();
       expect(screen.queryByRole('button', { name: /^back$/i })).toBeNull();
@@ -813,20 +1225,16 @@ describe('confirming a crop', () => {
 
       fireEvent.click(retake);
 
-      // Discards the image exactly the way Back does (`leaving Crop` above):
-      // returns to Scan, and the preview's object URL is actually released.
+      // The camera, not the Results this crop was refining: a blurry frame
+      // needs another photo.
       expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
       expect(screen.queryByRole('heading', { name: /^crop$/i })).toBeNull();
       expect(revoke).toHaveBeenCalledWith('blob:mock-preview');
 
-      // A fresh capture, submitted afterward, still reaches the server and
-      // succeeds — the retake state left nothing behind to break it.
       fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
-      await screen.findByRole('heading', { name: /^crop$/i });
-
-      fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
 
       expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
+      expect(screen.getByText(A_CANDIDATE.code)).toBeTruthy();
     },
   );
 
@@ -840,6 +1248,7 @@ describe('confirming a crop', () => {
       stubFetch({
         '/api/auth/session': [{ status: 200, body: STAFF }],
         '/api/scans': [
+          { status: 200, body: [] },
           {
             status: 500,
             body: {
@@ -860,12 +1269,8 @@ describe('confirming a crop', () => {
         'textContent',
         'An unexpected error occurred. The incident has been logged.',
       );
-      // Still on Crop: the failure did not navigate away, and the AC is
-      // explicit that the image and the selection survive it.
       expect(screen.getByRole('heading', { name: /^crop$/i })).toBeTruthy();
       expect(screen.getByTestId('crop-selection').style.width).toBe(pct(0.8));
-      // Confirm re-enabled — a re-tap is the client-side retry the I/O matrix
-      // names, and there is no separate retry control.
       expect(screen.getByRole('button', { name: /confirm crop/i })).toHaveProperty(
         'disabled',
         false,
@@ -874,18 +1279,16 @@ describe('confirming a crop', () => {
   );
 
   it(
-    'stays on Crop with the server\'s own message when matching is unavailable, ' +
+    "stays on Crop with the server's own message when matching is unavailable, " +
       'keeping the image and the selection',
     async () => {
-      // Model missing or a stale index (I/O matrix): the existing generic-error
-      // path already covers this shape for `internal_error` above — this proves
-      // the same handling holds for the two refusals Story 3.4 adds.
       stubCanvas();
       stubObjectUrl();
       stubImageBitmap({ width: 1000, height: 1000 });
       stubFetch({
         '/api/auth/session': [{ status: 200, body: STAFF }],
         '/api/scans': [
+          { status: 200, body: [] },
           {
             status: 503,
             body: {
@@ -915,71 +1318,63 @@ describe('confirming a crop', () => {
     },
   );
 
-  it(
-    'stays on Crop on a network failure, keeping the image and the selection',
-    async () => {
-      stubCanvas();
-      stubObjectUrl();
-      stubImageBitmap({ width: 1000, height: 1000 });
-      vi.stubGlobal('fetch', (input: string) => {
-        if (input === '/api/auth/session') {
+  it('stays on Crop on a network failure, keeping the image and the selection', async () => {
+    stubCanvas();
+    stubObjectUrl();
+    stubImageBitmap({ width: 1000, height: 1000 });
+    let scans = 0;
+    vi.stubGlobal('fetch', (input: string) => {
+      if (input === '/api/auth/session') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(STAFF),
+        } as Response);
+      }
+      if (input === '/api/scans') {
+        scans += 1;
+        if (scans === 1) {
           return Promise.resolve({
             ok: true,
             status: 200,
-            json: () => Promise.resolve(STAFF),
+            json: () => Promise.resolve([]),
           } as Response);
         }
-        if (input === '/api/scans') {
-          return Promise.reject(new Error('the network is down'));
-        }
-        return Promise.resolve({
-          ok: false,
-          status: 404,
-          json: () => Promise.resolve({ error: { code: 'not_found', message: 'No such route.' } }),
-        } as Response);
-      });
+        return Promise.reject(new Error('the network is down'));
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: { code: 'not_found', message: 'No such route.' } }),
+      } as Response);
+    });
 
-      await reachCrop();
+    await reachCrop();
 
-      fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
+    fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
 
-      expect(await screen.findByRole('alert')).toHaveProperty(
-        'textContent',
-        'Could not reach the server. Check your connection and try again.',
-      );
-      expect(screen.getByRole('heading', { name: /^crop$/i })).toBeTruthy();
-      expect(screen.getByTestId('crop-selection').style.width).toBe(pct(0.8));
-      expect(screen.getByRole('button', { name: /confirm crop/i })).toHaveProperty(
-        'disabled',
-        false,
-      );
-    },
-  );
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      'Could not reach the server. Check your connection and try again.',
+    );
+    expect(screen.getByRole('heading', { name: /^crop$/i })).toBeTruthy();
+    expect(screen.getByTestId('crop-selection').style.width).toBe(pct(0.8));
+    expect(screen.getByRole('button', { name: /confirm crop/i })).toHaveProperty('disabled', false);
+  });
 });
 
 describe('the tap-to-fullscreen viewer', () => {
-  /** Renders `App`, reaches Results with one Candidate, and taps its card. */
   async function openViewerFromCard(): Promise<HTMLElement> {
     stubCanvas();
-    stubObjectUrl();
     stubImageBitmap({ width: 1000, height: 1000 });
     stubFetch({
       '/api/auth/session': [{ status: 200, body: STAFF }],
       '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
     });
 
-    await reachCrop();
-    fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
-    await screen.findByRole('heading', { name: /^results$/i });
+    await reachResults();
 
-    // The card is the button carrying the Candidate's own code and reference
-    // image — `ImageViewer`'s own doc comment names this the "opener" focus
-    // has to return to.
     const card = screen.getByRole('button', { name: new RegExp(A_CANDIDATE.code) });
-    // jsdom's `fireEvent.click` does not focus the element the way a real
-    // browser click does, so the opener has to be focused by hand —
-    // `deactivate-delete-user.test.tsx`'s own `opener.focus()` pattern, for
-    // the same reason.
     card.focus();
     fireEvent.click(card);
 
@@ -1010,18 +1405,15 @@ describe('the tap-to-fullscreen viewer', () => {
         );
       },
     ],
-  ])('%s closes the viewer and returns focus to the tapped candidate card', async (
-    _label,
-    close,
-  ) => {
-    const card = await openViewerFromCard();
+  ])(
+    '%s closes the viewer and returns focus to the tapped candidate card',
+    async (_label, close) => {
+      const card = await openViewerFromCard();
 
-    close();
+      close();
 
-    expect(screen.queryByRole('dialog')).toBeNull();
-    // The card is where the tap started, and it is where it is left —
-    // `ConfirmDialog`'s own focus-restore contract, restated for the one
-    // control `ImageViewer` has to return to.
-    expect(document.activeElement).toBe(card);
-  });
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(document.activeElement).toBe(card);
+    },
+  );
 });

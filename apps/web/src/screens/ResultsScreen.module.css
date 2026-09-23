@@ -149,12 +149,13 @@
   cursor: pointer;
 }
 
-/* DESIGN.md's secondary button — navy outline, navy text, transparent fill.
- * Matches every other screen's Back control exactly (Scan, Crop, Catalogue). */
-.back {
+/* Scan again: DESIGN.md's secondary button — navy outline, navy text,
+ * transparent fill. Back to the live viewfinder, which is where the next
+ * answer comes from. */
+.rescan {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
   justify-content: center;
   padding: var(--space-3) var(--space-5);
   border: var(--border-hairline) solid var(--color-primary);
@@ -167,7 +168,26 @@
   cursor: pointer;
 }
 
-.backIcon {
+/* Adjust crop: the same secondary treatment, written out rather than composed
+ * from `.rescan` — a class named for rescanning carried by the crop control is
+ * a rule nobody can read. Optional by design: offered, never required. */
+.adjust {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.buttonIcon {
   flex: none;
   width: var(--icon-size-sm);
   height: var(--icon-size-sm);
