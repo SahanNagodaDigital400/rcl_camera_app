@@ -835,7 +835,7 @@ describe('the door on the home panel', () => {
     // the role (AD-3); this is that request arriving with the new one.
     document.dispatchEvent(new Event('visibilitychange'));
 
-    expect(await screen.findByText(/signed in as/i)).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /^users$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^users$/i })).toBeNull();
     // And nothing of the list survives the swap — not a stale table, not a row.
@@ -859,12 +859,12 @@ describe('the door on the home panel', () => {
 
     // Demoted, then promoted back — two visibility revalidations (AD-3).
     document.dispatchEvent(new Event('visibilitychange'));
-    await screen.findByText(/signed in as/i);
+    await screen.findByRole('heading', { name: /^scan$/i });
     document.dispatchEvent(new Event('visibilitychange'));
     await screen.findByRole('button', { name: /^users$/i });
 
     // Still the home panel, with the door on it and the screen not showing.
-    expect(screen.getByText(/signed in as/i)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /^users$/i })).toBeNull();
 
     // And the door still opens — the section was cleared, not merely read past.
@@ -888,12 +888,12 @@ describe('the door on the home panel', () => {
     await screen.findByRole('heading', { name: /^users$/i });
 
     document.dispatchEvent(new Event('visibilitychange'));
-    await screen.findByText(/signed in as/i);
+    await screen.findByRole('heading', { name: /^scan$/i });
     document.dispatchEvent(new Event('visibilitychange'));
     await screen.findByRole('button', { name: /^users$/i });
 
     // The home panel, still — the user is taken nowhere they did not ask to go.
-    expect(screen.getByText(/signed in as/i)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /^users$/i })).toBeNull();
   });
 

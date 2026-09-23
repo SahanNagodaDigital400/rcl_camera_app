@@ -1,7 +1,9 @@
 /* The login screen carries no chrome: no app bar, no nav (DESIGN.md:207 — the
- * app bar is present on authenticated screens only). The form is the only
- * thing on it, which is the same shape DESIGN.md gives the force-password-
- * change screen, the nearest specified precedent.
+ * app bar is present on authenticated screens only). What it does carry is the
+ * brand, up front: a navy band with the accent stripe — the "Rocell Bold"
+ * signature — above a surface card holding the one form. The same rhythm as
+ * the force-password-change screen, the nearest specified precedent, so a user
+ * meeting the two back to back on a first sign-in reads one application.
  *
  * Every value here comes from src/styles/tokens.css. The 44px touch-target
  * floor and the accent focus ring are already on `button` and `input` in
@@ -14,14 +16,57 @@
   justify-content: center;
   /* The safe-area inset is added on a notched phone: with no app bar above it,
    * this screen's own content is what would otherwise sit under the status bar. */
-  padding: calc(var(--space-8) + env(safe-area-inset-top, 0px)) var(--space-4)
-    calc(var(--space-8) + env(safe-area-inset-bottom, 0px));
+  padding: calc(var(--space-6) + env(safe-area-inset-top, 0px)) var(--space-4)
+    calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
   background: var(--color-background);
 }
 
+/* The card: surface, hairline, the sheet radius, one shadow. `overflow:
+ * hidden` so the navy band above takes the card's corners. */
 .panel {
   width: 100%;
   max-width: var(--measure-form);
+  overflow: hidden;
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-card);
+}
+
+/* The brand band: the app bar's own treatment, before there is an app bar. */
+.brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-6) calc(var(--space-5) + var(--app-bar-stripe-height));
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+
+.brandIcon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.brandName {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-heading-line);
+  letter-spacing: var(--type-display-tracking);
+}
+
+.stripe {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: var(--app-bar-stripe-height);
+  background: var(--color-accent);
+}
+
+.content {
+  padding: var(--space-6);
 }
 
 .title {
@@ -43,7 +88,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
-  margin-top: var(--space-8);
+  margin-top: var(--space-6);
 }
 
 .field {
@@ -101,6 +146,10 @@
  * went wrong. Distinct from `.error` above for exactly that reason. */
 .notice {
   margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-background);
   color: var(--color-muted-text);
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);

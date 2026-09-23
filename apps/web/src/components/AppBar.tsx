@@ -1,7 +1,9 @@
-import { Scan, UserCircle } from '@phosphor-icons/react';
+import { Scan, SignOut, UserCircle } from '@phosphor-icons/react';
 import type { JSX } from 'react';
 
 import styles from './AppBar.module.css';
+
+const PRODUCT_NAME = 'Rocell Tile Scanner';
 
 interface AppBarProps {
   /**
@@ -12,18 +14,18 @@ interface AppBarProps {
   onSignOut?: (() => void) | undefined;
   /**
    * Open Account Settings. Optional on exactly the same terms as `onSignOut`:
-   * absent, no control is rendered.
-   *
-   * **The interim door, not the final one.** EXPERIENCE.md line 32 puts Account
-   * Settings behind the nav's profile entry, and the nav is role-conditional,
-   * spans six surfaces and changes shape at `--breakpoint-md`. Five of those six
-   * surfaces do not exist yet, so building the nav to hold one entry would mean
-   * guessing at the other five and rebuilding it when they arrive. The app bar
-   * is already on every authenticated screen, already carries a secondary
-   * control, and is where a profile entry conventionally sits. When the nav
-   * lands the entry moves and `AccountSettingsScreen` does not change.
+   * absent, no control is rendered. EXPERIENCE.md line 32 puts Account
+   * Settings behind the nav's profile entry; the app bar's trailing avatar
+   * control is that entry (`mockups/key-scan.html`'s `.avatar-btn`).
    */
   onOpenAccount?: (() => void) | undefined;
+  /**
+   * Return to the home panel. Supplied, the brand becomes a button — the
+   * conventional place a product name leads home, and on a phone the only
+   * way there, since the tab bar has no Home tab. Absent, the brand is plain
+   * text.
+   */
+  onHome?: (() => void) | undefined;
 }
 
 /**
@@ -38,18 +40,33 @@ interface AppBarProps {
  * all, which is why the sign-out control below can be optional without a
  * second variant of this component.
  *
+ * Both trailing controls carry an icon *and* a word. Below `--breakpoint-md`
+ * the word is visually hidden so the bar fits a 375px phone with room for
+ * the product name; it stays in the document, so the accessible name of each
+ * control is unchanged at every width.
+ *
  * Icons are Phosphor at `regular` weight, which is the library default: no
  * `weight` prop is passed anywhere, and a guard test fails the build if one
  * ever is (UX-DR3). The icon is sized from `--icon-size` in CSS rather than
  * through the `size` prop, so no dimension literal lives in this file.
  */
-export function AppBar({ onSignOut, onOpenAccount }: AppBarProps = {}): JSX.Element {
+export function AppBar({ onSignOut, onOpenAccount, onHome }: AppBarProps = {}): JSX.Element {
+  const brand = (
+    <>
+      <Scan className={styles.icon} aria-hidden="true" />
+      <span className={styles.title}>{PRODUCT_NAME}</span>
+    </>
+  );
+
   return (
     <header className={styles.appBar} data-testid="app-bar">
-      <div className={styles.brand}>
-        <Scan className={styles.icon} aria-hidden="true" />
-        <span className={styles.title}>Rocell Tile Scanner</span>
-      </div>
+      {onHome === undefined ? (
+        <div className={styles.brand}>{brand}</div>
+      ) : (
+        <button className={styles.brand} type="button" onClick={onHome}>
+          {brand}
+        </button>
+      )}
       {/* One trailing group rather than two independently right-aligned
           controls: with `margin-inline-start: auto` on each, the free space
           would be split between them and they would drift apart as the bar
@@ -61,7 +78,7 @@ export function AppBar({ onSignOut, onOpenAccount }: AppBarProps = {}): JSX.Elem
           // are lesser than whatever the screen itself is for.
           <button className={styles.account} type="button" onClick={onOpenAccount}>
             <UserCircle className={styles.icon} aria-hidden="true" />
-            Account
+            <span className={styles.label}>Account</span>
           </button>
         )}
         {onSignOut !== undefined && (
@@ -69,7 +86,8 @@ export function AppBar({ onSignOut, onOpenAccount }: AppBarProps = {}): JSX.Elem
           // per screen, and on an authenticated screen that is whatever the
           // screen is for — never the way out of it.
           <button className={styles.signOut} type="button" onClick={onSignOut}>
-            Sign out
+            <SignOut className={styles.icon} aria-hidden="true" />
+            <span className={styles.label}>Sign out</span>
           </button>
         )}
       </div>

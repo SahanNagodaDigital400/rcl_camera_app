@@ -258,9 +258,7 @@ describe('a 401 from any request drops the app to the login screen', () => {
     fireEvent.change(screen.getByLabelText(/password/i), { target: { value: 'wrong-password' } });
     fireEvent.click(screen.getByRole('button', { name: /^sign in$/i }));
 
-    expect((await screen.findByRole('alert')).textContent).toBe(
-      'Email or password is incorrect.',
-    );
+    expect((await screen.findByRole('alert')).textContent).toBe('Email or password is incorrect.');
     expect(screen.queryByText(NOTICE)).toBeNull();
   });
 
@@ -418,6 +416,8 @@ describe('returning to a backgrounded tab', () => {
       ],
     });
     render(<App />);
+    // Scan is the landing surface; the name is read off the home panel.
+    fireEvent.click(await screen.findByRole('button', { name: /^home$/i }));
     await screen.findByText(/Kasun Perera/);
 
     fireEvent(document, new Event('visibilitychange'));

@@ -1,3 +1,4 @@
+import { ArrowLeft } from '@phosphor-icons/react';
 import { useState } from 'react';
 import type { JSX } from 'react';
 
@@ -29,7 +30,8 @@ import type { ScanCandidate } from '@rocell/schema/scan';
  * **Tapping a card opens its reference image full-screen** — the
  * verification moment EXPERIENCE.md names: a member of staff cannot verify a
  * code they do not recognise, but they can verify a picture instantly. Each
- * card is a real `<button>` for that reason, at the touch-target floor.
+ * card is a real `<button>` for that reason, at the touch-target floor, and
+ * the line under the heading says so (`mockups/key-results.html`).
  *
  * **An empty array is not an empty screen.** "No confident match" is the
  * PRD's own answer for a catalogue with nothing indexed yet, and it is
@@ -41,6 +43,7 @@ const NO_MATCH = 'No confident match — retake, or ask a colleague.';
 const BEST_MATCH = 'Best match';
 const RETAKE = 'Retake';
 const BACK = 'Back';
+const HOW_TO_VERIFY = 'Tap a candidate to view its reference image full-screen.';
 
 function imageSrc(candidate: ScanCandidate): string {
   return `${API_PREFIX}/tiles/${candidate.tile_id}/images/${candidate.image_id}`;
@@ -77,7 +80,10 @@ export function ResultsScreen({ candidates, onBack }: ResultsScreenProps): JSX.E
 
   return (
     <section className={styles.screen}>
-      <h1 className={styles.title}>Results</h1>
+      <div className={styles.header}>
+        <h1 className={styles.title}>Results</h1>
+        <p className={styles.subheading}>{HOW_TO_VERIFY}</p>
+      </div>
       <div className={styles.list}>
         {candidates.map((candidate, index) => (
           <button
@@ -86,11 +92,7 @@ export function ResultsScreen({ candidates, onBack }: ResultsScreenProps): JSX.E
             type="button"
             onClick={() => setViewing(candidate)}
           >
-            <img
-              alt={imageAlt(candidate)}
-              className={styles.refImage}
-              src={imageSrc(candidate)}
-            />
+            <img alt={imageAlt(candidate)} className={styles.refImage} src={imageSrc(candidate)} />
             <span className={styles.info}>
               {/* Never a percentage, a bar or a derived word — the border and
                   this one pill are the whole of the rank signal (AD-20). */}
@@ -105,6 +107,7 @@ export function ResultsScreen({ candidates, onBack }: ResultsScreenProps): JSX.E
       </div>
       <div className={styles.actions}>
         <button className={styles.back} type="button" onClick={onBack}>
+          <ArrowLeft className={styles.backIcon} aria-hidden="true" />
           {BACK}
         </button>
       </div>

@@ -428,25 +428,27 @@ export function CatalogueScreen({
 
   return (
     <section className={styles.screen}>
-      <h1 className={styles.title} id={titleId} ref={titleRef} tabIndex={-1}>
-        Catalogue
-      </h1>
+      <div className={styles.header}>
+        <h1 className={styles.title} id={titleId} ref={titleRef} tabIndex={-1}>
+          Catalogue
+        </h1>
 
-      <div className={styles.actions}>
-        {/* The screen's one accent control (DESIGN.md: exactly one per screen),
+        <div className={styles.actions}>
+          {/* The screen's one accent control (DESIGN.md: exactly one per screen),
             and EXPERIENCE.md line 36's own route to Add Tile. Bulk upload and
             Back are the navy-outlined secondaries — bulk upload especially,
             since the screen it opens is the one place in the product where the
             accent is also a *status* colour. */}
-        <button className={styles.add} type="button" onClick={onAddTile}>
-          {ADD}
-        </button>
-        <button className={styles.bulk} type="button" onClick={onBulkUpload}>
-          Bulk upload
-        </button>
-        <button className={styles.back} type="button" onClick={onBack}>
-          Back
-        </button>
+          <button className={styles.add} type="button" onClick={onAddTile}>
+            {ADD}
+          </button>
+          <button className={styles.bulk} type="button" onClick={onBulkUpload}>
+            Bulk upload
+          </button>
+          <button className={styles.back} type="button" onClick={onBack}>
+            Back
+          </button>
+        </div>
       </div>
 
       {/* A landmark of its own, so a screen-reader user can jump to the search
@@ -515,9 +517,7 @@ export function CatalogueScreen({
           neither is alarming, because neither is a failure. */}
       <p
         className={
-          listing.kind === 'loaded' && listing.tiles.length === 0
-            ? styles.empty
-            : styles.pending
+          listing.kind === 'loaded' && listing.tiles.length === 0 ? styles.empty : styles.pending
         }
         role="status"
       >
@@ -539,83 +539,91 @@ export function CatalogueScreen({
         </div>
       )}
 
-      {listing.kind === 'loaded' &&
-        listing.tiles.length > 0 && (
-          /* One `<table>` at every width, inside a labelled focusable scroll
+      {listing.kind === 'loaded' && listing.tiles.length > 0 && (
+        /* One `<table>` at every width, inside a labelled focusable scroll
              container — `UserListScreen`'s own argument: the usual phone
              treatment strips the semantics that associate every cell with its
              column header, which is a real loss on a surface EXPERIENCE.md
              calls desktop-first. The container scrolls instead of the page, and
              takes focus so the last column is reachable from the keyboard. */
-          <div className={styles.scroller} role="region" aria-labelledby={titleId} tabIndex={0}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th className={styles.heading} scope="col">
-                    Reference image
-                  </th>
-                  <th className={styles.heading} scope="col">
-                    Code
-                  </th>
-                  <th className={styles.heading} scope="col">
-                    Size
-                  </th>
-                  <th className={styles.heading} scope="col">
-                    Category
-                  </th>
-                  {/* A column of its own rather than a control tucked into the
+        <div className={styles.scroller} role="region" aria-labelledby={titleId} tabIndex={0}>
+          <table className={styles.table} role="table">
+            <thead className={styles.head} role="rowgroup">
+              <tr role="row">
+                <th className={styles.heading} role="columnheader" scope="col">
+                  Reference image
+                </th>
+                <th className={styles.heading} role="columnheader" scope="col">
+                  Code
+                </th>
+                <th className={styles.heading} role="columnheader" scope="col">
+                  Size
+                </th>
+                <th className={styles.heading} role="columnheader" scope="col">
+                  Category
+                </th>
+                {/* A column of its own rather than a control tucked into the
                       last data cell: a header is what associates the button
                       with what it is for. */}
-                  <th className={styles.heading} scope="col">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {listing.tiles.map((tile) => {
-                  const source = thumbnail(tile);
-                  return (
-                    // Keyed on the tile's id. Two tiles of one range are two
-                    // rows with two ids (AD-18), so nothing here can collapse
-                    // them and React cannot reuse one row's cells for the
-                    // other.
-                    //
-                    // The click on the `<tr>` is the mouse convenience
-                    // EXPERIENCE.md line 71 asks for; it is never the only way
-                    // in — the labelled control at the row end is the keyboard
-                    // path, and the row itself takes no focus and claims no
-                    // role, so nothing announces it as a control it is not.
-                    <tr
-                      className={styles.row}
-                      key={tile.id}
-                      onClick={() => {
-                        if (opensFromRow()) onEditTile(tile);
-                      }}
-                    >
-                      <td className={styles.cell}>
-                        {source === null ? (
-                          <span className={styles.noImage}>No image</span>
-                        ) : (
-                          // Proxied through the authenticated endpoint, never a
-                          // storage URL (AD-9). Same origin, so the session
-                          // cookie travels with it and the role is re-checked
-                          // per request. `loading="lazy"` because a browse of
-                          // the whole catalogue is a few hundred pictures and
-                          // only the first screenful is being looked at.
-                          <img
-                            alt={`Reference image of ${tile.code}`}
-                            className={styles.image}
-                            loading="lazy"
-                            src={source}
-                          />
-                        )}
-                      </td>
-                      {/* The monospace role again: this is the value a member
+                <th className={styles.heading} role="columnheader" scope="col">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody className={styles.body} role="rowgroup">
+              {listing.tiles.map((tile) => {
+                const source = thumbnail(tile);
+                return (
+                  // Keyed on the tile's id. Two tiles of one range are two
+                  // rows with two ids (AD-18), so nothing here can collapse
+                  // them and React cannot reuse one row's cells for the
+                  // other.
+                  //
+                  // The click on the `<tr>` is the mouse convenience
+                  // EXPERIENCE.md line 71 asks for; it is never the only way
+                  // in — the labelled control at the row end is the keyboard
+                  // path, and the row itself takes no focus and claims no
+                  // role, so nothing announces it as a control it is not.
+                  <tr
+                    role="row"
+                    className={styles.row}
+                    key={tile.id}
+                    onClick={() => {
+                      if (opensFromRow()) onEditTile(tile);
+                    }}
+                  >
+                    <td className={styles.cell} data-label="Reference image" role="cell">
+                      {source === null ? (
+                        <span className={styles.noImage}>No image</span>
+                      ) : (
+                        // Proxied through the authenticated endpoint, never a
+                        // storage URL (AD-9). Same origin, so the session
+                        // cookie travels with it and the role is re-checked
+                        // per request. `loading="lazy"` because a browse of
+                        // the whole catalogue is a few hundred pictures and
+                        // only the first screenful is being looked at.
+                        <img
+                          alt={`Reference image of ${tile.code}`}
+                          className={styles.image}
+                          loading="lazy"
+                          src={source}
+                        />
+                      )}
+                    </td>
+                    {/* The monospace role again: this is the value a member
                           of staff reads out and checks against a physical
                           tile. */}
-                      <td className={`${styles.cell} ${styles.codeCell}`}>{tile.code}</td>
-                      <td className={styles.cell}>{tile.size}</td>
-                      {/* Rendered as written, sentinel and all: a tile filed
+                    <td
+                      className={`${styles.cell} ${styles.codeCell}`}
+                      data-label="Code"
+                      role="cell"
+                    >
+                      {tile.code}
+                    </td>
+                    <td className={styles.cell} data-label="Size" role="cell">
+                      {tile.size}
+                    </td>
+                    {/* Rendered as written, sentinel and all: a tile filed
                           under UNKNOWN is in the catalogue and has to read that
                           way rather than as a blank cell, which looks like a
                           value that failed to load (AD-18).
@@ -629,10 +637,12 @@ export function CatalogueScreen({
                           `UNKNOWN` today, which is what makes this the branch
                           nothing exercises in production and everything would
                           exercise the day a row slipped through with a NULL. */}
-                      <td className={styles.cell}>{tile.category ?? UNKNOWN_CATEGORY}</td>
-                      <td className={styles.cell}>
-                        <div className={styles.rowActions}>
-                          {/* A real `<button>`, labelled, never a bare icon and
+                    <td className={styles.cell} data-label="Category" role="cell">
+                      {tile.category ?? UNKNOWN_CATEGORY}
+                    </td>
+                    <td className={styles.cell} data-label="Actions" role="cell">
+                      <div className={styles.rowActions}>
+                        {/* A real `<button>`, labelled, never a bare icon and
                               never only the `<tr>`. The accessible name carries
                               the Code, so a screen reader hears which tile the
                               control belongs to — the visible word is the verb,
@@ -641,26 +651,26 @@ export function CatalogueScreen({
 
                               `stopPropagation`, or the row's own handler fires
                               second and opens the same tile twice. */}
-                          <button
-                            aria-label={`${EDIT} ${tile.code}`}
-                            className={styles.edit}
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onEditTile(tile);
-                            }}
-                          >
-                            {EDIT}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                        <button
+                          aria-label={`${EDIT} ${tile.code}`}
+                          className={styles.edit}
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onEditTile(tile);
+                          }}
+                        >
+                          {EDIT}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }

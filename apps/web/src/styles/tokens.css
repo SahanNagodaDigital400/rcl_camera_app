@@ -202,4 +202,75 @@
    * each module that needs it and this token is the reference (and what JS
    * reads if it ever needs the same number). Change both together. */
   --breakpoint-md: 768px;
+
+  /* --- Shell, navigation and motion (UI revamp) ------------------------------
+   * Derived from DESIGN.md's prose and the key-screen mockups, not from its
+   * frontmatter — adding a token is fine, contradicting one is not. Every
+   * tint below is a transparency of a colour DESIGN.md already names, so no
+   * second hue enters the system.
+   */
+
+  /* The sidebar's column at and above `--breakpoint-md`; the tab bar's
+   * height below it, which `AppShell` also pads the main region by so the
+   * last row of a list is never parked underneath the bar. */
+  --nav-sidebar-width: 232px;
+  --tab-bar-height: 64px;
+  /* The app bar's own height at rest (a 44px control, its padding and the
+   * stripe), for the viewport's scroll padding: focus moves to `<main>` on
+   * every screen swap, and the scroll that follows must land the title
+   * beneath the sticky bar, not underneath it. */
+  --app-bar-height: 64px;
+  /* The active sidebar entry's leading rule — the mockup's own 3px, which is
+   * also the app bar stripe's lower bound. */
+  --nav-active-rule: 3px;
+  /* Sticky chrome (app bar, tab bar) sits above the page and below `--z-modal`. */
+  --z-nav: 10;
+
+  /* Icon sizes beside the 24px default: inline with a button label, and the
+   * one large glyph on the home panel's hero. */
+  --icon-size-sm: 20px;
+  --icon-size-lg: 40px;
+
+  /* The shutter — `mockups/key-scan.html`'s 66px square, rounded up to a
+   * comfortable one-thumb target. Still `--radius-sm`, never a pill. */
+  --shutter-size: 72px;
+  /* The live viewfinder fills the phone but never the whole viewport: room
+   * is left for the app bar, the tab bar and the error line beneath it. */
+  --viewfinder-max-height: 72dvh;
+
+  /* Reading measures for whole screens: the admin surfaces' content width on
+   * a wide desktop, and the single scan-flow column centred on one. */
+  --measure-content: 72rem;
+  --measure-reading: 40rem;
+
+  /* Navy tints — the mockup's `rgba(19,27,94,0.06)` active sidebar entry and
+   * a stronger one for a pressed state. */
+  --color-primary-tint: rgba(19, 27, 94, 0.06);
+  --color-primary-tint-strong: rgba(19, 27, 94, 0.12);
+  /* White at reduced alpha, for a secondary line or a translucent control on
+   * the navy chrome (the mockup's avatar button). */
+  --color-on-primary-muted: rgba(255, 255, 255, 0.72);
+  --color-on-primary-translucent: rgba(255, 255, 255, 0.14);
+  /* One hover feedback for every enabled control, applied in global.css as a
+   * background-image so it works on a transparent outline and on a filled
+   * button alike without either module restating it. */
+  --color-hover-tint: rgba(24, 24, 48, 0.06);
+  --hover-overlay: linear-gradient(var(--color-hover-tint), var(--color-hover-tint));
+
+  /* Scan's overlaid controls: the mockup's gradient behind the shutter and
+   * the dark pill behind "Fill the frame with the tile face." */
+  --viewfinder-controls-gradient: linear-gradient(to top, rgba(10, 10, 16, 0.65), rgba(10, 10, 16, 0));
+  --color-viewfinder-copy-bg: rgba(10, 10, 16, 0.5);
+
+  /* Motion: one short duration and one ease for every state change. The
+   * `prefers-reduced-motion` block in global.css zeroes it. */
+  --motion-fast: 150ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+  --press-scale: 0.98;
+
+  /* Uppercase column headers and overlines track slightly open. */
+  --type-overline-tracking: 0.05em;
+  /* The one pixel a visually-hidden element keeps so it stays in the
+   * accessibility tree. */
+  --hidden-size: 1px;
 }

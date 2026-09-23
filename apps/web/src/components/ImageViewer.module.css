@@ -40,10 +40,12 @@
   object-fit: contain;
 }
 
+/* Clear of the notch on a phone: the scrim covers the whole viewport, so
+ * this is the one control that can end up under the status bar. */
 .close {
   position: absolute;
-  top: var(--space-4);
-  right: var(--space-4);
+  top: calc(var(--space-4) + env(safe-area-inset-top, 0px));
+  right: calc(var(--space-4) + env(safe-area-inset-right, 0px));
   justify-content: center;
   padding: var(--space-3) var(--space-5);
   border: var(--border-hairline) solid var(--color-primary-foreground);

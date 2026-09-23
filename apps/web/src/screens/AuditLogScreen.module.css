@@ -5,13 +5,15 @@
  * `AppShell`'s `<main>` is around it, so there is no full-height centring and
  * no chrome-less panel here.
  *
- * DESIGN.md's `audit-log-row` is the whole of the table treatment, and it is
- * deliberately *not* `data-table-row`: surface background, a hairline
+ * One `<table>` at every width, laid out two ways — `UserListScreen.module.css`'s
+ * arrangement. **From `--breakpoint-md` up** it is DESIGN.md's `audit-log-row`,
+ * and deliberately *not* `data-table-row`: surface background, a hairline
  * `{colors.border}` between rows, `{colors.muted-text}` as the foreground —
  * and **no `background-hover` key**, because `audit-log-row` does not declare
  * one. That absence is the visual half of the behavioural rule: nothing on
  * this row responds to a pointer, because nothing on it is interactive
- * (EXPERIENCE.md:75). A hover tint would promise a click that does not exist.
+ * (EXPERIENCE.md:75). **Below it** each entry is a card headed by its time,
+ * every other field captioned by its column's name.
  *
  * **Exactly one accent token in this file, and it paints no control.**
  * DESIGN.md's rule is one accent-filled primary action per screen; this screen
@@ -20,8 +22,7 @@
  * "fetch more rows" or "narrow the list" the most important thing on an
  * Administrator's security surface. The one accent use is `.flagIndicator`
  * below, DESIGN.md's `flagged-activity-row` token — a signal on a read-only
- * word, never a control, `BulkUploadScreen.module.css`'s own `.flagged`
- * precedent for accent-as-signal rather than accent-as-action.
+ * word, never a control.
  *
  * Every value here comes from src/styles/tokens.css. The 44px touch-target
  * floor and the accent focus ring are already on `button` in global.css and
@@ -30,7 +31,16 @@
 .screen {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-5);
+  width: 100%;
+  max-width: var(--measure-content);
+  margin-inline: auto;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
 .title {
@@ -41,13 +51,13 @@
   color: var(--color-text);
 }
 
-/* One control, in the row every other admin screen puts its controls in, so
+/* The controls in the row every other admin screen puts its controls in, so
  * the surfaces line up as an Administrator moves between them. */
 .actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 /* Back: DESIGN.md's secondary button — navy outline, navy text, transparent
@@ -141,38 +151,58 @@
   line-height: var(--type-body-line);
 }
 
-/* The table's own scroll container. One `<table>` at every width, and this is
- * what keeps the *page* from scrolling sideways at 375px instead: the
- * container takes the overflow, and takes focus, so the last column is
- * reachable from a keyboard. */
+/* The table's own scroll container. From the breakpoint up this is what keeps
+ * the *page* from scrolling sideways on a narrow tablet: the container takes
+ * the overflow, and takes focus, so the last column is reachable from a
+ * keyboard. On a phone the rows are cards and there is nothing to scroll. */
 .scroller {
   max-width: 100%;
   overflow-x: auto;
 }
 
 .table {
+  display: block;
   width: 100%;
   border-collapse: collapse;
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
 }
 
-/* Column headers: the label type role, muted, and a heavier rule under the
- * head than between the rows so the head reads as the head. Plain text — no
- * control, so no sort. */
+/* Spoken, not seen, while the rows are cards; see `UserListScreen.module.css`. */
+.head {
+  position: absolute;
+  width: var(--hidden-size);
+  height: var(--hidden-size);
+  overflow: hidden;
+  clip-path: inset(100%);
+  white-space: nowrap;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Column headers: small caps in the caption role, muted, and a heavier rule
+ * under the head than between the rows so the head reads as the head. Plain
+ * text — no control, so no sort. */
 .heading {
   padding: var(--space-2) var(--space-3);
   border-bottom: var(--border-hairline) solid var(--color-border);
   color: var(--color-muted-text);
-  font-size: var(--type-label-size);
+  font-size: var(--type-caption-size);
   font-weight: var(--type-label-weight);
-  line-height: var(--type-label-line);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-overline-tracking);
+  text-transform: uppercase;
   text-align: left;
   white-space: nowrap;
 }
 
 /* DESIGN.md's `audit-log-row`: surface background, a hairline border between
- * rows, muted-text foreground, no card wrapper and no shadow.
+ * rows, muted-text foreground, no card wrapper and no shadow. On a phone the
+ * same rule is the card, one column, headed by its time.
  *
  * **There is deliberately no hover rule here.** `data-table-row` declares
  * `background-hover`; `audit-log-row` does not, and the difference is the
@@ -180,27 +210,72 @@
  * this surface has nothing to click, so a hover tint would be an affordance
  * with nothing behind it. */
 .row {
-  background: var(--color-surface);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  padding: var(--space-2);
+  border: var(--border-hairline) solid var(--color-border);
   border-top: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
   color: var(--color-muted-text);
 }
 
 /* The admin density tier (DESIGN.md Layout & Spacing): a dense row scanned
- * quickly, not the generous mobile spacing of the scan flow. */
+ * quickly, not the generous mobile spacing of the scan flow. On a phone each
+ * cell is a captioned field, the caption inline with its value. */
 .cell {
-  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-3);
   vertical-align: top;
-  white-space: nowrap;
+}
+
+.cell::before {
+  content: attr(data-label);
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-overline-tracking);
+  text-transform: uppercase;
+}
+
+/* When: the card's heading, in the text colour, no caption. */
+.cell:nth-child(1) {
+  padding-block: var(--space-2) var(--space-1);
+  color: var(--color-text);
+  font-weight: var(--type-label-weight);
+}
+
+.cell:nth-child(1)::before {
+  display: none;
 }
 
 /* The one cell allowed to wrap, and capped so it cannot push the other five
  * off the screen on its own. A `details` payload is a sentence's worth of
  * facts; forcing it onto one line would make every row scroll sideways. */
 .details {
-  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3) var(--space-2);
   max-width: var(--measure-prose);
   vertical-align: top;
   overflow-wrap: anywhere;
+}
+
+.details::before {
+  content: attr(data-label);
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-overline-tracking);
+  text-transform: uppercase;
 }
 
 /* DESIGN.md's `flagged-activity-row`: `flag-indicator: {colors.accent}`. The
@@ -252,4 +327,72 @@
 .flaggedFilter[aria-disabled='true'] {
   opacity: var(--disabled-opacity);
   cursor: default;
+}
+
+/* --- From the breakpoint: the dense desktop table ------------------------- */
+
+@media (min-width: 768px) {
+  .header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  /* The card edge lives on the scroller: a collapsed table cannot round its
+   * own corners, and the scroller's overflow is what clips to the radius. */
+  .scroller {
+    border: var(--border-hairline) solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+  }
+
+  .table {
+    display: table;
+  }
+
+  .head {
+    display: table-header-group;
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+  }
+
+  .body {
+    display: table-row-group;
+  }
+
+  .row {
+    display: table-row;
+    padding: 0;
+    border: none;
+    border-top: var(--border-hairline) solid var(--color-border);
+    border-radius: 0;
+  }
+
+  .cell {
+    display: table-cell;
+    padding: var(--space-2) var(--space-3);
+    white-space: nowrap;
+  }
+
+  .cell::before,
+  .details::before {
+    display: none;
+  }
+
+  .cell:nth-child(1) {
+    padding-block: var(--space-2);
+    color: inherit;
+    font-weight: var(--type-body-weight);
+  }
+
+  .details {
+    display: table-cell;
+    min-width: var(--measure-form);
+    padding: var(--space-2) var(--space-3);
+    overflow-wrap: normal;
+  }
 }

@@ -485,20 +485,22 @@ export function UserListScreen({
 
   return (
     <section className={styles.screen}>
-      <h1 className={styles.title} id={titleId} ref={titleRef} tabIndex={-1}>
-        Users
-      </h1>
+      <div className={styles.header}>
+        <h1 className={styles.title} id={titleId} ref={titleRef} tabIndex={-1}>
+          Users
+        </h1>
 
-      <div className={styles.actions}>
-        {/* The screen's one accent control (DESIGN.md: exactly one per screen),
+        <div className={styles.actions}>
+          {/* The screen's one accent control (DESIGN.md: exactly one per screen),
             and EXPERIENCE.md line 34's own route to Create/Edit User. Back is the
             secondary, navy-outlined one. */}
-        <button className={styles.add} type="button" onClick={onAddUser}>
-          + Add user
-        </button>
-        <button className={styles.back} type="button" onClick={onBack}>
-          Back
-        </button>
+          <button className={styles.add} type="button" onClick={onAddUser}>
+            + Add user
+          </button>
+          <button className={styles.back} type="button" onClick={onBack}>
+            Back
+          </button>
+        </div>
       </div>
 
       {listing.kind === 'loading' && (
@@ -534,39 +536,34 @@ export function UserListScreen({
              header association and keeps the *page* from scrolling sideways at
              375px; the container scrolls instead, and takes focus so the last
              column is reachable from the keyboard. */
-          <div
-            className={styles.scroller}
-            role="region"
-            aria-labelledby={titleId}
-            tabIndex={0}
-          >
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th className={styles.heading} scope="col">
+          <div className={styles.scroller} role="region" aria-labelledby={titleId} tabIndex={0}>
+            <table className={styles.table} role="table">
+              <thead className={styles.head} role="rowgroup">
+                <tr role="row">
+                  <th className={styles.heading} role="columnheader" scope="col">
                     Name
                   </th>
-                  <th className={styles.heading} scope="col">
+                  <th className={styles.heading} role="columnheader" scope="col">
                     Email
                   </th>
-                  <th className={styles.heading} scope="col">
+                  <th className={styles.heading} role="columnheader" scope="col">
                     Role
                   </th>
-                  <th className={styles.heading} scope="col">
+                  <th className={styles.heading} role="columnheader" scope="col">
                     Status
                   </th>
-                  <th className={styles.heading} scope="col">
+                  <th className={styles.heading} role="columnheader" scope="col">
                     Last login
                   </th>
                   {/* A column of its own rather than controls tucked into the
                       last data cell: a header is what associates the buttons
                       with what they are for. */}
-                  <th className={styles.heading} scope="col">
+                  <th className={styles.heading} role="columnheader" scope="col">
                     Actions
                   </th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className={styles.body} role="rowgroup">
                 {listing.users.map((user) => {
                   const lock = lockNotice(user);
                   // **Every** row, not only the one whose request is open. One
@@ -591,29 +588,38 @@ export function UserListScreen({
                     // every row, so a change to it must not apply to active rows
                     // only. The variant carries the muting and nothing else.
                     <tr
+                      role="row"
                       className={
                         user.active ? styles.row : `${styles.row} ${styles.deactivatedRow}`
                       }
                       key={user.id}
                     >
-                      <td className={styles.cell}>{user.name}</td>
-                      <td className={styles.cell}>{user.email}</td>
-                      <td className={styles.cell}>
+                      <td className={styles.cell} data-label="Name" role="cell">
+                        {user.name}
+                      </td>
+                      <td className={styles.cell} data-label="Email" role="cell">
+                        {user.email}
+                      </td>
+                      <td className={styles.cell} data-label="Role" role="cell">
                         {/* Display-only, never a button (EXPERIENCE.md line 66).
                             Administrator is the heavier treatment on purpose —
                             it should read as the weightier role at a glance. */}
-                        <span className={user.role === 'admin' ? styles.roleAdmin : styles.roleStaff}>
+                        <span
+                          className={user.role === 'admin' ? styles.roleAdmin : styles.roleStaff}
+                        >
                           {ROLE_LABELS[user.role]}
                         </span>
                       </td>
-                      <td className={styles.cell}>
+                      <td className={styles.cell} data-label="Status" role="cell">
                         <span className={user.active ? styles.statusActive : styles.statusOff}>
                           {user.active ? ACTIVE : DEACTIVATED}
                         </span>
                         {lock !== null && <span className={styles.lock}>{lock}</span>}
                       </td>
-                      <td className={styles.cell}>{lastLogin(user)}</td>
-                      <td className={styles.cell}>
+                      <td className={styles.cell} data-label="Last login" role="cell">
+                        {lastLogin(user)}
+                      </td>
+                      <td className={styles.cell} data-label="Actions" role="cell">
                         {/* Real `<button>`s at the row end, labelled, never bare
                             icons and never the `<tr>` itself (EXPERIENCE.md
                             line 71's own reading, and the accessibility floor's

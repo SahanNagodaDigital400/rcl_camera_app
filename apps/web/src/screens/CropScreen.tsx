@@ -161,7 +161,12 @@ function resizeRect(start: Rect, handle: HandleId, dx: number, dy: number): Rect
     height = clamp(height + dy, MIN_DIMENSION, 1 - y);
   }
 
-  return { x: round(x), y: round(y), width: round(width), height: round(height) };
+  return {
+    x: round(x),
+    y: round(y),
+    width: round(width),
+    height: round(height),
+  };
 }
 
 /**
@@ -381,69 +386,74 @@ export function CropScreen({ image, onBack, onConfirm }: CropScreenProps): JSX.E
         </div>
       </div>
 
-      <p className={styles.hint}>Drag the corners or edges to resize. Drag inside to move.</p>
+      {/* The sheet footer (`mockups/key-crop.html`): hint, any refusal, and
+          the actions, held together and kept in reach at the bottom of a
+          phone while the stage above scrolls. */}
+      <div className={styles.footer}>
+        <p className={styles.hint}>Drag the corners or edges to resize. Drag inside to move.</p>
 
-      {error !== null && (
-        <p className={styles.error} role="alert">
-          {error}
-        </p>
-      )}
+        {error !== null && (
+          <p className={styles.error} role="alert">
+            {error}
+          </p>
+        )}
 
-      {/* EXPERIENCE.md's `retake-prompt`: an inline, surface-colored banner
+        {/* EXPERIENCE.md's `retake-prompt`: an inline, surface-colored banner
           directly above the one action available — never a modal. Fires only
           on the cropped region (AD-12), and only replaces the ordinary
           Confirm/Back pair below, never joins them. */}
-      {qualityRetake !== null && (
-        <p className={styles.retakePrompt} role="alert">
-          {qualityRetake}
-        </p>
-      )}
+        {qualityRetake !== null && (
+          <p className={styles.retakePrompt} role="alert">
+            {qualityRetake}
+          </p>
+        )}
 
-      <div className={styles.actions}>
-        {qualityRetake !== null ? (
-          // Retake, not re-crop (Design Notes): the failure is the photo's
-          // content, not the selection, so adjusting the rectangle over the
-          // same blurry frame cannot fix it. One action, calling `onBack`
-          // rather than `handleConfirm` — a resubmission of the same photo
-          // would only fail again — and the secondary Back control is
-          // redundant with it, so it is not rendered alongside this one.
-          <button className={styles.confirm} type="button" onClick={onBack}>
-            Retake
-          </button>
-        ) : (
-          <>
-            {/* The screen's one accent control (DESIGN.md: exactly one per
+        <div className={styles.actions}>
+          {qualityRetake !== null ? (
+            // Retake, not re-crop (Design Notes): the failure is the photo's
+            // content, not the selection, so adjusting the rectangle over the
+            // same blurry frame cannot fix it. One action, calling `onBack`
+            // rather than `handleConfirm` — a resubmission of the same photo
+            // would only fail again — and the secondary Back control is
+            // redundant with it, so it is not rendered alongside this one.
+            <button className={styles.confirm} type="button" onClick={onBack}>
+              Retake
+            </button>
+          ) : (
+            <>
+              {/* The screen's one accent control (DESIGN.md: exactly one per
                 screen). Back is the secondary, navy-outlined one. */}
-            <button
-              className={styles.confirm}
-              type="button"
-              onClick={() => void handleConfirm()}
-              disabled={confirming}
-            >
-              {confirming ? (
-                <>
-                  {/* EXPERIENCE.md: "processing: lightweight spinner, no
+              <button
+                className={styles.confirm}
+                type="button"
+                onClick={() => void handleConfirm()}
+                disabled={confirming}
+              >
+                {confirming ? (
+                  <>
+                    {/* EXPERIENCE.md: "processing: lightweight spinner, no
                       skeleton" — the wait for matching (Story 3.4) now
                       happens inside this same request, so it lives beside the
                       button's own text rather than as a second element on the
                       screen. Decorative: the button's own text already says
                       "Submitting…", so a screen reader has nothing to gain
                       from a second announcement of the same state. */}
-                  <span aria-hidden="true" className={styles.spinner} />
-                  Submitting…
-                </>
-              ) : (
-                'Confirm Crop'
-              )}
-            </button>
-            {/* Disabled in flight, `AddTileScreen`'s own reason: a click that
+                    <span aria-hidden="true" className={styles.spinner} />
+                    Submitting…
+                  </>
+                ) : (
+                  'Confirm Crop'
+                )}
+              </button>
+              {/* Disabled in flight, `AddTileScreen`'s own reason: a click that
                 unmounted this screen mid-request would leave the caller unsure
                 whether the scan had already been submitted. */}
-            <button className={styles.back} type="button" onClick={onBack} disabled={confirming}>
-              Back
-            </button>
-          </>
-        )}
+              <button className={styles.back} type="button" onClick={onBack} disabled={confirming}>
+                Back
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </section>
   );

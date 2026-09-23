@@ -129,6 +129,10 @@ describe('the session gate', () => {
     stubFetch({ '/api/auth/session': [{ status: 200, body: STAFF }] });
     render(<App />);
 
+    // Scan is the landing surface; the greeting lives on the home panel,
+    // one press of the nav's Home entry away.
+    fireEvent.click(await screen.findByRole('button', { name: /^home$/i }));
+
     expect(await screen.findByText(/Kasun Perera/)).toBeTruthy();
   });
 
@@ -160,9 +164,7 @@ describe('the session gate', () => {
 
     fillAndSubmit();
 
-    expect((await screen.findByRole('alert')).textContent).toBe(
-      'Email or password is incorrect.',
-    );
+    expect((await screen.findByRole('alert')).textContent).toBe('Email or password is incorrect.');
     expect(screen.queryByTestId('app-bar')).toBeNull();
   });
 
@@ -234,9 +236,7 @@ describe('the session gate', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /sign out/i }));
 
-    expect((await screen.findByRole('alert')).textContent).toBe(
-      'Sign-out could not be recorded.',
-    );
+    expect((await screen.findByRole('alert')).textContent).toBe('Sign-out could not be recorded.');
     expect(screen.getByTestId('app-bar')).toBeTruthy();
     expect(screen.queryByLabelText(/password/i)).toBeNull();
   });

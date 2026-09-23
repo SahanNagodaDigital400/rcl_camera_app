@@ -1,3 +1,27 @@
+/* The home panel — the landing surface inside the shell — and the two
+ * shell-level lines `App` renders on its own (the bootstrap placeholder and
+ * a sign-out failure). Every value here comes from src/styles/tokens.css.
+ *
+ * **Exactly one accent control**, `.scan`. The hero it sits in is navy,
+ * because navy is chrome and authority (DESIGN.md Colors) and the panel's job
+ * is to frame the one thing the product does; every quick link beneath it is
+ * DESIGN.md's navy-outlined secondary, so none of them competes. */
+
+.home {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  width: 100%;
+  max-width: var(--measure-content);
+  margin-inline: auto;
+}
+
+.intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
 .title {
   font-size: var(--type-display-size);
   font-weight: var(--type-display-weight);
@@ -6,15 +30,16 @@
   color: var(--color-text);
 }
 
+/* The session made visible: if this name is right, the cookie, the session
+ * row and the per-request lookup all worked. */
 .greeting {
-  margin-top: var(--space-3);
-  color: var(--color-text);
-  font-size: var(--type-body-size);
-  line-height: var(--type-body-line);
+  color: var(--color-muted-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
 }
 
 .lede {
-  margin-top: var(--space-3);
   max-width: var(--measure-prose);
   color: var(--color-muted-text);
   font-size: var(--type-body-size);
@@ -36,24 +61,64 @@
  * server did not accept. Red is destructive-or-failed and nothing else, and it
  * is never the only signal: the text says what happened. */
 .error {
-  margin-top: var(--space-3);
   color: var(--color-destructive);
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
 }
 
-/* The door to Scan (Story 3.1), on the home panel and reachable by every
- * authenticated role — the one control this file fills with the accent.
- * DESIGN.md's Colors section names "Scan" itself as the canonical example of
- * "the one action per screen that matters most," and every door below this
- * one argues in its own comment for staying outlined *because* the home
- * panel's job is not user management or catalogue browsing — which is the
- * same argument for filling this one, one surface over: the home panel's job
- * is, as of this story, scanning a tile. */
+/* --- The hero: the one thing the product does ----------------------------- */
+
+/* Navy fill, `rounded.lg`, the card's navy-tinted shadow. Stacked on a phone,
+ * a row from the breakpoint up. */
+.hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-6);
+  border-radius: var(--radius-lg);
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  box-shadow: var(--elevation-card);
+}
+
+.heroIcon {
+  flex: none;
+  width: var(--icon-size-lg);
+  height: var(--icon-size-lg);
+}
+
+.heroCopy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.heroTitle {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: inherit;
+}
+
+.heroText {
+  max-width: var(--measure-prose);
+  color: var(--color-on-primary-muted);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The door to Scan (Story 3.1), reachable by every authenticated role — the
+ * one control this file fills with the accent. DESIGN.md's Colors section
+ * names "Scan" itself as the canonical example of "the one action per screen
+ * that matters most," and the home panel's job is scanning a tile. Navy on
+ * orange is 5.94:1; white on orange would fail. */
 .scan {
   align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   justify-content: center;
-  margin-top: var(--space-6);
   padding: var(--space-3) var(--space-5);
   border: none;
   border-radius: var(--radius-sm);
@@ -65,110 +130,145 @@
   cursor: pointer;
 }
 
-/* The door to History (Story 3.5), beside Scan and reachable by every
- * authenticated role — unlike every door below it, this one carries no role
- * guard: `GET /scans` is scoped to the caller's own rows and gated by
- * `require_claimed_user`, never `require_administrator`. DESIGN.md's
- * secondary button — navy outline, navy text, transparent fill — for the
- * same reason `.userList` below is: the accent is reserved for Scan, the one
- * action this panel is *for*. */
-.history {
-  align-self: flex-start;
-  justify-content: center;
-  margin-top: var(--space-3);
-  padding: var(--space-3) var(--space-5);
-  border: var(--border-hairline) solid var(--color-primary);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-primary);
-  font-size: var(--type-label-size);
-  font-weight: var(--type-label-weight);
-  line-height: var(--type-label-line);
-  cursor: pointer;
+.buttonIcon {
+  flex: none;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
 }
 
-/* The door to Users, on the home panel and rendered only for an Administrator.
- * EXPERIENCE.md line 33's nav entry, standing in for a nav that does not exist
- * yet. It is one of *two* admin entries here since Story 1.13 — line 38's Audit
- * Log is the other, and two collections is two nav entries in the spine's own
- * IA. What is still not a door is Create user, which line 34 reaches from the
- * list's "+ Add user", and Edit user, which a row's own control reaches.
+/* --- Quick links: the rest of the nav, as cards --------------------------- */
+
+.sectionTitle {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: var(--color-text);
+}
+
+.quickLinks {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+}
+
+/* The door to History (Story 3.5), reachable by every authenticated role.
  * DESIGN.md's secondary button — navy outline, navy text, transparent fill —
- * because the accent-filled primary is reserved for the one action a screen is
- * *for*, and the home panel's job is not user management. `global.css` already
- * holds it to the touch-target floor. */
+ * because the accent is reserved for Scan, the one action this panel is
+ * *for*. Icon, label and a trailing caret, so it reads as a place to go. */
+.history {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-4);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The door to Users, rendered only for an Administrator (EXPERIENCE.md line
+ * 33's nav entry). The same secondary treatment, written out rather than
+ * composed from `.history`: a class named for history carried by the user
+ * list is a rule nobody can read. A convenience only — the server refuses a
+ * Staff caller at every `/admin/` route whatever this renders. */
 .userList {
-  align-self: flex-start;
-  justify-content: center;
-  margin-top: var(--space-6);
-  padding: var(--space-3) var(--space-5);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-4);
   border: var(--border-hairline) solid var(--color-primary);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-primary);
   font-size: var(--type-label-size);
   font-weight: var(--type-label-weight);
   line-height: var(--type-label-line);
+  text-align: left;
   cursor: pointer;
 }
 
-/* The door to the Audit log, beside Users and on the same terms: role-
- * conditional, and the same secondary treatment. Written out rather than
- * composed from `.userList` because a class named for the user list carried by
- * the audit entry is a rule nobody can read — the same reason `UserListScreen`
- * states `.back` and `.retry` separately.
- *
- * Deliberately not the accent, and this one matters more than most: the home
- * panel has no primary action, and an orange button reading "Audit log" would
- * make reviewing history the loudest thing on a screen whose job is scanning
- * tiles. */
+/* The door to the Audit log (EXPERIENCE.md line 38), on the same terms.
+ * Deliberately not the accent: an orange card reading "audit log" would make
+ * reviewing history the loudest thing on a screen whose job is scanning. */
 .auditLog {
-  align-self: flex-start;
-  justify-content: center;
-  margin-top: var(--space-3);
-  padding: var(--space-3) var(--space-5);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-4);
   border: var(--border-hairline) solid var(--color-primary);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-primary);
   font-size: var(--type-label-size);
   font-weight: var(--type-label-weight);
   line-height: var(--type-label-line);
+  text-align: left;
   cursor: pointer;
 }
 
-/* The door to the Catalogue, beside Users and the Audit log and on the same
- * terms: role-conditional, and the same secondary treatment. Written out rather
- * than composed from `.auditLog` for the reason that rule gives about
- * `.userList` — a class named for the audit log carried by the catalogue entry
- * is a rule nobody can read.
- *
- * **This one rule replaced three.** Add tile, Edit tile and Bulk upload each
- * had a door here while there was no Catalogue to reach them from, and each of
- * their rules said in its own comment what Story 2.5 does with it: "+ Add Tile"
- * takes the accent on the Catalogue surface, Edit tile becomes a row-end
- * control there, and Bulk upload stands beside "+ Add Tile" as a secondary.
- * They are controls on `CatalogueScreen` now, and this is the one entry that
- * reaches all three — EXPERIENCE.md line 35 is the nav entry, lines 36-37 are
- * the controls on it.
- *
- * Deliberately not the accent, and the case is the same one every door here
- * makes: the home panel has no primary action beyond Scan, and a second orange
- * button reading "Catalogue" would compete with the one this file now spends
- * on `.scan`. The accent for "+ Add Tile" belongs to the Catalogue screen
- * itself, not to this door.
- */
+/* The door to the Catalogue (EXPERIENCE.md line 35), the one entry that
+ * reaches Add tile, Edit tile and Bulk upload — all three are controls on
+ * that surface, and "+ Add Tile"'s accent belongs to it, not to this door. */
 .catalogue {
-  align-self: flex-start;
-  justify-content: center;
-  margin-top: var(--space-3);
-  padding: var(--space-3) var(--space-5);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-4);
   border: var(--border-hairline) solid var(--color-primary);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-primary);
   font-size: var(--type-label-size);
   font-weight: var(--type-label-weight);
   line-height: var(--type-label-line);
+  text-align: left;
   cursor: pointer;
+}
+
+.quickIcon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.quickLabel {
+  flex: 1;
+  min-width: 0;
+}
+
+.quickCaret {
+  flex: none;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+  color: var(--color-muted-text);
+}
+
+@media (min-width: 768px) {
+  .hero {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-6);
+    padding: var(--space-8);
+  }
+
+  .heroCopy {
+    flex: 1;
+  }
+
+  .scan {
+    align-self: center;
+  }
+
+  .quickLinks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }

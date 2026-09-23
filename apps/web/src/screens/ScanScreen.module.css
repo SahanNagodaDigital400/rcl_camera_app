@@ -1,4 +1,12 @@
-/* Scan — the live camera capture and the upload fallback (Story 3.1).
+/* Scan — the live camera capture and the upload fallback (Story 3.1), laid
+ * out from `mockups/key-scan.html`: the viewfinder fills the phone edge to
+ * edge, the framing guide floats over it with the outside dimmed, and the
+ * controls — "Choose a photo" and the shutter — are overlaid on its bottom
+ * edge where a thumb already is.
+ *
+ * Mobile first. The media query at the end frames the same markup as a
+ * centred panel for a laptop with a webcam, which EXPERIENCE.md allows but
+ * does not design for.
  *
  * Every value here comes from src/styles/tokens.css. The 44px touch-target
  * floor and the accent focus ring are already on `button` and `input` in
@@ -7,13 +15,23 @@
 .screen {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-4);
 }
 
+/* Title and Back on one line, so neither costs the viewfinder a row. */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+/* The heading role on a phone — the camera is the screen's subject, not the
+ * word above it — and the display role once there is room. */
 .title {
-  font-size: var(--type-display-size);
+  font-size: var(--type-heading-size);
   font-weight: var(--type-display-weight);
-  line-height: var(--type-display-line);
+  line-height: var(--type-heading-line);
   letter-spacing: var(--type-display-tracking);
   color: var(--color-text);
 }
@@ -21,16 +39,17 @@
 .actions {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 /* DESIGN.md's secondary button — navy outline, navy text, transparent fill.
- * Matches every other home-panel-reached screen's Back control exactly
- * (Audit/Catalogue). Never in competition with `.primary` below — the two
- * never render in the same row. */
+ * Never in competition with `.primary` below — the two never share a row. */
 .back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   justify-content: center;
-  padding: var(--space-3) var(--space-5);
+  padding: var(--space-2) var(--space-3);
   border: var(--border-hairline) solid var(--color-primary);
   border-radius: var(--radius-sm);
   background: transparent;
@@ -41,21 +60,28 @@
   cursor: pointer;
 }
 
+.backIcon {
+  flex: none;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
 /* The camera surface: navy while there is nothing to show yet (the
- * explanation, or the denial), the live feed once granted. `position:
- * relative` so the video, the framing guide and the guide copy can layer on
- * top of one another rather than stacking in the document. */
+ * explanation, or the denial), the live feed once granted. Full-bleed on a
+ * phone — it steps out of the main region's gutter — and as tall as the
+ * viewport allows short of the chrome. `position: relative` so the video, the
+ * guide, the copy and the controls layer on top of one another. */
 .viewfinder {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-4);
   min-height: var(--viewfinder-min-height);
-  padding: var(--space-6) var(--space-4);
-  border-radius: var(--radius-lg);
+  height: var(--viewfinder-max-height);
+  margin-inline: calc(-1 * var(--space-4));
   background: var(--color-primary);
+  color: var(--color-primary-foreground);
   overflow: hidden;
 }
 
@@ -68,35 +94,53 @@
 }
 
 /* DESIGN.md's `framing-guide-overlay`: accent outline, transparent fill,
- * `rounded.md` corners. Decorative only — see ScanScreen's own module
- * comment for why nothing analyses what is inside it. `pointer-events: none`
- * so it never intercepts the shutter tap sitting below the viewfinder. */
+ * `rounded.md` corners, with the mockup's dimming outside it — a shadow
+ * spread wider than the stage, the crop selector's own punched-hole trick.
+ * Decorative only; `pointer-events: none` so it never intercepts a tap on
+ * the controls beneath it. The bottom inset leaves room for those controls. */
 .frameGuide {
   position: absolute;
-  inset: var(--space-8);
+  inset: var(--space-16) var(--space-6) calc(var(--shutter-size) + var(--space-12));
   border: var(--framing-guide-border-width) solid var(--color-accent);
   border-radius: var(--radius-md);
   background: transparent;
+  box-shadow: 0 0 0 var(--crop-scrim-spread) var(--scrim);
   pointer-events: none;
 }
 
-/* Positioned (not `static`) so it paints after the video and the frame guide
- * rather than underneath them — CSS paints non-positioned in-flow content
- * before positioned descendants, in document order. */
+/* The instruction, as a dark pill along the top edge — over the video and
+ * above the guide, in the mockup's own position. */
 .guideCopy {
-  position: relative;
-  margin-top: var(--space-4);
+  position: absolute;
+  top: var(--space-4);
+  inset-inline: var(--space-4);
+  width: fit-content;
+  margin-inline: auto;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-full);
+  background: var(--color-viewfinder-copy-bg);
   color: var(--color-primary-foreground);
-  font-size: var(--type-body-size);
-  line-height: var(--type-body-line);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  text-align: center;
 }
 
+/* Before a grant: why the camera is wanted, and the one control that asks
+ * for it. Padded at the bottom so the overlaid controls never cover it. */
 .explanation {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: var(--space-4);
   max-width: var(--measure-prose);
+  padding: var(--space-6) var(--space-5) calc(var(--touch-target-min) + var(--space-10));
+}
+
+.explanationIcon {
+  width: var(--icon-size-lg);
+  height: var(--icon-size-lg);
+  color: var(--color-on-primary-muted);
 }
 
 .lede {
@@ -108,25 +152,36 @@
 
 .denied {
   max-width: var(--measure-prose);
+  padding: var(--space-6) var(--space-5) calc(var(--touch-target-min) + var(--space-10));
   color: var(--color-primary-foreground);
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
   text-align: center;
 }
 
-/* Shutter and the controls row beneath the viewfinder. Wraps rather than
- * shrinks, the same reasoning `AddTileScreen`'s `.actions` gives: at the
- * narrowest phone width, two items forced onto one line would push either
- * below the touch-target floor. */
+/* The controls row, overlaid on the viewfinder's bottom edge over a gradient
+ * so white-on-video stays legible. Three columns rather than `space-between`:
+ * the shutter is optically centred and the fallback can never collide with
+ * it, whatever its label's width. */
 .controls {
-  display: flex;
-  flex-wrap: wrap;
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4) var(--space-5);
+  background: var(--viewfinder-controls-gradient);
+}
+
+.controlsSpacer {
+  min-width: 0;
 }
 
 /* The one accent control on this screen, whichever state is rendering it:
- * "Enable camera" before a grant, "Capture" after one. The two are never
+ * "Enable camera" before a grant, the shutter after one. The two are never
  * shown together, which is why one rule serves both rather than two —
  * `EditTileScreen`'s Find/Save pair sets the same precedent. */
 .primary {
@@ -147,27 +202,66 @@
   cursor: progress;
 }
 
-.uploadField {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+/* The shutter's shape on top of `.primary`'s colour: the mockup's square,
+ * still `rounded.sm` and never a pill, lifted with the one elevation tier. */
+.shutter {
+  justify-self: center;
+  width: var(--shutter-size);
+  height: var(--shutter-size);
+  padding: 0;
+  box-shadow: var(--elevation-card);
 }
 
+.shutterIcon {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+/* The word stays for assistive technology; the glyph does the pointing. */
+.shutterLabel {
+  composes: visuallyHidden from global;
+}
+
+.uploadField {
+  justify-self: start;
+  min-width: 0;
+}
+
+/* The visible half of the file picker: a white-outlined control on the dark
+ * gradient, at the touch-target floor. The input it labels is hidden below,
+ * and its focus ring is repainted here so a keyboard user can see it. */
 .uploadLabel {
-  color: var(--color-text);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-target-min);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-hairline) solid var(--color-on-primary-muted);
+  border-radius: var(--radius-sm);
+  background: var(--color-viewfinder-copy-bg);
+  color: var(--color-primary-foreground);
   font-size: var(--type-label-size);
   font-weight: var(--type-label-weight);
   line-height: var(--type-label-line);
+  white-space: nowrap;
+  cursor: pointer;
 }
 
+.uploadField:has(.fileInput:focus-visible) .uploadLabel {
+  outline: var(--focus-ring-width) solid var(--color-primary-foreground);
+  outline-offset: var(--space-1);
+}
+
+.uploadIcon {
+  flex: none;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+/* The native control, present and focusable but out of the picture — the
+ * label above is what the eye tapped. */
 .fileInput {
-  padding: var(--space-3) var(--space-4);
-  border: var(--border-hairline) solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: var(--color-text);
-  font-size: var(--type-body-size);
-  line-height: var(--type-body-line);
+  composes: visuallyHidden from global;
 }
 
 /* A decode failure. Red is destructive-or-failed in this system and nothing
@@ -177,4 +271,33 @@
   color: var(--color-destructive);
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
+}
+
+@media (min-width: 768px) {
+  .screen {
+    width: 100%;
+    max-width: var(--measure-reading);
+    margin-inline: auto;
+    gap: var(--space-5);
+  }
+
+  .title {
+    font-size: var(--type-display-size);
+    line-height: var(--type-display-line);
+  }
+
+  /* A framed panel rather than a bleed: the desktop case is a laptop webcam,
+   * and the camera's 4:3 frame is the natural shape for it. */
+  .viewfinder {
+    height: auto;
+    aspect-ratio: 4 / 3;
+    max-height: var(--viewfinder-max-height);
+    margin-inline: 0;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--elevation-card);
+  }
+
+  .frameGuide {
+    inset: var(--space-16) var(--space-10) calc(var(--shutter-size) + var(--space-12));
+  }
 }

@@ -689,7 +689,7 @@ describe('reaching account settings from the shell', () => {
     fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: NEXT } });
     fireEvent.click(screen.getByRole('button', { name: /^sign in$/i }));
 
-    expect(await screen.findByText(/Signed in as Kasun Perera/)).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(screen.queryByRole('heading', { level: 1, name: 'Account' })).toBeNull();
     expect(screen.queryByLabelText(/current password/i)).toBeNull();
   });

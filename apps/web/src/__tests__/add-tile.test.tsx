@@ -680,7 +680,7 @@ describe('the route from the Catalogue', () => {
     stubSession(ADMIN);
     render(<App />);
 
-    await screen.findByText(/signed in as nadeesha silva/i);
+    await screen.findByRole('heading', { name: /^scan$/i });
 
     expect(screen.queryByRole('button', { name: /^add tile$/i })).toBeNull();
     expect(screen.getByRole('button', { name: /^catalogue$/i })).toBeTruthy();
@@ -694,7 +694,7 @@ describe('the route from the Catalogue', () => {
     stubSession(STAFF);
     render(<App />);
 
-    await screen.findByText(/signed in as kasun perera/i);
+    await screen.findByRole('heading', { name: /^scan$/i });
 
     expect(screen.queryByRole('button', { name: /^catalogue$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /add tile/i })).toBeNull();

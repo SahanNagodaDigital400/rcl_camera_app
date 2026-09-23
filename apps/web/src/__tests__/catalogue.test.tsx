@@ -1136,7 +1136,10 @@ describe('the controls', () => {
     const row = rowFor(CODE);
 
     expect(row.getAttribute('tabindex')).toBeNull();
-    expect(row.getAttribute('role')).toBeNull();
+    // `role="row"` is the row's own implicit role, restated so the reflow to
+    // cards below `--breakpoint-md` keeps the table's semantics. It is never
+    // a control's role: no button, no link, nothing focusable.
+    expect(row.getAttribute('role')).toBe('row');
     expect(row.className).toBe(styles.row);
   });
 
@@ -1265,7 +1268,7 @@ describe('the door on the home panel', () => {
     stubSession(STAFF);
     render(<App />);
 
-    await screen.findByText(/signed in as kasun perera/i);
+    await screen.findByRole('heading', { name: /^scan$/i });
 
     expect(screen.queryByRole('button', { name: /^catalogue$/i })).toBeNull();
   });
@@ -1308,7 +1311,7 @@ describe('the door on the home panel', () => {
     // the role (AD-3); this is that request arriving with the new one.
     document.dispatchEvent(new Event('visibilitychange'));
 
-    expect(await screen.findByText(/signed in as/i)).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /^catalogue$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^catalogue$/i })).toBeNull();
     // And nothing of the catalogue survives the swap — not a stale table, not
@@ -1335,7 +1338,7 @@ describe('the door on the home panel', () => {
     stubSession(ADMIN);
     render(<App />);
 
-    await screen.findByText(/signed in as nadeesha silva/i);
+    await screen.findByRole('heading', { name: /^scan$/i });
 
     expect(screen.getByRole('button', { name: /^catalogue$/i })).toBeTruthy();
     for (const gone of [/^add tile$/i, /^edit tile$/i, /^bulk upload$/i]) {

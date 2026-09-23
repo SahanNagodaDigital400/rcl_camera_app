@@ -735,7 +735,10 @@ describe('the controls', () => {
 
     // And nothing on the row pretends to be a control.
     expect(row.getAttribute('tabindex')).toBeNull();
-    expect(row.getAttribute('role')).toBeNull();
+    // `role="row"` is the row's own implicit role, restated so the reflow to
+    // cards below `--breakpoint-md` keeps the table's semantics. It is never
+    // a control's role: no button, no link, nothing focusable.
+    expect(row.getAttribute('role')).toBe('row');
   });
 
   it('leaves the role and status badges display-only', async () => {

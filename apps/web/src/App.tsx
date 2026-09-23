@@ -1,3 +1,12 @@
+import {
+  Camera,
+  CaretRight,
+  ClockCounterClockwise,
+  ListBullets,
+  Scan,
+  SquaresFour,
+  Users,
+} from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 
@@ -6,6 +15,7 @@ import { ApiRequestError, HTTP_UNAUTHORIZED, submitScan } from './api/client';
 import { useSession, SessionProvider } from './auth/SessionProvider';
 import type { SessionStatus } from './auth/SessionProvider';
 import { AppShell, MAIN_REGION_ID } from './components/AppShell';
+import type { NavKey } from './components/AppShell';
 import { AccountSettingsScreen } from './screens/AccountSettingsScreen';
 import { AddTileScreen } from './screens/AddTileScreen';
 import { AuditLogScreen } from './screens/AuditLogScreen';
@@ -246,7 +256,9 @@ function currentScreen(
 function Gate(): JSX.Element {
   const { status, user, signOut, adoptUser } = useSession();
   const [signOutError, setSignOutError] = useState<string | null>(null);
-  const [section, setSection] = useState<Section>('home');
+  // Scan, not the home panel: EXPERIENCE.md's Information Architecture makes
+  // Scan the default landing surface, and the nav reaches everything else.
+  const [section, setSection] = useState<Section>('scan');
   /**
    * The row the edit screen is editing, or `null`.
    *
@@ -341,7 +353,7 @@ function Gate(): JSX.Element {
     // state across a sign-out means the next person on a shared shop-floor
     // handset is one stale section away from seeing it.
     if (status !== 'signed-in') {
-      setSection('home');
+      setSection('scan');
       setEditing(null);
       // The tile goes with the row, and for a weaker version of the same
       // reason: a Code and a Size are not somebody's name and address, but
@@ -398,7 +410,7 @@ function Gate(): JSX.Element {
     // never reaches the DOM — and `oxlint`'s `react/set-state-in-effect` forbids
     // the effect this would otherwise be.
     if (!reachableBy(section, user?.role ?? null)) {
-      setSection('home');
+      setSection('scan');
       setEditing(null);
       setEditingTile(null);
       // Scan, Crop and Results are reachable by every role, so this branch
@@ -634,6 +646,42 @@ function Gate(): JSX.Element {
       </p>
     );
 
+  // Captured once past the sign-in guard above, so the closures below read a
+  // `Role` rather than re-narrowing `user`.
+  const role = user.role;
+
+  /**
+   * The nav's own entry point. Every `NavKey` is a `Section` of the same
+   * name — the nav points at the six top-level surfaces and at nothing else —
+   * so this is `showSection` with the type saying which six.
+   */
+  function navigate(key: NavKey): void {
+    showSection(key);
+  }
+
+  /**
+   * The props every `AppShell` below shares: the app bar's two controls and
+   * the role-conditional nav, with `current` naming the entry the screen
+   * belongs to (Crop and Results are Scan's; Create/Edit user are Users'; the
+   * three tile surfaces are the Catalogue's) or `null` for Account, which is
+   * reached from the app bar rather than the nav.
+   */
+  function frame(current: NavKey | null): {
+    onSignOut: () => void;
+    onOpenAccount: () => void;
+    nav: {
+      role: Role;
+      current: NavKey | null;
+      onNavigate: (key: NavKey) => void;
+    };
+  } {
+    return {
+      onSignOut: handleSignOut,
+      onOpenAccount: () => showSection('account'),
+      nav: { role, current, onNavigate: navigate },
+    };
+  }
+
   if (screen === 'scan') {
     // Inside the shell, in place of the home panel, exactly as every other
     // surface reached from a home-panel door is: the app bar stays, so Sign
@@ -642,7 +690,7 @@ function Gate(): JSX.Element {
     // `reachableBy`'s default covers it — so there is no role guard here, the
     // one difference from every screen below it.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('scan')}>
         {signOutFailure}
         <ScanScreen onCaptured={showCrop} onBack={() => showSection('home')} />
       </AppShell>
@@ -661,7 +709,7 @@ function Gate(): JSX.Element {
     // made, and the AC is explicit that Back discards the image rather than
     // preserving anything to come back to.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('scan')}>
         {signOutFailure}
         <CropScreen
           image={capturedImage}
@@ -693,7 +741,7 @@ function Gate(): JSX.Element {
     // Back goes to Scan, not to the home panel: Scan is where a fresh capture
     // is made, and Results has nothing of its own to return to.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('scan')}>
         {signOutFailure}
         <ResultsScreen candidates={candidates} onBack={() => showSection('scan')} />
       </AppShell>
@@ -710,7 +758,7 @@ function Gate(): JSX.Element {
     // top-level nav entry of its own (Story 3.5, EXPERIENCE.md line 31), not
     // a surface reached from Scan the way Crop and Results are.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('history')}>
         {signOutFailure}
         <HistoryScreen onBack={() => showSection('home')} />
       </AppShell>
@@ -723,7 +771,7 @@ function Gate(): JSX.Element {
     // its own way back. It renders no `<main>` of its own — `AppShell` provides
     // the one the focus effect above moves focus to.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('users')}>
         {signOutFailure}
         <UserListScreen
           onAddUser={() => showSection('create-user')}
@@ -744,7 +792,7 @@ function Gate(): JSX.Element {
     // nav entry of its own (EXPERIENCE.md line 38), not a surface reached from
     // another one.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('audit')}>
         {signOutFailure}
         <AuditLogScreen onBack={() => showSection('home')} />
       </AppShell>
@@ -761,7 +809,7 @@ function Gate(): JSX.Element {
     // (EXPERIENCE.md line 35), not a surface reached from another one. The
     // three surfaces *it* reaches are below, and each of them goes back here.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('catalogue')}>
         {signOutFailure}
         <CatalogueScreen
           onAddTile={() => showSection('add-tile')}
@@ -793,7 +841,7 @@ function Gate(): JSX.Element {
     // A tile whose Code does not contain the fragment is therefore not on
     // screen; emptying the box lists it.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('catalogue')}>
         {signOutFailure}
         <AddTileScreen onBack={() => showSection('catalogue')} />
       </AppShell>
@@ -811,7 +859,7 @@ function Gate(): JSX.Element {
     // was pressed, and `CatalogueScreen` refetches on mount, so returning to
     // it shows the row as it was just saved.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('catalogue')}>
         {signOutFailure}
         <EditTileScreen
           // Keyed on the tile, because the screen seeds its form from `tile`
@@ -847,7 +895,7 @@ function Gate(): JSX.Element {
     // screen on arrival, narrowed by whatever search was in place. A batch
     // wider than the search is listed in full by emptying the box.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('catalogue')}>
         {signOutFailure}
         <BulkUploadScreen onBack={() => showSection('catalogue')} />
       </AppShell>
@@ -865,7 +913,7 @@ function Gate(): JSX.Element {
     // Edit was pressed, and `UserListScreen` refetches on mount, so returning to
     // it shows the row as it was just saved.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('users')}>
         {signOutFailure}
         <EditUserScreen
           // Keyed on the row, because the screen seeds all of its state from
@@ -901,7 +949,7 @@ function Gate(): JSX.Element {
     // user" was pressed, and it is where the new row belongs. `UserListScreen`
     // refetches on mount, so returning to it shows the user just provisioned.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame('users')}>
         {signOutFailure}
         <CreateUserScreen onBack={() => showSection('users')} />
       </AppShell>
@@ -914,98 +962,95 @@ function Gate(): JSX.Element {
     // back. The screen renders no `<main>` of its own: `AppShell` already
     // provides the one the focus effect above moves focus to.
     return (
-      <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
+      <AppShell {...frame(null)}>
         {signOutFailure}
         <AccountSettingsScreen onBack={() => showSection('home')} />
       </AppShell>
     );
   }
 
+  // The home panel — no longer the landing surface (Scan is), but still the
+  // place Back returns to from every top-level screen and the brand leads to.
+  // A greeting, the one thing the product does as a navy hero with the one
+  // accent control, and the rest of the nav as outlined quick links. Each
+  // quick link's name is a phrase ("Manage users") rather than the nav
+  // entry's own word ("Users"), so no destination is ever in the document
+  // twice under one name.
   return (
-    <AppShell onSignOut={handleSignOut} onOpenAccount={() => showSection('account')}>
-      <h1 className={styles.title}>Rocell Tile Scanner</h1>
-      {/* The session made visible: if this name is right, the cookie, the
-          session row and the per-request lookup all worked. */}
-      <p className={styles.greeting}>Signed in as {user.name}.</p>
-      {signOutFailure}
-      <p className={styles.lede}>
-        Internal staff tool. Photograph a tile and get the three closest matches from the
-        catalogue, each with its reference image, Size and Category.
-      </p>
-      {/* The door to Scan (Story 3.1), reachable by every authenticated role —
-          `reachableBy`'s default `return true` already covers it, so it is not
-          in the admin-only group below. DESIGN.md names "Scan" itself as an
-          accent-button example, and it is the panel's one `--color-accent`
-          control: Users, the Audit log and the Catalogue stay the secondary,
-          navy-outline treatment their own comments already argue for, because
-          the home panel's job is not user management or catalogue browsing —
-          and, as of this story, it is scanning a tile. */}
-      <button className={styles.scan} type="button" onClick={() => showSection('scan')}>
-        Scan
-      </button>
-      {/* The door to History (Story 3.5), beside Scan and outside the
-          role-conditional group below: a caller's own scan history is
-          theirs to read whatever their role, `reachableBy`'s default
-          `return true` covers it exactly as it does Scan's own door, and
-          `GET /scans` is gated by `require_claimed_user`, never
-          `require_administrator`. DESIGN.md's secondary button — navy
-          outline, navy text, transparent fill — because Scan is the one
-          accent-filled action this panel has room for; a second orange
-          button here would compete with it. */}
-      <button className={styles.history} type="button" onClick={() => showSection('history')}>
-        History
-      </button>
-      {/* The doors to the admin surfaces, role-conditional as EXPERIENCE.md
-          line 18 requires: a Staff user never sees an entry they cannot use.
-          Three doors, one per admin nav entry the spine's own IA names and this
-          product has built: line 33's User List, line 38's Audit Log and line
-          35's Catalogue. All three stand on this panel in place of a nav that
-          does not exist yet; the surfaces the rest of that nav would hold do
-          not exist either.
-
-          **Story 2.5 replaced three doors with one.** Add tile, Edit tile and
-          Bulk upload each stood here while there was no Catalogue to reach them
-          from — and EXPERIENCE.md never put them on the nav: line 36 reaches
-          Add Tile from "+ Add Tile" or a row, Edit Tile from a row alone, and
-          line 37 reaches Bulk Upload from the Catalogue. They are now controls
-          on that surface. Leaving them here beside a fourth Catalogue door
-          would ship two ways to reach one screen and a panel that contradicts
-          lines 36-37. Create user and Edit user were never doors here for the
-          same reason, one surface over.
-
-          A convenience only. The server refuses a Staff caller at
-          `GET /admin/users`, `GET /admin/audit`, `GET /admin/tiles`,
-          `POST /admin/tiles`, `GET /admin/tiles/lookup`,
-          `PATCH /admin/tiles/{id}`, `DELETE /admin/tiles/{id}` and
-          `POST /admin/tiles/bulk` regardless of what this renders (AGENTS.md
-          Policy: authorization is never gated by what the UI hides), and the
-          cached `user` read here is a render cache and never a decision. */}
-      {user.role === 'admin' && (
-        // One guard for the whole group, not one each: the role rule is a
-        // property of the group rather than of any one button, and two copies
-        // of it are two places a further entry could be added under the wrong
-        // condition. Story 2.1 added a third entry under it, Story 2.2 a
-        // fourth and Story 2.4 a fifth, none needing a second condition, and
-        // Story 2.5 replaced those three with one — all without touching this
-        // line, which is the argument holding. It is also the seam the real nav
-        // replaces — the fragment becomes that nav's children, and the
-        // condition becomes whether the Admin section is rendered at all.
-        <>
-          <button className={styles.userList} type="button" onClick={() => showSection('users')}>
-            Users
+    <AppShell {...frame('home')}>
+      <section className={styles.home}>
+        <div className={styles.intro}>
+          <h1 className={styles.title}>Rocell Tile Scanner</h1>
+          {/* The session made visible: if this name is right, the cookie, the
+              session row and the per-request lookup all worked. */}
+          <p className={styles.greeting}>Signed in as {user.name}.</p>
+        </div>
+        {signOutFailure}
+        <div className={styles.hero}>
+          <Scan className={styles.heroIcon} aria-hidden="true" />
+          <div className={styles.heroCopy}>
+            <h2 className={styles.heroTitle}>Identify a tile</h2>
+            <p className={styles.heroText}>
+              Photograph a tile and get the three closest matches from the catalogue, each with its
+              reference image, Size and Category.
+            </p>
+          </div>
+          {/* The door to Scan (Story 3.1), reachable by every authenticated role
+              and the panel's one `--color-accent` control: DESIGN.md names
+              "Scan" itself as an accent-button example. */}
+          <button className={styles.scan} type="button" onClick={() => showSection('scan')}>
+            <Camera className={styles.buttonIcon} aria-hidden="true" />
+            Scan a tile
           </button>
-          <button className={styles.auditLog} type="button" onClick={() => showSection('audit')}>
-            Audit log
+        </div>
+        <h2 className={styles.sectionTitle}>Go to</h2>
+        <div className={styles.quickLinks}>
+          {/* History (Story 3.5): a caller's own scan history is theirs to
+              read whatever their role — `reachableBy`'s default covers it. */}
+          <button className={styles.history} type="button" onClick={() => showSection('history')}>
+            <ClockCounterClockwise className={styles.quickIcon} aria-hidden="true" />
+            <span className={styles.quickLabel}>Your scan history</span>
+            <CaretRight className={styles.quickCaret} aria-hidden="true" />
           </button>
-          <button
-            className={styles.catalogue}
-            type="button"
-            onClick={() => showSection('catalogue')}
-          >
-            Catalogue
-          </button>
-        </>
-      )}
+          {/* The admin surfaces, role-conditional as EXPERIENCE.md line 18
+              requires: a Staff user never sees an entry they cannot use. One
+              guard for the whole group. A convenience only — the server
+              refuses a Staff caller at every `/admin/` route regardless of
+              what this renders (AGENTS.md Policy), and the cached `user` read
+              here is a render cache and never a decision. */}
+          {role === 'admin' && (
+            <>
+              <button
+                className={styles.catalogue}
+                type="button"
+                onClick={() => showSection('catalogue')}
+              >
+                <SquaresFour className={styles.quickIcon} aria-hidden="true" />
+                <span className={styles.quickLabel}>Browse the catalogue</span>
+                <CaretRight className={styles.quickCaret} aria-hidden="true" />
+              </button>
+              <button
+                className={styles.userList}
+                type="button"
+                onClick={() => showSection('users')}
+              >
+                <Users className={styles.quickIcon} aria-hidden="true" />
+                <span className={styles.quickLabel}>Manage users</span>
+                <CaretRight className={styles.quickCaret} aria-hidden="true" />
+              </button>
+              <button
+                className={styles.auditLog}
+                type="button"
+                onClick={() => showSection('audit')}
+              >
+                <ListBullets className={styles.quickIcon} aria-hidden="true" />
+                <span className={styles.quickLabel}>Review the audit log</span>
+                <CaretRight className={styles.quickCaret} aria-hidden="true" />
+              </button>
+            </>
+          )}
+        </div>
+      </section>
     </AppShell>
   );
 }

@@ -5,16 +5,22 @@
 /* index.html asks for viewport-fit=cover, so on a notched phone — this
  * product's primary device — the bar's own box extends under the status bar
  * and the rounded corners. The safe-area insets are added to its padding so
- * the content inside it does not. */
+ * the content inside it does not.
+ *
+ * Sticky, above the page: a phone scrolls the document, and the way to
+ * Account and out of the app must not scroll away with it. At the breakpoint
+ * the shell stops scrolling as a whole, so `sticky` simply has nothing to do. */
 .appBar {
-  position: relative;
+  position: sticky;
+  top: 0;
+  z-index: var(--z-nav);
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding-top: calc(var(--space-4) + env(safe-area-inset-top, 0px));
+  padding-top: calc(var(--space-2) + env(safe-area-inset-top, 0px));
   padding-inline-start: calc(var(--space-4) + env(safe-area-inset-left, 0px));
-  padding-inline-end: calc(var(--space-4) + env(safe-area-inset-right, 0px));
-  padding-bottom: calc(var(--space-4) + var(--app-bar-stripe-height));
+  padding-inline-end: calc(var(--space-3) + env(safe-area-inset-right, 0px));
+  padding-bottom: calc(var(--space-2) + var(--app-bar-stripe-height));
   background: var(--color-primary);
   color: var(--color-primary-foreground);
 }
@@ -24,12 +30,21 @@
  * controls in the trailing group the row's content exceeds a 375px viewport and
  * the bar overflows — on a phone-first PWA, pushing the way out of the app off
  * the screen. The product name is the one part of this bar that can be read
- * from half of itself. */
+ * from half of itself.
+ *
+ * Doubles as a button when it leads home, so it also resets the button
+ * defaults: no border, no fill, the bar's own colour and type. */
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  text-align: left;
 }
 
 .icon {
@@ -42,8 +57,9 @@
  * line of title would push the accent stripe off its bottom edge. */
 .title {
   font-size: var(--type-heading-size);
-  font-weight: var(--type-heading-weight);
+  font-weight: var(--type-display-weight);
   line-height: var(--type-heading-line);
+  letter-spacing: var(--type-display-tracking);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -63,7 +79,7 @@
 .actions {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   margin-inline-start: auto;
   /* Never the element that shrinks. `global.css` holds every button to the
    * touch-target floor on both axes, so shrinking this group would not make it
@@ -74,13 +90,16 @@
 /* Account: a secondary control on a navy bar, outlined in its own foreground
  * rather than filled — the same treatment as sign-out below, because opening a
  * screen and leaving the app are both lesser than whatever the screen is for.
- * Orange is reserved for that one action and never appears on the bar. */
+ * Orange is reserved for that one action and never appears on the bar.
+ *
+ * A square icon button on a phone (the label below is visually hidden there),
+ * a labelled one from the breakpoint up. */
 .account {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   justify-content: center;
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-2);
   border: var(--border-hairline) solid var(--color-primary-foreground);
   border-radius: var(--radius-sm);
   background: transparent;
@@ -95,8 +114,11 @@
  * foreground rather than filled. Orange would claim the screen's single
  * primary action for the way *out* of the screen. */
 .signOut {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   justify-content: center;
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-2);
   border: var(--border-hairline) solid var(--color-primary-foreground);
   border-radius: var(--radius-sm);
   background: transparent;
@@ -105,4 +127,42 @@
   font-weight: var(--type-label-weight);
   line-height: var(--type-label-line);
   cursor: pointer;
+}
+
+/* The word beside each trailing icon: in the document at every width so the
+ * control keeps its name, visible only once the bar has room for it. */
+.label {
+  position: absolute;
+  width: var(--hidden-size);
+  height: var(--hidden-size);
+  overflow: hidden;
+  clip-path: inset(100%);
+  white-space: nowrap;
+}
+
+@media (min-width: 768px) {
+  .appBar {
+    gap: var(--space-4);
+    padding-top: var(--space-3);
+    padding-inline-start: var(--space-5);
+    padding-inline-end: var(--space-5);
+    padding-bottom: calc(var(--space-3) + var(--app-bar-stripe-height));
+  }
+
+  .actions {
+    gap: var(--space-3);
+  }
+
+  .account,
+  .signOut {
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .label {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+  }
 }

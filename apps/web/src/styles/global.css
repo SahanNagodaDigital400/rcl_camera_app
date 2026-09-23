@@ -12,6 +12,10 @@
 
 html {
   -webkit-text-size-adjust: 100%;
+  /* The app bar is sticky on a phone, so anything scrolled to the top edge —
+   * the main region on every screen swap, an anchor, a focused control —
+   * would otherwise land underneath it. */
+  scroll-padding-top: calc(var(--app-bar-height) + env(safe-area-inset-top, 0px));
 }
 
 body {
@@ -89,10 +93,73 @@ input:not([type='checkbox'], [type='radio'], [type='hidden']) {
   min-height: var(--touch-target-min);
 }
 
+/* Every control changes state over the same short duration, so a hover, a
+ * press and a disable all read as one system rather than as many. */
+button,
+[role='button'],
+input,
+select,
+textarea,
+summary {
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    background-image var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease),
+    opacity var(--motion-fast) var(--motion-ease),
+    transform var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-fast) var(--motion-ease);
+}
+
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']) {
+  cursor: pointer;
+}
+
+/* One hover feedback for every enabled control, layered as a background image
+ * so it darkens a filled button and tints an outlined one without any module
+ * restating it — and only where a pointer can hover, so a touch screen never
+ * paints a stuck hover after a tap. */
+@media (hover: hover) {
+  button:not(:disabled):hover,
+  [role='button']:not([aria-disabled='true']):hover {
+    background-image: var(--hover-overlay);
+  }
+}
+
+/* The press: a small, immediate scale so a tap is felt as well as seen. */
+button:not(:disabled):active {
+  transform: scale(var(--press-scale));
+}
+
+/* A text field takes the accent on its border while focused, beside the ring
+ * below, so the active field reads at a glance in a long form. */
+input:not([type='checkbox'], [type='radio'], [type='hidden']):focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  border-color: var(--color-accent);
+}
+
 /* And carries a visible focus state — accent, never removed. */
 :focus-visible {
   outline: var(--focus-ring-width) solid var(--color-accent);
   outline-offset: var(--space-1);
+}
+
+/* Present for assistive technology, absent from the picture: a label that a
+ * phone-width control carries as an icon alone, or a file input whose styled
+ * label is the visible control. Kept at one pixel rather than `display: none`
+ * so it stays in the accessibility tree and stays focusable. */
+.visuallyHidden {
+  position: absolute;
+  width: var(--hidden-size);
+  height: var(--hidden-size);
+  margin: calc(-1 * var(--hidden-size));
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(100%);
+  white-space: nowrap;
+  border: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

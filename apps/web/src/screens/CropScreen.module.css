@@ -1,19 +1,26 @@
-/* Crop — the real crop editor (Story 3.2). Every value here comes from
- * src/styles/tokens.css. The 44px touch-target floor and the accent focus
- * ring are already on `button` in global.css and are deliberately not
- * restated for the two buttons below; the eight drag handles are `<div>`s,
- * not buttons, so their own floor is stated on `.handle`. */
+/* Crop — the real crop editor (Story 3.2), laid out from
+ * `mockups/key-crop.html`: a full-bleed stage on a phone with the sheet
+ * footer — hint, then one full-width Confirm Crop — kept at the bottom, and
+ * a framed panel from the breakpoint up.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target
+ * floor and the accent focus ring are already on `button` in global.css and
+ * are deliberately not restated for the two buttons below; the eight drag
+ * handles are `<div>`s, not buttons, so their own floor is stated on
+ * `.handle`. */
 
 .screen {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-4);
 }
 
+/* The heading role on a phone — the photo is the subject — and display once
+ * there is room. */
 .title {
-  font-size: var(--type-display-size);
+  font-size: var(--type-heading-size);
   font-weight: var(--type-display-weight);
-  line-height: var(--type-display-line);
+  line-height: var(--type-heading-line);
   letter-spacing: var(--type-display-tracking);
   color: var(--color-text);
 }
@@ -25,11 +32,14 @@
  * image is shorter than the floor, this box and the image's own rendered box
  * are no longer the same rect, and `.frame` below is what carries that
  * distinction rather than papering over it. See the screen's own module
- * comment. */
+ * comment. Full-bleed on a phone, stepping out of the main region's gutter. */
 .stage {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   min-height: var(--viewfinder-min-height);
+  margin-inline: calc(-1 * var(--space-4));
   overflow: hidden;
-  border-radius: var(--radius-lg);
   background: var(--color-primary);
 }
 
@@ -133,6 +143,19 @@
   cursor: ew-resize;
 }
 
+/* The sheet footer: sticky above the tab bar on a phone, so Confirm is one
+ * thumb-reach away however tall the photo is; background-coloured so the
+ * stage scrolls under it rather than through it. */
+.footer {
+  position: sticky;
+  bottom: calc(var(--tab-bar-height) + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  background: var(--color-background);
+}
+
 .hint {
   color: var(--color-muted-text);
   font-size: var(--type-caption-size);
@@ -151,8 +174,8 @@
 
 /* EXPERIENCE.md's `retake-prompt`: an inline, surface-colored banner — never
  * the destructive red `.error` above, since a quality refusal is not the
- * failed-request case that colour is reserved for. `BulkUploadScreen.module.css`'s
- * `.file` recipe, the one DESIGN.md names for this component. */
+ * failed-request case that colour is reserved for. Sits directly above the
+ * one action, so Retake is one thumb-reach away. */
 .retakePrompt {
   background: var(--color-surface);
   border: var(--border-hairline) solid var(--color-border);
@@ -161,11 +184,13 @@
   padding: var(--space-3) var(--space-4);
 }
 
+/* Stacked on a phone — Confirm full width first, Back beneath — and a row
+ * from the breakpoint up. */
 .actions {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-4);
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
 }
 
 /* The screen's one accent control (DESIGN.md: exactly one per screen).
@@ -189,12 +214,10 @@
 }
 
 /* EXPERIENCE.md's "processing: lightweight spinner, no skeleton" — the first
- * spinner in this codebase (`App.module.css`'s `.pending` comment is about
- * the one-time session-bootstrap placeholder and does not apply here). A
- * rotating ring in the accent colour, sized to sit beside the button's own
- * label rather than dominate it. `global.css`'s `prefers-reduced-motion`
- * block already freezes every animation on this page, this one included, so
- * nothing further is stated here for it. */
+ * spinner in this codebase. A rotating ring in the accent colour, sized to
+ * sit beside the button's own label rather than dominate it. `global.css`'s
+ * `prefers-reduced-motion` block already freezes every animation on this
+ * page, this one included, so nothing further is stated here for it. */
 .spinner {
   display: inline-block;
   width: var(--spinner-size);
@@ -235,4 +258,36 @@
 .back:disabled {
   opacity: var(--disabled-opacity);
   cursor: progress;
+}
+
+@media (min-width: 768px) {
+  .screen {
+    width: 100%;
+    max-width: var(--measure-reading);
+    margin-inline: auto;
+    gap: var(--space-5);
+  }
+
+  .title {
+    font-size: var(--type-display-size);
+    line-height: var(--type-display-line);
+  }
+
+  .stage {
+    margin-inline: 0;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--elevation-card);
+  }
+
+  .footer {
+    position: static;
+    padding-block: 0;
+  }
+
+  .actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4);
+  }
 }

@@ -22,30 +22,45 @@
 
 /* The overlay and the dismiss target in one. Fixed rather than absolute so it
  * covers the app bar too — a modal the chrome sits on top of is not modal. */
+/* A bottom sheet on a phone — the panel rises from the edge the thumb is
+ * nearest — and a centred dialog from the breakpoint up. */
 .scrim {
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  padding: var(--space-4);
+  padding: var(--space-2) var(--space-2) calc(var(--space-2) + env(safe-area-inset-bottom, 0px));
   background: var(--scrim);
 }
 
-/* The sheet. `min(...)` rather than a plain max-width: at 375px the gutter above
- * has to stay a gutter, and the page must never scroll sideways. */
+/* The sheet: `rounded.lg`, DESIGN.md's radius for a full-screen sheet, which
+ * is what this is at phone width. */
 .panel {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  width: min(var(--measure-form), 100%);
+  width: 100%;
   max-height: 100%;
   overflow-y: auto;
   padding: var(--space-6);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
   color: var(--color-text);
+}
+
+@media (min-width: 768px) {
+  .scrim {
+    align-items: center;
+    padding: var(--space-4);
+  }
+
+  /* `min(...)` rather than a plain max-width, so a narrow tablet keeps its
+   * gutter and the page never scrolls sideways. */
+  .panel {
+    width: min(var(--measure-form), 100%);
+  }
 }
 
 /* The question, or the rule. The heading type role — not `display`, which
@@ -66,13 +81,22 @@
   color: var(--color-text);
 }
 
-/* Wrapping rather than shrinking: at the narrowest phone width two controls on
- * one line would push them below the touch-target floor. */
+/* Stacked on a phone, confirm first, so both are full-width thumb targets;
+ * a row from the breakpoint. */
 .actions {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-4);
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+}
+
+@media (min-width: 768px) {
+  .actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4);
+  }
 }
 
 /* DESIGN.md's `button-destructive`: destructive fill, its own foreground,

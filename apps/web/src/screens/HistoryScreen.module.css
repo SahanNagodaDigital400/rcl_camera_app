@@ -3,17 +3,21 @@
  * focus ring are already on `button` in global.css and are deliberately not
  * restated.
  *
- * Two sources, restated rather than imported — `AuditLogScreen.module.css`'s
- * own precedent for a screen that shares no stylesheet with a sibling:
- * `.pending`/`.failure`/`.error`/`.retry`/`.empty`/`.more` are
- * `AuditLogScreen.module.css`'s own rules, and `.list`/`.card`/`.cardBest`/
- * `.refImage`/`.info`/`.bestPill`/`.code`/`.meta` are `ResultsScreen.module.css`'s
- * — one Candidate card looks identical wherever it is rendered. */
+ * One entry per past scan, as a surface card headed by its timestamp, with
+ * `ResultsScreen.module.css`'s own Candidate card rules restated inside it —
+ * a CSS module is not shared, and one Candidate card looks identical
+ * wherever it is rendered. Mobile first; the breakpoint centres the column. */
 
 .screen {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-5);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
 .title {
@@ -28,7 +32,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 /* Back: DESIGN.md's secondary button — navy outline, navy text, transparent
@@ -83,11 +87,15 @@
 
 /* EXPERIENCE.md:86's empty-history state — reachable in the product, unlike
  * the audit log's own empty state, since a fresh account really has scanned
- * nothing yet. */
+ * nothing yet. Same register as the empty catalogue search: no illustration. */
 .empty {
+  padding: var(--space-8) var(--space-4);
+  border: var(--border-hairline) dashed var(--color-border);
+  border-radius: var(--radius-md);
   color: var(--color-muted-text);
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
+  text-align: center;
 }
 
 .more {
@@ -114,27 +122,36 @@
 .entries {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-4);
 }
 
+/* A surface card per scan: its timestamp as the header, its Candidates
+ * beneath. DESIGN.md's card — surface, hairline, `md` radius, one shadow. */
 .entry {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-card);
 }
 
 /* The timestamp above each entry's Candidates. Muted, never the accent — it
- * is a label for the row beneath it, not a control. */
+ * is a label for the rows beneath it, not a control. */
 .when {
+  padding-inline: var(--space-1);
   color: var(--color-muted-text);
-  font-size: var(--type-label-size);
+  font-size: var(--type-caption-size);
   font-weight: var(--type-label-weight);
-  line-height: var(--type-label-line);
+  line-height: var(--type-caption-line);
 }
 
 /* A past scan with no confident match — `ResultsScreen`'s own empty state,
  * in miniature, for one entry rather than the whole screen. */
 .noMatch {
+  padding-inline: var(--space-1);
   color: var(--color-muted-text);
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
@@ -145,19 +162,20 @@
 .list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
+/* Inside an entry card the Candidate rows sit on the background tint with no
+ * shadow of their own — one elevation tier, and the entry already has it. */
 .card {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-3);
   width: 100%;
-  padding: var(--space-3);
+  padding: var(--space-2);
   border: var(--border-hairline) solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  box-shadow: var(--elevation-card);
+  border-radius: var(--radius-sm);
+  background: var(--color-background);
   text-align: left;
   cursor: pointer;
 }
@@ -173,7 +191,7 @@
   object-fit: contain;
   border-radius: var(--radius-sm);
   border: var(--border-hairline) solid var(--color-border);
-  background: var(--color-background);
+  background: var(--color-surface);
 }
 
 .info {
@@ -191,7 +209,7 @@
   background: var(--color-accent);
   color: var(--color-accent-foreground);
   font-size: var(--type-caption-size);
-  font-weight: var(--type-caption-weight);
+  font-weight: var(--type-label-weight);
   line-height: var(--type-caption-line);
 }
 
@@ -209,4 +227,22 @@
   font-size: var(--type-caption-size);
   font-weight: var(--type-caption-weight);
   line-height: var(--type-caption-line);
+}
+
+@media (min-width: 768px) {
+  .screen {
+    width: 100%;
+    max-width: var(--measure-reading);
+    margin-inline: auto;
+  }
+
+  .header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .entry {
+    padding: var(--space-4);
+  }
 }

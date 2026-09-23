@@ -1,12 +1,21 @@
-/* Results — up to three ranked Candidate cards (Story 3.4). Every value here
- * comes from src/styles/tokens.css. The 44px touch-target floor and the
- * accent focus ring are already on `button` in global.css and are
- * deliberately not restated for the card, Retake or Back controls. */
+/* Results — up to three ranked Candidate cards (Story 3.4), laid out from
+ * `mockups/key-results.html`: a display heading, one line saying what a tap
+ * does, and a single column of cards with the best match outlined in the
+ * accent. Every value here comes from src/styles/tokens.css. The 44px
+ * touch-target floor and the accent focus ring are already on `button` in
+ * global.css and are deliberately not restated for the card, Retake or Back
+ * controls. */
 
 .screen {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-5);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 
 .title {
@@ -15,6 +24,15 @@
   line-height: var(--type-display-line);
   letter-spacing: var(--type-display-tracking);
   color: var(--color-text);
+}
+
+/* The verification moment, stated once: the whole card is the tap target and
+ * this is what tells a first-time user so. */
+.subheading {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
 }
 
 .list {
@@ -29,7 +47,7 @@
  * affordance the story asks for, not a confirmation. */
 .card {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-3);
   width: 100%;
   padding: var(--space-3);
@@ -49,6 +67,8 @@
   border: var(--card-best-match-border-width) solid var(--color-accent);
 }
 
+/* The reference image — never cropped to fill, since the whole face is what
+ * a member of staff verifies against. */
 .refImage {
   width: var(--candidate-image-size);
   height: var(--candidate-image-size);
@@ -68,9 +88,7 @@
 }
 
 /* DESIGN.md's `badge-role-admin` shape, accent-filled: navy on orange is
- * 5.94:1 and passes AA. The one other place the accent appears on this
- * screen besides Retake's empty-state fill, and it is a status pill rather
- * than a second competing action. */
+ * 5.94:1 and passes AA. A status pill rather than a second competing action. */
 .bestPill {
   display: inline-block;
   padding: var(--space-1) var(--space-3);
@@ -78,7 +96,7 @@
   background: var(--color-accent);
   color: var(--color-accent-foreground);
   font-size: var(--type-caption-size);
-  font-weight: var(--type-caption-weight);
+  font-weight: var(--type-label-weight);
   line-height: var(--type-caption-line);
 }
 
@@ -93,6 +111,8 @@
   overflow-wrap: anywhere;
 }
 
+/* Size · Category: each card is one Tile, and two cards from one Category
+ * folder are two different tiles (AD-18). */
 .meta {
   color: var(--color-muted-text);
   font-size: var(--type-caption-size);
@@ -132,6 +152,9 @@
 /* DESIGN.md's secondary button — navy outline, navy text, transparent fill.
  * Matches every other screen's Back control exactly (Scan, Crop, Catalogue). */
 .back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   justify-content: center;
   padding: var(--space-3) var(--space-5);
   border: var(--border-hairline) solid var(--color-primary);
@@ -142,4 +165,29 @@
   font-weight: var(--type-label-weight);
   line-height: var(--type-label-line);
   cursor: pointer;
+}
+
+.backIcon {
+  flex: none;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+@media (min-width: 768px) {
+  .screen {
+    width: 100%;
+    max-width: var(--measure-reading);
+    margin-inline: auto;
+  }
+
+  .card {
+    gap: var(--space-4);
+    padding: var(--space-4);
+  }
+
+  /* Room on a desktop for the picture to do more of the verifying. */
+  .refImage {
+    width: var(--thumbnail-size);
+    height: var(--thumbnail-size);
+  }
 }

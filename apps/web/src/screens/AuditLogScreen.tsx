@@ -576,12 +576,13 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
 
   return (
     <section className={styles.screen}>
-      <h1 className={styles.title} id={titleId} ref={titleRef} tabIndex={-1}>
-        Audit log
-      </h1>
+      <div className={styles.header}>
+        <h1 className={styles.title} id={titleId} ref={titleRef} tabIndex={-1}>
+          Audit log
+        </h1>
 
-      <div className={styles.actions}>
-        {/* Back and Flagged are both the navy family, never accent — this
+        <div className={styles.actions}>
+          {/* Back and Flagged are both the navy family, never accent — this
             screen has no primary action: it is a record, and painting either
             control accent-orange would make "fetch more rows" or "narrow the
             list" the most important thing on an Administrator's security
@@ -589,10 +590,10 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
             below, a signal rather than an action (DESIGN.md's
             `flagged-activity-row` exception, `BulkUploadScreen`'s own
             precedent). */}
-        <button className={styles.back} type="button" onClick={onBack}>
-          {BACK}
-        </button>
-        {/* EXPERIENCE.md:38's Flagged filter. `aria-pressed` carries the
+          <button className={styles.back} type="button" onClick={onBack}>
+            {BACK}
+          </button>
+          {/* EXPERIENCE.md:38's Flagged filter. `aria-pressed` carries the
             on/off state — a toggle, not two controls pretending to be one —
             and the filled/outline paint in the stylesheet follows it.
 
@@ -606,15 +607,16 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
             the second press here would add friction without fixing a bug —
             it would only fight the robustness the "discards a stale answer"
             test coverage already relies on. */}
-        <button
-          aria-disabled={listing.kind === 'loading'}
-          aria-pressed={showFlaggedOnly}
-          className={styles.flaggedFilter}
-          type="button"
-          onClick={toggleFlagged}
-        >
-          {FLAGGED_FILTER}
-        </button>
+          <button
+            aria-disabled={listing.kind === 'loading'}
+            aria-pressed={showFlaggedOnly}
+            className={styles.flaggedFilter}
+            type="button"
+            onClick={toggleFlagged}
+          >
+            {FLAGGED_FILTER}
+          </button>
+        </div>
       </div>
 
       {listing.kind === 'loading' && (
@@ -656,27 +658,31 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
             aria-labelledby={titleId}
             tabIndex={0}
           >
-            <table className={styles.table}>
-              <thead>
-                <tr>
+            <table className={styles.table} role="table">
+              <thead className={styles.head} role="rowgroup">
+                <tr role="row">
                   {COLUMNS.map((column) => (
-                    <th className={styles.heading} key={column} scope="col">
+                    <th className={styles.heading} key={column} role="columnheader" scope="col">
                       {column}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody>
+              <tbody className={styles.body} role="rowgroup">
                 {/* Rendered in the order the array arrived in. The statement
                     states the order (`ORDER BY created_at DESC, id DESC`); a
                     sort here would be a second opinion about it, and the two
                     would disagree the first time two entries shared a
                     `created_at`. */}
                 {listing.entries.map((entry) => (
-                  <tr className={styles.row} key={entry.id}>
-                    <td className={styles.cell}>{when(entry)}</td>
-                    <td className={styles.cell}>{entry.actor_email ?? NO_ACTOR}</td>
-                    <td className={styles.cell}>
+                  <tr className={styles.row} key={entry.id} role="row">
+                    <td className={styles.cell} data-label="When" role="cell">
+                      {when(entry)}
+                    </td>
+                    <td className={styles.cell} data-label="Who" role="cell">
+                      {entry.actor_email ?? NO_ACTOR}
+                    </td>
+                    <td className={styles.cell} data-label="What" role="cell">
                       {actionLabel(entry.action)}
                       {/* DESIGN.md's `flagged-activity-row`: the row itself
                           keeps the exact `audit-log-row` treatment
@@ -687,12 +693,18 @@ export function AuditLogScreen({ onBack }: AuditLogScreenProps): JSX.Element {
                         <span className={styles.flagIndicator}> · {FLAG_INDICATOR}</span>
                       )}
                     </td>
-                    <td className={styles.cell}>{entry.target_email ?? NO_TARGET}</td>
-                    <td className={styles.cell}>{entry.source_ip ?? UNKNOWN_ADDRESS}</td>
+                    <td className={styles.cell} data-label="Target" role="cell">
+                      {entry.target_email ?? NO_TARGET}
+                    </td>
+                    <td className={styles.cell} data-label="Source IP" role="cell">
+                      {entry.source_ip ?? UNKNOWN_ADDRESS}
+                    </td>
                     {/* The one cell allowed to wrap: a `details` payload is a
                         sentence's worth of facts, and forcing it onto one line
                         would make the table scroll sideways for every row. */}
-                    <td className={styles.details}>{detailsText(entry)}</td>
+                    <td className={styles.details} data-label="Details" role="cell">
+                      {detailsText(entry)}
+                    </td>
                   </tr>
                 ))}
               </tbody>

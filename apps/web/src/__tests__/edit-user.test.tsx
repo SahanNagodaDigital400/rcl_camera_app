@@ -846,7 +846,7 @@ describe('the route from the list', () => {
 
     document.dispatchEvent(new Event('visibilitychange'));
 
-    expect(await screen.findByText(/signed in as/i)).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /^edit user$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^users$/i })).toBeNull();
   });
@@ -871,7 +871,7 @@ describe('the route from the list', () => {
     fireEvent.change(screen.getByLabelText(/^role$/i), { target: { value: 'staff' } });
     fireEvent.click(screen.getByRole('button', { name: /^save changes$/i }));
 
-    expect(await screen.findByText(/signed in as/i)).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^users$/i })).toBeNull();
     expect(screen.queryByRole('heading', { name: /^edit user$/i })).toBeNull();
   });

@@ -4,11 +4,17 @@
  * is above it and `AppShell`'s `<main>` is around it, so there is no full-height
  * centring and no chrome-less panel here.
  *
- * DESIGN.md's `data-table-row` is the whole of the table treatment — surface
- * background, `{colors.background}` on hover, a hairline `{colors.border}` between
- * rows, no card wrapper and no shadow. A table, not a stack of cards. The density
- * is the admin tier (`{spacing.2}`–`{spacing.3}` within a row), which is the one
- * deliberate density split in the system.
+ * One `<table>` at every width, laid out two ways. **From `--breakpoint-md`
+ * up** it is DESIGN.md's `data-table-row` — surface background,
+ * `{colors.background}` on hover, a hairline `{colors.border}` between rows, no
+ * card wrapper and no shadow, at the admin density tier (`{spacing.2}`–
+ * `{spacing.3}` within a row): `mockups/key-user-list.html`. **Below it** the
+ * same rows reflow into one card per account, each cell captioned by its
+ * column's name from `data-label`, so a phone gets a readable list rather
+ * than a sideways scroll — the "Below that breakpoint it inherits Card
+ * styling" clause of DESIGN.md's data-table-row. The `role` attributes on
+ * the table's parts (see the screen) are what keep the header association
+ * once `display` stops being `table-*`.
  *
  * Every value here comes from src/styles/tokens.css. The 44px touch-target floor
  * and the accent focus ring are already on `button` in global.css and are
@@ -17,7 +23,17 @@
 .screen {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-5);
+  width: 100%;
+  max-width: var(--measure-content);
+  margin-inline: auto;
+}
+
+/* Title above the toolbar on a phone, beside it from the breakpoint up. */
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
 .title {
@@ -35,7 +51,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 /* The single primary action on this screen: accent fill, navy foreground.
@@ -119,40 +135,69 @@
   line-height: var(--type-body-line);
 }
 
-/* The table's own scroll container. One `<table>` at every width, and this is
- * what keeps the *page* from scrolling sideways at 375px instead: the container
- * takes the overflow, and takes focus, so the last column is reachable from a
- * keyboard. */
+/* The table's own scroll container. From the breakpoint up this is what keeps
+ * the *page* from scrolling sideways on a narrow tablet: the container takes
+ * the overflow, and takes focus, so the last column is reachable from a
+ * keyboard. On a phone the rows are cards and there is nothing to scroll. */
 .scroller {
   max-width: 100%;
   overflow-x: auto;
 }
 
+/* Block on a phone so the rows below can lay themselves out as cards; a real
+ * table again from the breakpoint. */
 .table {
+  display: block;
   width: 100%;
   border-collapse: collapse;
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
 }
 
-/* Column headers: the label type role, muted, and a heavier rule under the head
- * than between the rows so the head reads as the head. */
+/* The header row is spoken, not seen, while the rows are cards — every cell
+ * repeats its column's name as a caption instead. Kept at one pixel rather
+ * than `display: none` so the column headers stay in the accessibility tree. */
+.head {
+  position: absolute;
+  width: var(--hidden-size);
+  height: var(--hidden-size);
+  overflow: hidden;
+  clip-path: inset(100%);
+  white-space: nowrap;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Column headers: small caps in the caption role, muted, and a heavier rule
+ * under the head than between the rows so the head reads as the head. */
 .heading {
   padding: var(--space-2) var(--space-3);
   border-bottom: var(--border-hairline) solid var(--color-border);
   color: var(--color-muted-text);
-  font-size: var(--type-label-size);
+  font-size: var(--type-caption-size);
   font-weight: var(--type-label-weight);
-  line-height: var(--type-label-line);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-overline-tracking);
+  text-transform: uppercase;
   text-align: left;
   white-space: nowrap;
 }
 
 /* DESIGN.md's `data-table-row`: surface background, hairline border between
- * rows, no card wrapper and no shadow. */
+ * rows, no shadow. On a phone the same rule is the card: the hairline runs
+ * all the way round and the corners take the card radius. */
 .row {
-  background: var(--color-surface);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  padding: var(--space-2);
+  border: var(--border-hairline) solid var(--color-border);
   border-top: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
   color: var(--color-text);
 }
 
@@ -174,11 +219,54 @@
 }
 
 /* The admin density tier (DESIGN.md Layout & Spacing): a dense row scanned
- * quickly, not the generous mobile spacing of the scan flow. */
+ * quickly, not the generous mobile spacing of the scan flow. On a phone each
+ * cell is a captioned field of the card. */
 .cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
   padding: var(--space-2) var(--space-3);
-  vertical-align: top;
-  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* The column's name, repeated on the card as a caption. */
+.cell::before {
+  content: attr(data-label);
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-overline-tracking);
+  text-transform: uppercase;
+}
+
+/* Name: the card's title, full width, no caption. */
+.cell:nth-child(1) {
+  grid-column: 1 / -1;
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+}
+
+/* Email: the subtitle, full width, no caption, wrapping at any point since an
+ * address has no break opportunity of its own. */
+.cell:nth-child(2) {
+  grid-column: 1 / -1;
+  color: var(--color-muted-text);
+  overflow-wrap: anywhere;
+}
+
+/* Last login and the actions run full width; Role and Status share a row. */
+.cell:nth-child(5),
+.cell:nth-child(6) {
+  grid-column: 1 / -1;
+}
+
+.cell:nth-child(1)::before,
+.cell:nth-child(2)::before,
+.cell:nth-child(6)::before {
+  display: none;
 }
 
 /* Administrator: navy fill, white text, pill. Deliberately the heavier of the
@@ -186,6 +274,7 @@
  * no tap target, no interaction (EXPERIENCE.md line 66). */
 .roleAdmin {
   display: inline-block;
+  align-self: flex-start;
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-full);
   background: var(--color-primary);
@@ -193,11 +282,13 @@
   font-size: var(--type-caption-size);
   font-weight: var(--type-caption-weight);
   line-height: var(--type-caption-line);
+  white-space: nowrap;
 }
 
 /* Staff: outline only, muted text, pill. */
 .roleStaff {
   display: inline-block;
+  align-self: flex-start;
   padding: var(--space-1) var(--space-3);
   border: var(--border-hairline) solid var(--color-border);
   border-radius: var(--radius-full);
@@ -206,11 +297,13 @@
   font-size: var(--type-caption-size);
   font-weight: var(--type-caption-weight);
   line-height: var(--type-caption-line);
+  white-space: nowrap;
 }
 
 /* Active: outline, muted text — the unremarkable case, and the commoner one. */
 .statusActive {
   display: inline-block;
+  align-self: flex-start;
   padding: var(--space-1) var(--space-3);
   border: var(--border-hairline) solid var(--color-border);
   border-radius: var(--radius-full);
@@ -219,6 +312,7 @@
   font-size: var(--type-caption-size);
   font-weight: var(--type-caption-weight);
   line-height: var(--type-caption-line);
+  white-space: nowrap;
 }
 
 /* Deactivated: DESIGN.md's `badge-status-deactivated` — destructive fill, its
@@ -226,6 +320,7 @@
  * behavioural contract that colour carries in this system. */
 .statusOff {
   display: inline-block;
+  align-self: flex-start;
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-full);
   background: var(--color-destructive);
@@ -233,6 +328,7 @@
   font-size: var(--type-caption-size);
   font-weight: var(--type-caption-weight);
   line-height: var(--type-caption-line);
+  white-space: nowrap;
 }
 
 /* The three row-end controls, on one line and wrapping rather than shrinking:
@@ -332,4 +428,93 @@
   font-size: var(--type-caption-size);
   font-weight: var(--type-caption-weight);
   line-height: var(--type-caption-line);
+}
+
+/* --- From the breakpoint: the dense desktop table ------------------------- */
+
+@media (min-width: 768px) {
+  .header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  /* The card edge lives on the scroller: a collapsed table cannot round its
+   * own corners, and the scroller's overflow is what clips to the radius. */
+  .scroller {
+    border: var(--border-hairline) solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+  }
+
+  .table {
+    display: table;
+  }
+
+  .head {
+    display: table-header-group;
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+  }
+
+  .body {
+    display: table-row-group;
+  }
+
+  /* A row again: the hairline between rows only, no corners of its own. */
+  .row {
+    display: table-row;
+    padding: 0;
+    border: none;
+    border-top: var(--border-hairline) solid var(--color-border);
+    border-radius: 0;
+  }
+
+  .cell {
+    display: table-cell;
+    white-space: nowrap;
+  }
+
+  .cell::before {
+    display: none;
+  }
+
+  .cell:nth-child(1),
+  .cell:nth-child(2),
+  .cell:nth-child(5),
+  .cell:nth-child(6) {
+    grid-column: auto;
+    color: inherit;
+    font-size: inherit;
+    font-weight: var(--type-body-weight);
+    line-height: inherit;
+  }
+
+  /* Name reads heavier than the rest of the row, as in the mockup. */
+  .cell:nth-child(1) {
+    font-weight: var(--type-heading-weight);
+  }
+
+  /* The columns that may wrap, so the row fits its container before the
+   * scroller has to take over: an address, a status with its lock line, a
+   * timestamp. Name, role and the actions stay on one line. */
+  .cell:nth-child(2),
+  .cell:nth-child(4),
+  .cell:nth-child(5) {
+    white-space: normal;
+  }
+
+  .cell:nth-child(2) {
+    color: var(--color-muted-text);
+    overflow-wrap: anywhere;
+  }
+
+  .rowActions {
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+  }
 }

@@ -1412,7 +1412,10 @@ describe('the controls', () => {
     expect(onBack).not.toHaveBeenCalled();
     expect(screen.getByRole('table')).toBeTruthy();
     expect(row.getAttribute('tabindex')).toBeNull();
-    expect(row.getAttribute('role')).toBeNull();
+    // `role="row"` is the row's own implicit role, restated so the reflow to
+    // cards below `--breakpoint-md` keeps the table's semantics. It is never
+    // a control's role: no button, no link, nothing focusable.
+    expect(row.getAttribute('role')).toBe('row');
     expect(row.getAttribute('aria-selected')).toBeNull();
   });
 });
@@ -1524,7 +1527,7 @@ describe('the door on the home panel', () => {
     // the role (AD-3); this is that request arriving with the new one.
     document.dispatchEvent(new Event('visibilitychange'));
 
-    expect(await screen.findByText(/signed in as/i)).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /^audit log$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^audit log$/i })).toBeNull();
     // And nothing of the record survives the swap — not a stale table, not a

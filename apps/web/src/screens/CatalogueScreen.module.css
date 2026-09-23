@@ -4,16 +4,14 @@
  * above it and `AppShell`'s `<main>` is around it, so there is no full-height
  * centring and no chrome-less panel here.
  *
- * DESIGN.md's `data-table-row` is the whole of the table treatment — surface
- * background, `{colors.background}` on hover, a hairline `{colors.border}`
- * between rows, no card wrapper and no shadow. A table, not a stack of cards.
- * The density is the admin tier (`{spacing.2}`–`{spacing.3}` within a row),
- * which is the one deliberate density split in the system (DESIGN.md:190).
- *
- * `UserListScreen.module.css`'s flat single-class recipe, class for class,
- * with the thumbnail values from `EditTileScreen.module.css` — a CSS module is
- * not shared, so the *values* are reused through this file's own classes rather
- * than by importing anything.
+ * One `<table>` at every width, laid out two ways — `UserListScreen.module.css`'s
+ * own arrangement. **From `--breakpoint-md` up** it is DESIGN.md's
+ * `data-table-row`: surface background, `{colors.background}` on hover, a
+ * hairline `{colors.border}` between rows, no card wrapper and no shadow, at
+ * the admin density tier (`{spacing.2}`–`{spacing.3}` within a row). **Below
+ * it** each row is a card with the reference image at the leading edge and
+ * the Code beside it — the picture is what an Administrator tells two tiles of
+ * one range apart by, so it gets the card's full height.
  *
  * **Exactly one accent control**, `.add`. Everything else that can be pressed
  * — Bulk upload, Back, Search, Try again and the row-end Edit — is DESIGN.md's
@@ -29,7 +27,16 @@
 .screen {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-5);
+  width: 100%;
+  max-width: var(--measure-content);
+  margin-inline: auto;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
 .title {
@@ -47,13 +54,12 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 /* The single primary action on this screen: accent fill, navy foreground.
  * Never white on orange — 2.63:1, the one contrast pair DESIGN.md bans.
- * EXPERIENCE.md line 36 makes "+ Add Tile" the Catalogue's primary action, and
- * this is where the home panel's outlined Add tile door moved to. */
+ * EXPERIENCE.md line 36 makes "+ Add Tile" the Catalogue's primary action. */
 .add {
   justify-content: center;
   padding: var(--space-3) var(--space-5);
@@ -87,8 +93,7 @@
 
 /* Back: the same secondary treatment, written out rather than composed from
  * `.bulk` — a class named for the bulk upload carried by the back control is a
- * rule nobody can read, which is the argument `UserListScreen.module.css`
- * makes for stating `.back` and `.retry` separately. */
+ * rule nobody can read. */
 .back {
   justify-content: center;
   padding: var(--space-3) var(--space-5);
@@ -102,13 +107,12 @@
   cursor: pointer;
 }
 
-/* The search form: a label, the field, its hint and the submit, stacked and
- * left-aligned on the form measure so the box does not run the width of a
- * desktop table. */
+/* The search form: a label, the field, its hint and the submit. Stacked on a
+ * phone; the field and the submit share a row from the breakpoint. Bounded
+ * to the form measure so the box does not run the width of a desktop table. */
 .search {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
   max-width: var(--measure-form);
 }
@@ -160,12 +164,13 @@
   cursor: pointer;
 }
 
-/* The in-flight line. Muted, never orange — orange is reserved for the action
- * that has not fired yet (DESIGN.md's `save-indicator` reasoning). */
+/* The in-flight line and the count. Muted, never orange — orange is reserved
+ * for the action that has not fired yet (DESIGN.md's `save-indicator`). */
 .pending {
   color: var(--color-muted-text);
-  font-size: var(--type-body-size);
-  line-height: var(--type-body-line);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
 }
 
 /* The failure and its one way out, stacked so "Try again" sits directly under
@@ -210,42 +215,69 @@
   line-height: var(--type-body-line);
 }
 
-/* The table's own scroll container. One `<table>` at every width, and this is
- * what keeps the *page* from scrolling sideways at 375px instead: the
- * container takes the overflow, and takes focus, so the last column is
- * reachable from a keyboard. */
+/* The table's own scroll container. From the breakpoint up this is what keeps
+ * the *page* from scrolling sideways on a narrow tablet: the container takes
+ * the overflow, and takes focus, so the last column is reachable from a
+ * keyboard. On a phone the rows are cards and there is nothing to scroll. */
 .scroller {
   max-width: 100%;
   overflow-x: auto;
 }
 
 .table {
+  display: block;
   width: 100%;
   border-collapse: collapse;
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
 }
 
-/* Column headers: the label type role, muted, and a heavier rule under the
- * head than between the rows so the head reads as the head. */
+/* Spoken, not seen, while the rows are cards; see `UserListScreen.module.css`. */
+.head {
+  position: absolute;
+  width: var(--hidden-size);
+  height: var(--hidden-size);
+  overflow: hidden;
+  clip-path: inset(100%);
+  white-space: nowrap;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Column headers: small caps in the caption role, muted, and a heavier rule
+ * under the head than between the rows so the head reads as the head. */
 .heading {
   padding: var(--space-2) var(--space-3);
   border-bottom: var(--border-hairline) solid var(--color-border);
   color: var(--color-muted-text);
-  font-size: var(--type-label-size);
+  font-size: var(--type-caption-size);
   font-weight: var(--type-label-weight);
-  line-height: var(--type-label-line);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-overline-tracking);
+  text-transform: uppercase;
   text-align: left;
   white-space: nowrap;
 }
 
 /* DESIGN.md's `data-table-row`: surface background, hairline border between
- * rows, no card wrapper and no shadow. The pointer says the row is clickable —
- * a mouse convenience only (EXPERIENCE.md line 71); the keyboard path is the
- * labelled control at the row end. */
+ * rows, no shadow. On a phone the same rule is the card — the image in the
+ * first column running the card's height, the Code, Size and Category
+ * stacked beside it, the Edit control across the bottom. The pointer says the
+ * row is clickable — a mouse convenience only (EXPERIENCE.md line 71); the
+ * keyboard path is the labelled control at the row end. */
 .row {
-  background: var(--color-surface);
+  display: grid;
+  grid-template-columns: var(--thumbnail-size) minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto;
+  padding: var(--space-2);
+  border: var(--border-hairline) solid var(--color-border);
   border-top: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
   color: var(--color-text);
   cursor: pointer;
 }
@@ -258,8 +290,55 @@
  * quickly, not the generous mobile spacing of the scan flow. */
 .cell {
   padding: var(--space-2) var(--space-3);
-  vertical-align: top;
-  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  vertical-align: middle;
+}
+
+/* The column's name, repeated on the card as a caption. */
+.cell::before {
+  content: attr(data-label);
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-overline-tracking);
+  text-transform: uppercase;
+}
+
+/* The reference image: the first column, three rows tall, no caption. */
+.cell:nth-child(1) {
+  grid-row: 1 / 4;
+  grid-column: 1;
+}
+
+/* Code, Size and Category stack in the second column. Size and Category run
+ * their caption inline so the card stays short. */
+.cell:nth-child(2),
+.cell:nth-child(3),
+.cell:nth-child(4) {
+  grid-column: 2;
+}
+
+.cell:nth-child(3),
+.cell:nth-child(4) {
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding-block: var(--space-1);
+}
+
+/* The Edit control runs the card's width along the bottom. */
+.cell:nth-child(5) {
+  grid-column: 1 / -1;
+}
+
+.cell:nth-child(1)::before,
+.cell:nth-child(2)::before,
+.cell:nth-child(5)::before {
+  display: none;
 }
 
 /* The Code, in the monospace role — this is the value a member of staff reads
@@ -271,6 +350,7 @@
   font-size: var(--type-code-size);
   font-weight: var(--type-code-weight);
   line-height: var(--type-code-line);
+  overflow-wrap: anywhere;
 }
 
 /* The proxied derivative (AD-9, AD-17), at `--thumbnail-size` square.
@@ -281,6 +361,7 @@
   width: var(--thumbnail-size);
   aspect-ratio: 1;
   object-fit: contain;
+  border: var(--border-hairline) solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-background);
 }
@@ -290,11 +371,18 @@
  * rather than left as an empty cell, which reads as a picture that failed to
  * load. */
 .noImage {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--thumbnail-size);
+  aspect-ratio: 1;
+  border: var(--border-hairline) dashed var(--color-border);
+  border-radius: var(--radius-sm);
   color: var(--color-muted-text);
   font-size: var(--type-caption-size);
   font-weight: var(--type-caption-weight);
   line-height: var(--type-caption-line);
+  text-align: center;
 }
 
 /* The row-end control. One today, and a flex row anyway so a second would not
@@ -307,14 +395,12 @@
   gap: var(--space-2);
 }
 
-/* The row-end Edit control — the entry that was a door on the home panel until
- * this story. DESIGN.md's secondary button, and deliberately not a second
- * accent fill: "+ Add Tile" is this screen's one accent control, and an accent
- * Edit on every row would be as many orange things as there are tiles.
- *
- * Denser than the screen's other buttons because it lives inside a table row
- * at the admin density tier; the 44px touch-target floor is on `button` in
- * global.css and is what keeps it tappable at that padding. */
+/* The row-end Edit control. DESIGN.md's secondary button, and deliberately not
+ * a second accent fill: "+ Add Tile" is this screen's one accent control, and
+ * an accent Edit on every row would be as many orange things as there are
+ * tiles. Denser than the screen's other buttons because it lives inside a
+ * table row at the admin density tier; the 44px touch-target floor is on
+ * `button` in global.css and is what keeps it tappable at that padding. */
 .edit {
   justify-content: center;
   padding: var(--space-1) var(--space-3);
@@ -326,4 +412,84 @@
   font-weight: var(--type-label-weight);
   line-height: var(--type-label-line);
   cursor: pointer;
+}
+
+/* --- From the breakpoint: the dense desktop table ------------------------- */
+
+@media (min-width: 768px) {
+  .header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .search {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+  }
+
+  .label {
+    grid-column: 1 / -1;
+  }
+
+  .hint {
+    grid-column: 1 / -1;
+  }
+
+  /* The card edge lives on the scroller: a collapsed table cannot round its
+   * own corners, and the scroller's overflow is what clips to the radius. */
+  .scroller {
+    border: var(--border-hairline) solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+  }
+
+  .table {
+    display: table;
+  }
+
+  .head {
+    display: table-header-group;
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+  }
+
+  .body {
+    display: table-row-group;
+  }
+
+  .row {
+    display: table-row;
+    padding: 0;
+    border: none;
+    border-top: var(--border-hairline) solid var(--color-border);
+    border-radius: 0;
+  }
+
+  .cell {
+    display: table-cell;
+    white-space: nowrap;
+  }
+
+  .cell::before {
+    display: none;
+  }
+
+  .cell:nth-child(1),
+  .cell:nth-child(2),
+  .cell:nth-child(3),
+  .cell:nth-child(4),
+  .cell:nth-child(5) {
+    grid-column: auto;
+    grid-row: auto;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .rowActions {
+    justify-content: flex-end;
+  }
 }

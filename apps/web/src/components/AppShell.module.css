@@ -1,4 +1,4 @@
-/* The frame every later screen mounts inside: app bar, an optional nav slot,
+/* The frame every screen mounts inside: app bar, the role-conditional nav,
  * and the main region.
  *
  * The one breakpoint in the system (--breakpoint-md, 768px) is where the nav
@@ -7,8 +7,10 @@
  * out here and `--breakpoint-md` in tokens.css is its single reference —
  * change both together.
  *
- * No nav is rendered yet: nav items are role-conditional and arrive with auth
- * (Story 1.3+). This file establishes only the frame they slot into. */
+ * Mobile first: the defaults below are the phone layout (a document that
+ * scrolls, a sticky app bar, a fixed tab bar); the media query at the end
+ * turns the same markup into the desktop app shell (a viewport-high frame
+ * whose main region scrolls beside a full-height sidebar). */
 
 /* `position: relative` is load-bearing: `.skipLink` below is absolutely
  * positioned and would otherwise resolve against the initial containing block,
@@ -25,28 +27,170 @@
 .body {
   flex: 1;
   display: grid;
-  /* Mobile: one column. The nav slot is the bottom tab bar, laid out as a row
-   * beneath `main` once it exists. */
   grid-template-columns: 1fr;
   grid-template-areas: 'main';
+  min-height: 0;
+}
+
+/* The nav's own column arrives at the breakpoint; on a phone the tab bar is
+ * fixed to the viewport and takes no grid track. */
+.bodyWithNav {
+  grid-template-columns: 1fr;
 }
 
 .main {
   grid-area: main;
+  width: 100%;
+  min-width: 0;
   /* Mobile scan surfaces get the generous spacing tier. */
-  padding: var(--space-6) var(--space-4);
+  padding: var(--space-5) var(--space-4) var(--space-8);
 }
 
+/* Room under the content for the fixed tab bar, plus the home indicator's
+ * safe area, so the last card in a list is never parked beneath the bar. */
+.mainWithNav {
+  padding-bottom: calc(var(--tab-bar-height) + var(--space-8) + env(safe-area-inset-bottom, 0px));
+}
+
+/* --- Navigation: the tab bar (phone) -------------------------------------- */
+
+/* Surface-coloured, hairline on top, above the page and below any scrim —
+ * `mockups/key-scan.html`'s tab bar. The safe-area inset is added *inside*
+ * the bar so the bar itself reaches the bottom edge and the labels do not
+ * sit under the home indicator. */
+.nav {
+  grid-area: nav;
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: var(--z-nav);
+  background: var(--color-surface);
+  border-top: var(--border-hairline) solid var(--color-border);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.navList {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.navItem {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+/* Home is reached from the brand on a phone; it earns a row of its own only
+ * once the sidebar has the room. */
+.navItemWide {
+  display: none;
+}
+
+/* A tab: icon over label, muted at rest, navy when current. The whole cell
+ * is the target, at the tab bar's full height — well over the touch floor. */
+.navButton {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-height: var(--tab-bar-height);
+  padding: var(--space-2) var(--space-1);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-caption-line);
+}
+
+.navButton[aria-current='page'] {
+  color: var(--color-primary);
+}
+
+.navIcon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.navLabel {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* --- Desktop / tablet: sidebar ------------------------------------------- */
+
 @media (min-width: 768px) {
-  .body {
-    /* Desktop/tablet: the sidebar slot takes the leading column. */
-    grid-template-columns: auto 1fr;
+  /* The frame is the viewport: the app bar stays put, the sidebar runs the
+   * full height, and only the main region scrolls. */
+  .shell {
+    height: 100dvh;
+  }
+
+  .bodyWithNav {
+    grid-template-columns: var(--nav-sidebar-width) 1fr;
     grid-template-areas: 'nav main';
   }
 
   .main {
+    overflow-y: auto;
     /* Desktop admin surfaces get the denser tier. */
-    padding: var(--space-8) var(--space-6);
+    padding: var(--space-8) var(--space-8) var(--space-12);
+  }
+
+  .mainWithNav {
+    padding-bottom: var(--space-12);
+  }
+
+  .nav {
+    position: static;
+    inset: auto;
+    z-index: auto;
+    overflow-y: auto;
+    padding: var(--space-4) var(--space-3) var(--space-4) 0;
+    border-top: none;
+    border-right: var(--border-hairline) solid var(--color-border);
+  }
+
+  .navList {
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .navItem {
+    flex: none;
+  }
+
+  .navItemWide {
+    display: flex;
+  }
+
+  /* A sidebar row: icon beside label, a navy leading rule and a navy tint
+   * when current — `mockups/key-user-list.html`'s `.nav-item.active`, kept
+   * out of the accent so the "one orange action per screen" rule holds. */
+  .navButton {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: var(--space-3);
+    min-height: var(--touch-target-min);
+    padding: var(--space-2) var(--space-4);
+    border-inline-start: var(--nav-active-rule) solid transparent;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    font-size: var(--type-label-size);
+    line-height: var(--type-label-line);
+  }
+
+  .navButton[aria-current='page'] {
+    background: var(--color-primary-tint);
+    border-inline-start-color: var(--color-primary);
+    font-weight: var(--type-heading-weight);
   }
 }
 
@@ -57,7 +201,7 @@
 .skipLink {
   composes: touchTarget from global;
   position: absolute;
-  z-index: 1;
+  z-index: var(--z-modal);
   inset-block-start: 0;
   inset-inline-start: 0;
   /* index.html opts into viewport-fit=cover, so the shell's own box extends

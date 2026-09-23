@@ -1,3 +1,4 @@
+import { ArrowLeft, Camera, Image } from '@phosphor-icons/react';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ChangeEvent, JSX } from 'react';
 
@@ -5,15 +6,15 @@ import { computeDownscaledDimensions, downscaleToBlob } from '../scan/downscaleI
 import styles from './ScanScreen.module.css';
 
 /**
- * Scan — the entry point to Epic 3's crop/match pipeline (Story 3.1).
+ * Scan — the entry point to Epic 3's crop/match pipeline (Story 3.1), and the
+ * default landing surface (EXPERIENCE.md Information Architecture).
  *
  * Two ways in, converging on one output: a live camera capture and a chosen
  * file both end up calling `downscaleImage`'s two functions in the same
  * order, so the Blob `onCaptured` receives is identical in shape whichever
  * path produced it (the story's own definition of "equivalent submission").
  * Neither path does anything this screen does not do for the other — there is
- * no crop, no blur check and no upload here; those are Stories 3.2–3.4, and
- * this screen hands its Blob to a `CropScreen` that does nothing with it yet.
+ * no crop, no blur check and no upload here; those are Stories 3.2–3.4.
  *
  * **Permission sequencing is the one behavioural rule this screen exists to
  * hold.** `getUserMedia` is called from exactly one place — `enableCamera`,
@@ -27,24 +28,30 @@ import styles from './ScanScreen.module.css';
  * **"Choose a photo" is never gated on the camera.** It renders in every
  * state — before a request, while one is in flight, after a grant, after a
  * denial — because EXPERIENCE.md's Accessibility Floor treats camera denial
- * as a state with a first-class fallback, never a dead end.
+ * as a state with a first-class fallback, never a dead end. It sits in the
+ * controls row overlaid on the viewfinder at every state, so it is always in
+ * the same place under the thumb (`mockups/key-scan.html`).
  *
  * **The framing guide is decorative only.** DESIGN.md's `framing-guide-overlay`
- * block is an accent outline with a transparent fill; there is no blur or
- * framing analysis behind it; that is Story 3.3.
+ * block is an accent outline with a transparent fill; the quality check runs
+ * on the cropped region (Story 3.3), never on what is inside this rectangle.
  *
  * **Content decides, never the extension** — `AddTileScreen`'s own rule,
  * applied here to the file picker: `accept="image/*"` is a hint to the
  * picker, not a check, and only a genuine decode failure (`createImageBitmap`
  * rejecting) produces the inline error. A `.tif` behind a `.jpg` name is not
  * pre-judged.
+ *
+ * **The native file input stays the control.** It is visually hidden, not
+ * removed: the styled label is what the eye sees and taps, the input is what
+ * the keyboard reaches and what announces the chosen file, and `label[for]`
+ * is what joins them — so no click handler re-implements the picker.
  */
 
 const CAMERA_EXPLANATION =
   'Rocell Tile Scanner needs your camera to photograph a tile. Nothing is captured until you tap the shutter.';
 
-const CAMERA_DENIED =
-  'Camera access was not granted. You can still choose a photo below.';
+const CAMERA_DENIED = 'Camera access was not granted. You can still choose a photo below.';
 
 const DECODE_FAILURE = 'That file is not a readable image. Choose another.';
 
@@ -192,17 +199,22 @@ export function ScanScreen({ onCaptured, onBack }: ScanScreenProps): JSX.Element
 
   return (
     <section className={styles.screen}>
-      <h1 className={styles.title}>Scan</h1>
-
-      <div className={styles.actions}>
-        {/* Matches the Audit/Catalogue pattern: Back is the only control up
-            here, and it is the navy outline, never in competition with the
-            one accent control below. */}
-        <button className={styles.back} type="button" onClick={onBack}>
-          Back
-        </button>
+      <div className={styles.header}>
+        <h1 className={styles.title}>Scan</h1>
+        <div className={styles.actions}>
+          {/* Back is the only control up here, and it is the navy outline,
+              never in competition with the one accent control below. */}
+          <button className={styles.back} type="button" onClick={onBack}>
+            <ArrowLeft className={styles.backIcon} aria-hidden="true" />
+            Back
+          </button>
+        </div>
       </div>
 
+      {/* The camera surface — full-bleed on a phone, a framed panel from the
+          breakpoint up. The controls row is overlaid on its bottom edge at
+          every state, so "Choose a photo" and the shutter are always in the
+          same place under the thumb. */}
       <div className={styles.viewfinder}>
         {cameraState === 'granted' ? (
           <>
@@ -214,8 +226,7 @@ export function ScanScreen({ onCaptured, onBack }: ScanScreenProps): JSX.Element
               playsInline
               data-testid="viewfinder-video"
             />
-            {/* Decorative only — see the module comment above. No blur or
-                framing check runs against it; that is Story 3.3. */}
+            {/* Decorative only — see the module comment above. */}
             <div
               className={styles.frameGuide}
               aria-hidden="true"
@@ -227,6 +238,7 @@ export function ScanScreen({ onCaptured, onBack }: ScanScreenProps): JSX.Element
           <p className={styles.denied}>{CAMERA_DENIED}</p>
         ) : (
           <div className={styles.explanation}>
+            <Camera className={styles.explanationIcon} aria-hidden="true" />
             <p className={styles.lede}>{CAMERA_EXPLANATION}</p>
             <button
               className={styles.primary}
@@ -238,40 +250,44 @@ export function ScanScreen({ onCaptured, onBack }: ScanScreenProps): JSX.Element
             </button>
           </div>
         )}
-      </div>
 
-      <div className={styles.controls}>
-        {cameraState === 'granted' && (
-          // The framing guide's shutter — DESIGN.md's Button (primary) reused
-          // rather than a component of its own key-scan.html invents no token
-          // for. Mutually exclusive with "Enable camera" above (never both
-          // rendered at once), which is why the two share one accent rule in
-          // the stylesheet rather than two.
-          <button
-            className={styles.primary}
-            type="button"
-            onClick={() => void capture()}
-            disabled={capturing}
-          >
-            Capture
-          </button>
-        )}
+        {/* Three columns, not `space-between`: the shutter stays optically
+            centred and the fallback can never collide with it, whatever the
+            label's rendered width (`mockups/key-scan.html`). */}
+        <div className={styles.controls}>
+          <div className={styles.uploadField}>
+            <label className={styles.uploadLabel} htmlFor={fileId}>
+              <Image className={styles.uploadIcon} aria-hidden="true" />
+              Choose a photo
+            </label>
+            <input
+              className={styles.fileInput}
+              id={fileId}
+              type="file"
+              accept="image/*"
+              ref={fileInputRef}
+              onChange={(event) => void chooseFile(event)}
+            />
+          </div>
 
-        <div className={styles.uploadField}>
-          {/* Left as the platform control rather than hidden behind a styled
-              button — `AddTileScreen`'s own precedent: the native input is
-              keyboard-reachable and announces the chosen file by itself. */}
-          <label className={styles.uploadLabel} htmlFor={fileId}>
-            Choose a photo
-          </label>
-          <input
-            className={styles.fileInput}
-            id={fileId}
-            type="file"
-            accept="image/*"
-            ref={fileInputRef}
-            onChange={(event) => void chooseFile(event)}
-          />
+          {cameraState === 'granted' && (
+            // The shutter — DESIGN.md's Button (primary) in the mockup's
+            // square, with the word visually hidden and the glyph doing the
+            // pointing. Mutually exclusive with "Enable camera" above (never
+            // both rendered at once), which is why the two share one accent
+            // rule in the stylesheet rather than two.
+            <button
+              className={`${styles.primary} ${styles.shutter}`}
+              type="button"
+              onClick={() => void capture()}
+              disabled={capturing}
+            >
+              <Camera className={styles.shutterIcon} aria-hidden="true" />
+              <span className={styles.shutterLabel}>Capture</span>
+            </button>
+          )}
+
+          <div className={styles.controlsSpacer} aria-hidden="true" />
         </div>
       </div>
 

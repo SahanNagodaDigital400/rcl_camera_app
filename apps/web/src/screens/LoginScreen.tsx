@@ -1,3 +1,4 @@
+import { Scan } from '@phosphor-icons/react';
 import { useId, useRef, useState } from 'react';
 import type { FormEvent, JSX } from 'react';
 
@@ -182,73 +183,80 @@ export function LoginScreen(): JSX.Element {
     // knowing which one it landed on.
     <main className={styles.screen} id={MAIN_REGION_ID} tabIndex={-1}>
       <div className={styles.panel}>
-        <h1 className={styles.title}>Rocell Tile Scanner</h1>
-        <p className={styles.lede}>
-          Sign in with the email address an Administrator issued your account.
-        </p>
+        {/* The brand, before there is an app bar to carry it: the same navy
+            band and accent stripe every authenticated screen wears. */}
+        <div className={styles.brand}>
+          <Scan className={styles.brandIcon} aria-hidden="true" />
+          <span className={styles.brandName}>Rocell Tile Scanner</span>
+          <span className={styles.stripe} aria-hidden="true" />
+        </div>
+        <div className={styles.content}>
+          <h1 className={styles.title}>Sign in</h1>
+          <p className={styles.lede}>Use the email address an Administrator issued your account.</p>
 
-        {/* `role="status"`, not `role="alert"`: nothing the user just did
+          {/* `role="status"`, not `role="alert"`: nothing the user just did
             failed, and an assertive interruption would frame a routine expiry
             as an error. It sits above the form rather than inside it because
             it is not about either field. */}
-        {sessionEnded && (
-          <p className={styles.notice} role="status">
-            {SESSION_ENDED}
-          </p>
-        )}
-
-        <form className={styles.form} onSubmit={(event) => void handleSubmit(event)} noValidate>
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor={emailId}>
-              Email
-            </label>
-            <input
-              className={styles.input}
-              id={emailId}
-              name="email"
-              type="email"
-              autoComplete="username"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              ref={emailRef}
-              value={email}
-              aria-invalid={invalid('email')}
-              aria-describedby={error === null ? undefined : errorId}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor={passwordId}>
-              Password
-            </label>
-            <input
-              className={styles.input}
-              id={passwordId}
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              ref={passwordRef}
-              value={password}
-              aria-invalid={invalid('password')}
-              aria-describedby={error === null ? undefined : errorId}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </div>
-
-          {/* Inserted rather than emptied and refilled: a `role="alert"` node
-              appearing in the document is what announces it. */}
-          {error !== null && (
-            <p className={styles.error} id={errorId} role="alert">
-              {error.message}
+          {sessionEnded && (
+            <p className={styles.notice} role="status">
+              {SESSION_ENDED}
             </p>
           )}
 
-          <button className={styles.submit} type="submit" disabled={submitting}>
-            {submitting ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
+          <form className={styles.form} onSubmit={(event) => void handleSubmit(event)} noValidate>
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor={emailId}>
+                Email
+              </label>
+              <input
+                className={styles.input}
+                id={emailId}
+                name="email"
+                type="email"
+                autoComplete="username"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                ref={emailRef}
+                value={email}
+                aria-invalid={invalid('email')}
+                aria-describedby={error === null ? undefined : errorId}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+            </div>
+
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor={passwordId}>
+                Password
+              </label>
+              <input
+                className={styles.input}
+                id={passwordId}
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                ref={passwordRef}
+                value={password}
+                aria-invalid={invalid('password')}
+                aria-describedby={error === null ? undefined : errorId}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </div>
+
+            {/* Inserted rather than emptied and refilled: a `role="alert"` node
+              appearing in the document is what announces it. */}
+            {error !== null && (
+              <p className={styles.error} id={errorId} role="alert">
+                {error.message}
+              </p>
+            )}
+
+            <button className={styles.submit} type="submit" disabled={submitting}>
+              {submitting ? 'Signing in…' : 'Sign in'}
+            </button>
+          </form>
+        </div>
       </div>
     </main>
   );

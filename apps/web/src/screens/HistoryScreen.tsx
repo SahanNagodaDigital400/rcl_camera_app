@@ -215,14 +215,16 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): JSX.Element {
 
   return (
     <section className={styles.screen}>
-      <h1 className={styles.title} id={titleId} ref={titleRef} tabIndex={-1}>
-        History
-      </h1>
+      <div className={styles.header}>
+        <h1 className={styles.title} id={titleId} ref={titleRef} tabIndex={-1}>
+          History
+        </h1>
 
-      <div className={styles.actions}>
-        <button className={styles.back} type="button" onClick={onBack}>
-          {BACK}
-        </button>
+        <div className={styles.actions}>
+          <button className={styles.back} type="button" onClick={onBack}>
+            {BACK}
+          </button>
+        </div>
       </div>
 
       {listing.kind === 'loading' && (
