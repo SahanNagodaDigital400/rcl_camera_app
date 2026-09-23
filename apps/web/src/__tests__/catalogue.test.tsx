@@ -9,13 +9,14 @@
  * through `App`, because the role condition and the section state live in the
  * gate.
  *
- * Six assertions here are the ones nothing else in the suite can make: that the
- * request carries `q` and nothing else, that every row paints its Size, its
+ * Seven assertions here are the ones nothing else in the suite can make: that
+ * the request carries `q` and nothing else, that every row paints its Size, its
  * Category and its proxied thumbnail, that the two empty states are two
  * different sentences, that a row *and* its `Edit` control both open the same
- * tile, that a stale answer is discarded, and that the screen has exactly the
- * controls it is meant to have — no removal, no sort, no pagination and no Size
- * or Category filter.
+ * tile, that a stale answer is discarded, that a long answer is paged on this
+ * screen without a second request and with the count still naming every match,
+ * and that the screen has exactly the controls it is meant to have — no
+ * removal, no sort and no Size or Category filter.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { StrictMode } from 'react';
@@ -148,6 +149,31 @@ const NULL_CATEGORY: Tile = {
 
 /** A tile whose reference images all went, which the API cannot produce (FR-7). */
 const IMAGELESS: Tile = { ...TILE, id: '0a5e7c21-4b93-4d18-8f60-2c9a1e3b7d54', reference_images: [] };
+
+/** The screen's own page size, restated so a boundary assertion names it. */
+const PAGE_SIZE = 25;
+
+/**
+ * `count` distinct Tiles, enough to page.
+ *
+ * Distinct ids because React keys a row on one, and distinct Codes because
+ * every file is a different tile (AD-18) — a fixture of twenty-six copies of
+ * one Code would be the very collapse the screen is forbidden to make. Both
+ * are shaped to pass `isTile`: the id is a canonical dashed UUID, or the screen
+ * would refuse the whole body as malformed.
+ */
+function manyTiles(count: number): Tile[] {
+  return Array.from({ length: count }, (_row, index) => ({
+    ...TILE,
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    code: `RP.CMA.${String(index).padStart(4, '0')}DJ.SM.0T`,
+  }));
+}
+
+/** The Code `manyTiles` gives the tile at `index`, so a test names a row. */
+function codeAt(index: number): string {
+  return `RP.CMA.${String(index).padStart(4, '0')}DJ.SM.0T`;
+}
 
 const BROWSE = '/api/admin/tiles?q=';
 
@@ -288,6 +314,17 @@ function rowFor(code: string): HTMLElement {
   const row = cell.closest('tr');
   expect(row, `${code} is not in a table row`).toBeTruthy();
   return row as HTMLElement;
+}
+
+/** The Codes the table is painting right now, header row excluded. */
+function paintedCodes(): string[] {
+  const body = within(screen.getByRole('table')).getAllByRole('row').slice(1);
+  return body.map((row) => within(row).getAllByRole('cell')[1]?.textContent ?? '');
+}
+
+/** Press one of the two page controls. */
+function turnTo(word: RegExp): void {
+  fireEvent.click(screen.getByRole('button', { name: word }));
 }
 
 /** Type into the search box and submit, the way an Administrator does. */
@@ -695,6 +732,144 @@ describe('the live region', () => {
     await screen.findByRole('alert');
 
     expect(screen.getByRole('status').textContent).toBe('');
+  });
+});
+
+// --- Paging -------------------------------------------------------------------
+
+describe('the pages', () => {
+  it('paints one page of rows and leaves the rest behind the controls', async () => {
+    // Thirty matches, twenty-five rows. The point is the thumbnails as much as
+    // the rows: every one is a request against a route that re-reads the role,
+    // and a browse of the whole catalogue would fire a few hundred of them.
+    stubList(manyTiles(30));
+    renderScreen();
+
+    await screen.findByRole('table');
+
+    expect(paintedCodes()).toHaveLength(PAGE_SIZE);
+    expect(paintedCodes()[0]).toBe(codeAt(0));
+    expect(paintedCodes()[PAGE_SIZE - 1]).toBe(codeAt(PAGE_SIZE - 1));
+    expect(screen.queryByText(codeAt(PAGE_SIZE))).toBeNull();
+    expect(
+      within(screen.getByRole('navigation', { name: /catalogue pages/i })).getByText(
+        'Page 1 of 2',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('turns to the next page without asking the server again', async () => {
+    // The paging is a slice of an answer already in hand: the API answers every
+    // match in one ordered array and there is no `page` parameter to send. A
+    // second request here would mean a cursor had been invented.
+    const { calls } = stubList(manyTiles(30));
+    renderScreen();
+
+    await screen.findByRole('table');
+    turnTo(/^next$/i);
+
+    expect(paintedCodes()).toEqual([
+      codeAt(25),
+      codeAt(26),
+      codeAt(27),
+      codeAt(28),
+      codeAt(29),
+    ]);
+    expect(screen.queryByText(codeAt(0))).toBeNull();
+    expect(calls.filter(([path]) => path === BROWSE)).toHaveLength(1);
+  });
+
+  it('goes back to the page it came from', async () => {
+    stubList(manyTiles(30));
+    renderScreen();
+
+    await screen.findByRole('table');
+    turnTo(/^next$/i);
+    turnTo(/^previous$/i);
+
+    expect(paintedCodes()[0]).toBe(codeAt(0));
+    expect(screen.getByText('Page 1 of 2')).toBeTruthy();
+  });
+
+  it('counts every match and says which slice is on screen', async () => {
+    // The count is of the *search*, not of the page. Reporting twenty-five to
+    // an Administrator whose fragment matched thirty would answer the question
+    // the submit asked with the page size.
+    stubList(manyTiles(30));
+    renderScreen();
+
+    await screen.findByRole('table');
+
+    expect(screen.getByRole('status').textContent).toBe('30 tiles listed. Showing 1–25, page 1 of 2.');
+
+    turnTo(/^next$/i);
+
+    // And the region is what makes a page turn audible: nothing else on this
+    // screen announces it.
+    expect(screen.getByRole('status').textContent).toBe('30 tiles listed. Showing 26–30, page 2 of 2.');
+  });
+
+  it('refuses the press at either end without leaving the tab order', async () => {
+    // `aria-disabled`, never `disabled`: a disabled button is dropped from the
+    // tab order and blurred by the browser, which would throw a keyboard
+    // Administrator to the top of the document at the moment they reached the
+    // end of the catalogue. The press is refused in `goTo` instead.
+    stubList(manyTiles(30));
+    renderScreen();
+
+    await screen.findByRole('table');
+    const previous = screen.getByRole('button', { name: /^previous$/i });
+    const next = screen.getByRole('button', { name: /^next$/i });
+
+    expect(previous.getAttribute('aria-disabled')).toBe('true');
+    expect(previous.hasAttribute('disabled')).toBe(false);
+    expect(next.getAttribute('aria-disabled')).toBe('false');
+
+    fireEvent.click(previous);
+    expect(paintedCodes()[0]).toBe(codeAt(0));
+    expect(screen.getByText('Page 1 of 2')).toBeTruthy();
+
+    fireEvent.click(next);
+    expect(next.getAttribute('aria-disabled')).toBe('true');
+    expect(next.hasAttribute('disabled')).toBe(false);
+
+    fireEvent.click(next);
+    expect(screen.getByText('Page 2 of 2')).toBeTruthy();
+  });
+
+  it('offers no page controls when the answer fits on one page', async () => {
+    // Exactly `PAGE_SIZE` rows is one page, not a full page with an empty one
+    // after it — the boundary the audit log gets wrong by construction, since
+    // it cannot know a short page is the last until it asks.
+    stubList(manyTiles(PAGE_SIZE));
+    renderScreen();
+
+    await screen.findByRole('table');
+
+    expect(paintedCodes()).toHaveLength(PAGE_SIZE);
+    expect(screen.queryByRole('navigation', { name: /catalogue pages/i })).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('25 tiles listed.');
+  });
+
+  it('returns to the first page when a search lands', async () => {
+    // A page held across a new answer is a position in a list that no longer
+    // exists: page 2 of a search that narrowed the catalogue to nine rows is an
+    // empty table under a count that says nine.
+    stubFetch({
+      [BROWSE]: [{ status: 200, body: manyTiles(30) }],
+      [searchPath('cma')]: [{ status: 200, body: [TILE] }],
+    });
+    renderScreen();
+
+    await screen.findByRole('table');
+    turnTo(/^next$/i);
+    searchFor('cma');
+
+    await waitFor(() => {
+      expect(paintedCodes()).toEqual([CODE]);
+    });
+    expect(screen.getByRole('status').textContent).toBe('1 tile listed.');
+    expect(screen.queryByRole('navigation', { name: /catalogue pages/i })).toBeNull();
   });
 });
 
@@ -1150,6 +1325,11 @@ describe('the controls', () => {
     // it lives on Edit tile behind a confirmation that names the tile, because
     // a destructive verb on a dense row is one mis-click from a catalogue entry
     // nobody can restore.
+    //
+    // Two tiles, so the page controls are absent as well — and that is the
+    // assertion, not an accident of the fixture: `Previous` and `Next` over a
+    // list that fits on one page are two controls that can never do anything.
+    // `the pages` below is where they are asserted present.
     stubList([TILE, SIBLING]);
     renderScreen();
 
@@ -1164,6 +1344,7 @@ describe('the controls', () => {
       'Edit',
     ]);
     for (const verb of [/remove/i, /delete/i, /sort/i, /next/i, /previous/i, /filter/i]) {
+      // `next` and `previous` among them: a two-row catalogue has one page.
       expect(screen.queryByRole('button', { name: verb })).toBeNull();
     }
     expect(screen.queryByRole('link')).toBeNull();

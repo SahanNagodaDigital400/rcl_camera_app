@@ -414,6 +414,57 @@
   cursor: pointer;
 }
 
+/* The page controls, under the table. Centred on a phone so the thumb reaches
+ * either one without crossing the screen, and spread apart from the
+ * breakpoint up so `Previous` and `Next` sit at the two ends of the table they
+ * page — the same edges the row content is aligned to. */
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+}
+
+/* Both page controls: DESIGN.md's navy-outlined secondary, the same paint as
+ * Bulk upload, Back, Search and Try again. Turning a page is not this screen's
+ * action — "+ Add Tile" is, and it keeps the one accent fill. */
+.page {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* Dimmed at the two ends of the list rather than hidden, so neither control
+ * moves under the thumb on the press that reaches the last page (tokens.css's
+ * own note on `--disabled-opacity`).
+ *
+ * Selected on `aria-disabled` rather than `:disabled` for the reason the
+ * control is not `disabled` in the first place: a disabled button leaves the
+ * tab order and the browser blurs it, which would drop a keyboard reader to
+ * the top of the document at the moment they reached the end of the
+ * catalogue. The press itself is refused in `goTo`. */
+.page[aria-disabled='true'] {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
+
+/* "Page 2 of 16". The muted caption treatment the in-flight line and the count
+ * already use — it is a position, not an action and not a warning. */
+.position {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
 /* --- From the breakpoint: the dense desktop table ------------------------- */
 
 @media (min-width: 768px) {
@@ -491,5 +542,11 @@
 
   .rowActions {
     justify-content: flex-end;
+  }
+
+  /* The pair moves to the ends of the table: `Previous` under the first
+   * column, `Next` under the last, with the position between them. */
+  .pagination {
+    justify-content: space-between;
   }
 }

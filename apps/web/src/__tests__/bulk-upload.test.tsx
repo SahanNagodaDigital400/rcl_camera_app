@@ -884,13 +884,18 @@ describe('the template sheet', () => {
   it('asks the server for nothing', () => {
     // The bytes are this screen's own source, so the template is available to
     // an Administrator whose session has just expired and costs the API
-    // nothing per press. A `/api/` href here would be a second endpoint nobody
+    // nothing per press. A `/api/` href would be a second endpoint nobody
     // specified; an object URL would be a leak per press.
+    //
+    // Asserted on the href rather than by clicking it: jsdom implements no
+    // navigation, so a click here cannot tell a `data:` URL from an `/api/`
+    // one — it logs "Not implemented" for both and no request is made in
+    // either case. The scheme is the thing that decides, and `templateCsv`
+    // pins it on every check below.
     const stub = stubFetch({ status: 200, text: '' });
     renderScreen();
 
-    fireEvent.click(screen.getByRole('link', { name: /template/i }));
-
+    expect(templateCsv()).toBeTruthy();
     expect(stub.calls).toHaveLength(0);
   });
 

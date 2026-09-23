@@ -66,16 +66,33 @@ import type { Tile } from '@rocell/schema/tile';
  * `require_administrator`, which re-reads the role from Postgres on every
  * request (AD-3), and it refuses them whatever this renders.
  *
+ * **The answer is paged on this screen, not by the server.** A browse of the
+ * whole catalogue is a few hundred rows and as many proxied thumbnails, each
+ * one a request against a route that re-reads the role — so `PAGE_SIZE` rows
+ * are painted at a time and the rest wait behind `Previous` and `Next`. The
+ * slicing is the only part of this that is client-side: the search is still
+ * the server's rule, the array it answers with is still *every* match, and the
+ * live region still counts all of them rather than the slice. Because paging
+ * is presentation and not a question anybody asked, it goes back to the first
+ * page every time a new answer lands — a page 7 carried across a search that
+ * narrowed the list to nine rows would paint an empty table under a count that
+ * said nine.
+ *
  * Deliberately absent:
  *
  * - **No Size or Category filter, facet, picker or grouping.** See above. Epic
  *   3's proposed scan-side Size pre-filter is `[PROPOSED, PRD OQ-15]` and not
  *   adopted.
- * - **No pagination, no cursor, no page size, no sort control and no result
- *   cap.** The API answers every match in one ordered array, and the catalogue
- *   is a few hundred rows; `api/users.py` already argued this once for the user
- *   list. A cap would need a "showing the first N" sentence that stops being
- *   true the moment somebody narrows the search.
+ * - **No server cursor, no `page` parameter, no caller-chosen page size and no
+ *   result cap.** The API answers every match in one ordered array, and the
+ *   catalogue is a few hundred rows; `api/users.py` already argued this once
+ *   for the user list. A server-side cap would need a "showing the first N"
+ *   sentence that stops being true the moment somebody narrows the search,
+ *   and a page the server owned would make the count in the live region a
+ *   count of the page rather than of the search.
+ * - **No sort control.** The API answers in one order and it is the same order
+ *   every time; a column that could be re-sorted would also have to say which
+ *   sort the page boundaries were drawn against.
  * - **No removal, no bulk selection and no row-end menu.** Removal lives on
  *   Edit Tile, behind a confirmation that names the tile — a destructive verb
  *   on a dense row of a list is one mis-click from a catalogue entry nobody can
@@ -100,6 +117,30 @@ const UNEXPECTED = 'The catalogue could not be loaded. Try again.';
 const LOADING = 'Loading tiles…';
 
 /**
+ * How many rows are painted at once.
+ *
+ * **This screen's number, not the server's** — the opposite of the audit log,
+ * where `AUDIT_PAGE_SIZE` lives in the shared contract because the API decides
+ * how much of the log a request returns and the client has to know the size to
+ * tell a short last page from the end. Nothing is negotiated here: the answer
+ * is already in hand, whole, and the slicing is a layout decision about how
+ * many proxied thumbnails to ask the browser for at once. Putting it in
+ * `shared/schema` would publish a contract that no request carries.
+ */
+const PAGE_SIZE = 25;
+
+/**
+ * How many pages a result of `total` rows is, never fewer than one.
+ *
+ * The floor of one is what keeps `page 1 of 0` off the screen for the empty
+ * result — though nothing paints the controls at that size, the clamp in the
+ * body reads this on every render and a zero here would clamp the page to -1.
+ */
+function pageCount(total: number): number {
+  return Math.max(1, Math.ceil(total / PAGE_SIZE));
+}
+
+/**
  * What the live region says once an answer lands and there is something to see.
  *
  * A **count**, because that is the outcome of a search that a screen-reader
@@ -107,9 +148,22 @@ const LOADING = 'Loading tiles…';
  * and "did that narrow anything" is the question the submit just asked. No
  * similarity value and nothing derived from one (AD-20) — a count of rows is
  * not a statement about how good any of them is.
+ *
+ * **The count is of the whole answer, and the range is said after it.** The
+ * search matched what it matched; the page is how much of that is on screen.
+ * Reporting the slice as the count would tell an Administrator who searched a
+ * range of forty tiles that there are twenty-five. The second sentence is
+ * appended only when there is more than one page — and it is also what makes a
+ * page turn audible, since pressing `Next` changes nothing else in this
+ * region.
  */
-function listed(count: number): string {
-  return count === 1 ? '1 tile listed.' : `${String(count)} tiles listed.`;
+function listed(count: number, page: number): string {
+  const total = count === 1 ? '1 tile listed.' : `${String(count)} tiles listed.`;
+  const pages = pageCount(count);
+  if (pages === 1) return total;
+  const first = page * PAGE_SIZE + 1;
+  const last = Math.min(count, first + PAGE_SIZE - 1);
+  return `${total} Showing ${String(first)}–${String(last)}, page ${String(page + 1)} of ${String(pages)}.`;
 }
 
 /**
@@ -136,6 +190,11 @@ const NO_TILES = 'No tiles yet.';
 const EDIT = 'Edit';
 const ADD = '+ Add Tile';
 
+/** The two page controls. Words rather than arrows: an arrow glyph has no
+ *  accessible name, and `‹`/`›` are announced as punctuation or not at all. */
+const PREVIOUS = 'Previous';
+const NEXT = 'Next';
+
 /**
  * What this screen is showing.
  *
@@ -160,12 +219,12 @@ type Listing =
  * search nobody had asked for. It is also what makes the state's own sentence
  * true rather than a guess about what the reader last typed.
  */
-function announce(listing: Listing): string {
+function announce(listing: Listing, page: number): string {
   if (listing.kind === 'loading') return LOADING;
   // Nothing: the failure is spoken by its own `role="alert"`, which interrupts
   // assertively. A second live region repeating it would speak twice.
   if (listing.kind === 'failed') return '';
-  if (listing.tiles.length > 0) return listed(listing.tiles.length);
+  if (listing.tiles.length > 0) return listed(listing.tiles.length, page);
   return listing.query.trim() === '' ? NO_TILES : NO_MATCH;
 }
 
@@ -265,6 +324,23 @@ export function CatalogueScreen({
   /** What is in the box. The request carries this verbatim. */
   const [query, setQuery] = useState(opened);
   /**
+   * Which slice of the answer is painted, zero-based.
+   *
+   * **Not part of `Listing`**, because it is not part of the answer: the
+   * listing is what the server said and this is where the reader is in it. It
+   * is reset to the first page wherever a new answer is written — see `load` —
+   * and clamped again in the body, so nothing can paint a page that is past
+   * the end of the rows it is a page of.
+   *
+   * Deliberately **not** carried out to `App` the way the query is. A search
+   * survives leaving the screen because retyping a fragment twenty times is
+   * the cost of not keeping it; a scroll position through a list that may have
+   * gained or lost the very tile that was just edited is not the same kind of
+   * thing, and returning somebody to page 7 of a refetched catalogue would put
+   * them somewhere they never chose.
+   */
+  const [page, setPage] = useState(0);
+  /**
    * The re-entrancy guard for `Try again`, written synchronously.
    *
    * `UserListScreen.inFlight`'s reason, narrowed to the one control here whose
@@ -299,6 +375,16 @@ export function CatalogueScreen({
    * focusable without adding a tab stop.
    */
   const titleRef = useRef<HTMLHeadingElement>(null);
+  /**
+   * The table's scroll container, so a page turn can put its first row back in
+   * view.
+   *
+   * `Previous` and `Next` sit *below* a screenful of rows, which means the
+   * reader is at the bottom of the old page when they press one — and without
+   * this they would be at the bottom of the new one, looking at row 50 of a
+   * page that starts at row 26.
+   */
+  const scrollerRef = useRef<HTMLDivElement>(null);
   /**
    * Which fetch is allowed to write the answer.
    *
@@ -349,6 +435,12 @@ export function CatalogueScreen({
       .then((body) => {
         if (generation.current === mine) {
           setListing({ kind: 'loaded', query: wanted, tiles: asTiles(body) });
+          // A new answer is a new list, so it opens at its first page — for a
+          // narrowed search, for `Try again`, and for the refetch that every
+          // mount does. The clamp in the body covers the same ground defensively;
+          // this is what makes the reset the *intent* rather than a side effect
+          // of the new array being shorter.
+          setPage(0);
           // **Only a search the server answered is worth keeping.** What
           // survives this screen is the search that produced what is on it, and
           // a refused one produced nothing: persisting a pasted paragraph that
@@ -424,6 +516,33 @@ export function CatalogueScreen({
     // been typed since would silently answer a different question.
     setListing({ kind: 'loading', query: listing.query });
     load(listing.query);
+  }
+
+  // The whole answer, which is what the count is of. Empty in every state but
+  // `loaded`, so the paging below is inert while a search is open or refused
+  // and there is nothing to slice.
+  const tiles = listing.kind === 'loaded' ? listing.tiles : [];
+  const pages = pageCount(tiles.length);
+  // Clamped on every render rather than trusted. `setPage(0)` runs where the
+  // answer is written, but a render happens between a listing that has shrunk
+  // and the state that acknowledges it, and one frame of `.slice()` past the
+  // end is an empty table under a count that says there are rows.
+  const current = Math.min(page, pages - 1);
+  const visible = tiles.slice(current * PAGE_SIZE, current * PAGE_SIZE + PAGE_SIZE);
+
+  function goTo(wanted: number): void {
+    // The refusal that makes `aria-disabled` honest: the first page's
+    // `Previous` and the last page's `Next` stay focusable and stay in the tab
+    // order, and this is what stops the press from doing anything. Same reason
+    // the audit log's `Load more` is never `disabled` — a `disabled` control is
+    // dropped from the tab order and blurred, which would throw a keyboard
+    // reader to `<body>` at the exact moment they reached the end of the list.
+    if (wanted < 0 || wanted >= pages) return;
+    setPage(wanted);
+    // Back to the top of the table, because the control that was just pressed
+    // is below the rows. Optional-called: `scrollIntoView` is absent in jsdom,
+    // and a page turn must not throw in a test that never had a viewport.
+    scrollerRef.current?.scrollIntoView?.({ block: 'start' });
   }
 
   return (
@@ -521,7 +640,7 @@ export function CatalogueScreen({
         }
         role="status"
       >
-        {announce(listing)}
+        {announce(listing, current)}
       </p>
 
       {listing.kind === 'failed' && (
@@ -546,7 +665,13 @@ export function CatalogueScreen({
              column header, which is a real loss on a surface EXPERIENCE.md
              calls desktop-first. The container scrolls instead of the page, and
              takes focus so the last column is reachable from the keyboard. */
-        <div className={styles.scroller} role="region" aria-labelledby={titleId} tabIndex={0}>
+        <div
+          className={styles.scroller}
+          role="region"
+          aria-labelledby={titleId}
+          ref={scrollerRef}
+          tabIndex={0}
+        >
           <table className={styles.table} role="table">
             <thead className={styles.head} role="rowgroup">
               <tr role="row">
@@ -571,7 +696,7 @@ export function CatalogueScreen({
               </tr>
             </thead>
             <tbody className={styles.body} role="rowgroup">
-              {listing.tiles.map((tile) => {
+              {visible.map((tile) => {
                 const source = thumbnail(tile);
                 return (
                   // Keyed on the tile's id. Two tiles of one range are two
@@ -670,6 +795,53 @@ export function CatalogueScreen({
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* The page controls, and only when there is more than one page: a
+          `Previous`/`Next` pair over a catalogue of nine rows is two controls
+          that can never do anything. A `<nav>` so a screen-reader user can
+          jump to them past the table, named because this screen has a second
+          landmark already (the search) and an unnamed one would be announced
+          as "navigation" with nothing to tell them apart.
+
+          **The position is a sentence, not a row of numbered links.** Sixteen
+          page numbers is sixteen tab stops between the table and the rest of
+          the screen, and a numbered page is not something anybody knows they
+          want — the way to reach a particular tile here is the search box
+          above, which is what this screen is for.
+
+          No count of rows here: the live region above already says it, and
+          this is the one place it could be repeated into a second, quieter
+          copy that disagrees with the first. */}
+      {listing.kind === 'loaded' && pages > 1 && (
+        <nav className={styles.pagination} aria-label="Catalogue pages">
+          <button
+            aria-disabled={current === 0}
+            className={styles.page}
+            type="button"
+            onClick={() => {
+              goTo(current - 1);
+            }}
+          >
+            {PREVIOUS}
+          </button>
+          {/* Not a live region of its own. It changes in the same commit as
+              the sentence in `role="status"` above, which already names the
+              page — two regions would say the same page twice. */}
+          <p className={styles.position}>
+            Page {String(current + 1)} of {String(pages)}
+          </p>
+          <button
+            aria-disabled={current === pages - 1}
+            className={styles.page}
+            type="button"
+            onClick={() => {
+              goTo(current + 1);
+            }}
+          >
+            {NEXT}
+          </button>
+        </nav>
       )}
     </section>
   );
