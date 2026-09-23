@@ -27,6 +27,10 @@ help:
 	@echo "                   -- ~346 MB, once per machine, pinned revision +"
 	@echo "                      sha256 check; pass FROM=path to adopt an existing copy"
 	@echo "  make format      apply ruff's formatting and import fixes"
+	@echo "  make certs       self-signed cert so make dev serves the web app over"
+	@echo "                   HTTPS -- required by Safari, which drops the Secure"
+	@echo "                      session cookie over plain http://localhost, and by"
+	@echo "                      any handset (getUserMedia needs a secure context)"
 	@echo ""
 	@echo "  database (needs DATABASE_URL; see infra/README.md):"
 	@echo "  make migrate     apply every unapplied migration"
@@ -63,7 +67,11 @@ setup:
 # means the failure arrives at the worst moment unless it is set up front, so
 # `make dev` says so rather than waiting for it.
 dev:
-	@echo "api -> http://127.0.0.1:$(API_PORT)   web -> http://localhost:5173 (Ctrl-C stops both)"
+	@scheme=http; [ -f $(CERT_DIR)/server.crt ] && scheme=https; \
+	echo "api -> http://127.0.0.1:$(API_PORT)   web -> $$scheme://localhost:5173 (Ctrl-C stops both)"; \
+	if [ "$$scheme" = http ]; then \
+	  echo "note: no dev cert -- run \`make certs\` if sign-in drops straight back to the login screen (Safari)."; \
+	fi
 	@if [ -z "$$OBJECT_STORAGE_ROOT" ]; then \
 	  echo "note: OBJECT_STORAGE_ROOT is unset — adding a tile will fail. See README.md."; \
 	fi
@@ -107,6 +115,43 @@ build:
 model:
 	$(UV) run python scripts/fetch_model.py $(FROM)
 
+# --- Dev TLS -----------------------------------------------------------------
+# The session cookie is `Secure` with no development exemption (AGENTS.md
+# Policy). Chrome and Firefox exempt `http://localhost` from that requirement,
+# so plain HTTP worked there; Safari does not, and drops the cookie silently --
+# sign-in succeeds and every authenticated request after it answers 401. Rather
+# than weaken the flag for one browser, `make dev` serves the front end over
+# HTTPS as soon as this target has run.
+#
+# Also the prerequisite for testing on a real handset, twice over: a LAN IP is
+# not a trustworthy origin in any browser, and `getUserMedia` refuses to run
+# outside a secure context -- so without this there is no camera to test with.
+#
+# Self-signed and per-machine: the key is gitignored and never shared. macOS
+# ships LibreSSL, whose `req` has no `-addext`, so Homebrew's OpenSSL 3 is used
+# when it is present -- a certificate without a subjectAltName is rejected
+# outright by every current browser.
+CERT_DIR := apps/web/certs
+OPENSSL   = $(shell [ -x /opt/homebrew/opt/openssl@3/bin/openssl ] && \
+                    echo /opt/homebrew/opt/openssl@3/bin/openssl || echo openssl)
+
+certs:
+	@mkdir -p $(CERT_DIR)
+	@lan=$$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null); \
+	san="DNS:localhost,IP:127.0.0.1,IP:::1"; \
+	if [ -n "$$lan" ]; then san="$$san,IP:$$lan"; echo "$$lan" > $(CERT_DIR)/issued-for.txt; fi; \
+	$(OPENSSL) req -x509 -newkey rsa:2048 -nodes \
+	  -keyout $(CERT_DIR)/server.key -out $(CERT_DIR)/server.crt \
+	  -days 825 -subj "/CN=localhost" \
+	  -addext "subjectAltName=$$san" \
+	  -addext "basicConstraints=critical,CA:FALSE" \
+	  -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+	  -addext "extendedKeyUsage=serverAuth" 2>/dev/null; \
+	chmod 600 $(CERT_DIR)/server.key; \
+	echo "wrote $(CERT_DIR)/server.{key,crt} for $$san"
+	@echo "the cert is self-signed: accept it once per browser, or trust it with"
+	@echo "  security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db $(CERT_DIR)/server.crt"
+
 # --- Database ----------------------------------------------------------------
 # DATABASE_URL is required by both and is never defaulted here: a migration
 # runner that guesses a connection string can migrate the wrong database.
@@ -142,4 +187,4 @@ eval:
 	@echo "Until then, poc/ has the working harness (see poc/Makefile)."
 	@exit 1
 
-.PHONY: help setup dev lint format test build model migrate reseed-admin ingest eval
+.PHONY: help setup dev lint format test build model certs migrate reseed-admin ingest eval

@@ -5,6 +5,11 @@
 .bmad-loop/policy.toml
 _bmad/render/
 
+# Dev TLS for the Vite dev server: a self-signed cert generated per machine by
+# `make certs`. Never committed -- a private key in git is a private key
+# published, and every checkout sharing one key is worse than no TLS at all.
+apps/web/certs/
+
 # Proof of concept (standalone, own venv and data)
 poc/Tiles/
 poc/Tiles-prepared/
