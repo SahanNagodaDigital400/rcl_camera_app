@@ -58,6 +58,7 @@ import {
   ROW_FAILED,
   SCAN_QUALITY_TOO_LOW,
   SCAN_RATE_LIMITED,
+  UNKNOWN_SIZE,
   TILE_NOT_FOUND,
   TOO_MANY_IMAGES,
   TOO_MANY_ROWS,
@@ -180,6 +181,7 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   row_failed: { file: 'catalogue.py', name: 'ROW_FAILED' },
   // Story 3.2's one — the crop-only `POST /scans` router's own module.
   invalid_crop_rect: { file: 'scan.py', name: 'INVALID_CROP_RECT' },
+  unknown_size: { file: 'scan.py', name: 'UNKNOWN_SIZE' },
   // Story 3.3's — the same router, gating the cropped region's quality.
   scan_quality_too_low: { file: 'scan.py', name: 'SCAN_QUALITY_TOO_LOW' },
   // Story 3.6's — the same router, gating the per-user submission rate.
@@ -220,6 +222,7 @@ const TYPESCRIPT: Record<string, string> = {
   invalid_crop_rect: INVALID_CROP_RECT,
   scan_quality_too_low: SCAN_QUALITY_TOO_LOW,
   scan_rate_limited: SCAN_RATE_LIMITED,
+  unknown_size: UNKNOWN_SIZE,
 };
 
 describe('the envelope codes are one contract in two languages', () => {

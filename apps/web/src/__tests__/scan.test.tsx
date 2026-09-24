@@ -13,7 +13,7 @@
  * viewfinder, a capture, or Crop's preview stubs the piece jsdom is missing
  * rather than exercising the real API.
  */
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -540,21 +540,18 @@ describe('the capture path', () => {
   });
 });
 
-describe('the framing guide', () => {
-  /**
-   * A 2000×1000 stream in a 400×400 viewfinder: `object-fit: cover` scales by
-   * 0.4, so 200 CSS pixels of frame hang off each side and one displayed
-   * pixel is 2.5 camera pixels. A guide 40px in from the left, 40px down, and
-   * 320×240 is therefore the camera's own 600,100 800×600.
-   */
-  function frameViewfinder(video: HTMLElement, guide: HTMLElement): void {
-    overrideRect(video, { width: 400, height: 400 });
-    overrideRect(guide, { left: 40, top: 40, width: 320, height: 240 });
-    Object.defineProperty(video, 'videoWidth', { value: 2000, configurable: true });
-    Object.defineProperty(video, 'videoHeight', { value: 1000, configurable: true });
-  }
+/**
+ * A 2000×1000 stream. The centre square of its short edge is 1000×1000 read
+ * from x=500 — the POC's own `side = Math.min(vw, vh)`, taken from the middle
+ * (`poc/tilematch/web/index.html`).
+ */
+function stubFrame(video: HTMLElement): void {
+  Object.defineProperty(video, 'videoWidth', { value: 2000, configurable: true });
+  Object.defineProperty(video, 'videoHeight', { value: 1000, configurable: true });
+}
 
-  it('captures the region the guide marks out, at full camera resolution', async () => {
+describe('the capture region', () => {
+  it("captures the frame's centre square, at full camera resolution", async () => {
     stubCamera();
     const { drawImage } = stubCanvas();
     stubFetchWithCalls({
@@ -566,18 +563,54 @@ describe('the framing guide', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
     const video = await screen.findByTestId('viewfinder-video');
-    frameViewfinder(video, screen.getByTestId('framing-guide-overlay'));
+    stubFrame(video);
 
     fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
 
     expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
-    // Read from the camera frame's 600,100 800×600 — the crop is taken before
-    // the downscale, so the 800×600 region is under the 1024px cap and is
-    // written whole rather than being a third of a shrunken frame.
-    expect(drawImage).toHaveBeenCalledWith(video, 600, 100, 800, 600, 0, 0, 800, 600);
+    // Read from the camera frame's 500,0 1000×1000 — the crop is taken before
+    // the downscale, so the square is under the 1024px cap and is written
+    // whole rather than as a shrunken fraction of the frame.
+    expect(drawImage).toHaveBeenCalledWith(video, 500, 0, 1000, 1000, 0, 0, 1000, 1000);
   });
 
-  it('submits the captured region whole: the guide is the crop, so no second one', async () => {
+  /**
+   * The regression this describe block exists for. The shutter used to submit
+   * the framing guide's measured box — inset on all four edges, so a fraction
+   * of the frame — where the POC submits the whole centre square. That gap in
+   * framing, with `shared/vision` byte-identical on both sides, is what made
+   * the app's scan read as less accurate than the POC's.
+   */
+  it('does not narrow the capture to the framing guide overlay', async () => {
+    stubCamera();
+    const { drawImage } = stubCanvas();
+    stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
+    render(<App />);
+    await openScan();
+
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('viewfinder-video');
+    stubFrame(video);
+    // An overlay laid out well inside the stage. It must not move the capture:
+    // the guide outlines the square, it never crops within it.
+    overrideRect(video, { width: 400, height: 400 });
+    overrideRect(screen.getByTestId('framing-guide-overlay'), {
+      left: 40,
+      top: 40,
+      width: 320,
+      height: 240,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
+
+    await screen.findByRole('heading', { name: /^results$/i });
+    expect(drawImage).toHaveBeenCalledWith(video, 500, 0, 1000, 1000, 0, 0, 1000, 1000);
+  });
+
+  it('submits the captured square whole: the shutter is the crop, so no second one', async () => {
     stubCamera();
     stubCanvas();
     const { calls } = stubFetchWithCalls({
@@ -589,19 +622,21 @@ describe('the framing guide', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
     const video = await screen.findByTestId('viewfinder-video');
-    frameViewfinder(video, screen.getByTestId('framing-guide-overlay'));
+    stubFrame(video);
 
     fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
 
     await screen.findByRole('heading', { name: /^results$/i });
     // The rectangle is normalized against the image submitted, and that image
-    // is already the guide's region: the server crops nothing further.
+    // is already the centre square: the server crops nothing further.
     expectFullFrame(calls.find(([path]) => path === '/api/scans')?.[1].body as FormData);
   });
 
-  it('falls back to the whole frame when the guide cannot be measured', async () => {
-    // jsdom lays nothing out, so every rectangle is zero unless overridden —
-    // the same state a capture would hit before the viewfinder's first paint.
+  it('captures the same square whether or not the viewfinder has been laid out', async () => {
+    // jsdom lays nothing out, so every rectangle is zero — the same state a
+    // capture would hit before the viewfinder's first paint. The region is
+    // read from the frame's own dimensions, so there is nothing to fall back
+    // from and no second submission shape to get wrong.
     stubCamera();
     const { drawImage } = stubCanvas();
     stubFetchWithCalls({
@@ -613,13 +648,12 @@ describe('the framing guide', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
     const video = await screen.findByTestId('viewfinder-video');
-    Object.defineProperty(video, 'videoWidth', { value: 2000, configurable: true });
-    Object.defineProperty(video, 'videoHeight', { value: 1000, configurable: true });
+    stubFrame(video);
 
     fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
 
     expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
-    expect(drawImage).toHaveBeenCalledWith(video, 0, 0, 2000, 1000, 0, 0, 1024, 512);
+    expect(drawImage).toHaveBeenCalledWith(video, 500, 0, 1000, 1000, 0, 0, 1000, 1000);
   });
 });
 
@@ -1580,5 +1614,239 @@ describe('the other candidates', () => {
 
     expect(screen.getByText(A_CANDIDATE.code)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /other match/i })).toBeNull();
+  });
+});
+
+
+/**
+ * Let the size read resolve, so "no picker" is an assertion about the answer
+ * rather than about the request not having landed yet.
+ *
+ * `session-expiry.test.ts`'s own `settle`: written out rather than looped,
+ * because each microtask turn has to follow the last and `Promise.all` would
+ * collapse them into one.
+ */
+async function settleSizes(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+describe('the size declaration', () => {
+  /**
+   * The POC's largest measured accuracy lever: +3.2 points of top-3 overall
+   * and +8.0 on 45X90 (`poc/README.md`), for the one attribute a photo cannot
+   * carry and the person holding the tile always knows.
+   *
+   * These tests are about the declaration reaching the server, and about the
+   * default never being a guess — a *mis*-declared size makes the true tile
+   * unreachable, so "All sizes" is the only safe thing to open on.
+   */
+  const SIZES: Reply[] = [{ status: 200, body: ['45X90', '60X30'] }];
+
+  async function openScanWithSizes(): Promise<[string, RequestInit][]> {
+    const { calls } = stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans/sizes': SIZES,
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
+    render(<App />);
+    await openScan();
+    await screen.findByLabelText(/tile size/i);
+    return calls;
+  }
+
+  it('opens on All sizes and offers every indexed size', async () => {
+    stubCamera();
+    stubCanvas();
+    await openScanWithSizes();
+
+    const picker = screen.getByLabelText(/tile size/i) as HTMLSelectElement;
+    expect(picker.value).toBe('');
+    expect([...picker.options].map((option) => option.textContent)).toEqual([
+      'All sizes',
+      '45X90',
+      '60X30',
+    ]);
+  });
+
+  it('binds the hint to the control, so its cost is not sight-only', async () => {
+    // The sentence carries what a wrong declaration does — hides the right
+    // tile — and that is stated nowhere else on the screen. Bound, so a
+    // screen-reader user meets it at the control rather than as a scan that
+    // quietly found nothing.
+    stubCamera();
+    stubCanvas();
+    await openScanWithSizes();
+
+    const picker = screen.getByLabelText(/tile size/i);
+    const describedBy = picker.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy as string)?.textContent).toMatch(
+      /wrong size hides the right tile/i,
+    );
+  });
+
+  it('freezes the declaration while a submission is in flight', async () => {
+    // A control that quietly stops responding is worse than one that is
+    // visibly unavailable — and the size is part of the request already on
+    // its way, so changing it mid-flight would describe a scan nobody sent.
+    stubCamera();
+    stubCanvas();
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans/sizes': [{ status: 200, body: ['45X90'] }],
+      '/api/scans': [{ status: 200, body: [A_CANDIDATE] }],
+    });
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (input: string, init: RequestInit = {}) => {
+      if (input === '/api/scans') await held;
+      return realFetch(input, init);
+    });
+    render(<App />);
+    await openScan();
+    await screen.findByLabelText(/tile size/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('viewfinder-video');
+    stubFrame(video);
+    fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
+
+    await waitFor(() =>
+      expect((screen.getByLabelText(/tile size/i) as HTMLSelectElement).disabled).toBe(true),
+    );
+    release?.();
+    await screen.findByRole('heading', { name: /^results$/i });
+  });
+
+  it('sends no size field at all while All sizes is selected', async () => {
+    stubCamera();
+    stubCanvas();
+    const calls = await openScanWithSizes();
+
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('viewfinder-video');
+    Object.defineProperty(video, 'videoWidth', { value: 800, configurable: true });
+    Object.defineProperty(video, 'videoHeight', { value: 800, configurable: true });
+    fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
+
+    await screen.findByRole('heading', { name: /^results$/i });
+    const body = calls.find(([path]) => path === '/api/scans')?.[1].body as FormData;
+    // Absent, not empty: a submission that declares nothing should look like
+    // one on the wire.
+    expect(body.has('size')).toBe(false);
+  });
+
+  it('sends the declared size with the scan', async () => {
+    stubCamera();
+    stubCanvas();
+    const calls = await openScanWithSizes();
+
+    fireEvent.change(screen.getByLabelText(/tile size/i), { target: { value: '45X90' } });
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('viewfinder-video');
+    Object.defineProperty(video, 'videoWidth', { value: 800, configurable: true });
+    Object.defineProperty(video, 'videoHeight', { value: 800, configurable: true });
+    fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
+
+    await screen.findByRole('heading', { name: /^results$/i });
+    const body = calls.find(([path]) => path === '/api/scans')?.[1].body as FormData;
+    expect(body.get('size')).toBe('45X90');
+  });
+
+  it('keeps the declaration across the round trip back from Results', async () => {
+    // The behaviour the POC gets from `localStorage`, which this app forbids
+    // (`no-client-token-storage.test.ts`). Lifting the value to `App` is what
+    // carries it across the unmount between two scans — which is the flow
+    // that matters: a staff member working through a pallet of one size.
+    stubCamera();
+    stubCanvas();
+    await openScanWithSizes();
+
+    fireEvent.change(screen.getByLabelText(/tile size/i), { target: { value: '60X30' } });
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('viewfinder-video');
+    Object.defineProperty(video, 'videoWidth', { value: 800, configurable: true });
+    Object.defineProperty(video, 'videoHeight', { value: 800, configurable: true });
+    fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
+    await screen.findByRole('heading', { name: /^results$/i });
+
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }));
+
+    const picker = (await screen.findByLabelText(/tile size/i)) as HTMLSelectElement;
+    expect(picker.value).toBe('60X30');
+  });
+
+  it('renders no picker when the catalogue has no indexed sizes', async () => {
+    stubCamera();
+    stubCanvas();
+    stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans/sizes': [{ status: 200, body: [] }],
+    });
+    render(<App />);
+    await openScan();
+
+    await settleSizes();
+    expect(screen.queryByLabelText(/tile size/i)).toBeNull();
+  });
+
+  it('renders no picker, and no banner, when the size list cannot be read', async () => {
+    // The filter is an accuracy option. A banner about it over a live
+    // viewfinder would be in the way of the one thing this screen is for.
+    stubCamera();
+    stubCanvas();
+    stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans/sizes': [{ status: 500, body: null }],
+    });
+    render(<App />);
+    await openScan();
+
+    await settleSizes();
+    expect(screen.queryByLabelText(/tile size/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /enable camera/i })).toBeTruthy();
+  });
+
+  it('drops a declaration the catalogue has stopped recognising', async () => {
+    // Only reachable when the catalogue changed under a screen already open,
+    // so the recovery is to clear the stale choice rather than to ask the
+    // staff member to fix something they did not get wrong.
+    stubCamera();
+    stubCanvas();
+    stubFetchWithCalls({
+      '/api/auth/session': [{ status: 200, body: STAFF }],
+      '/api/scans/sizes': [{ status: 200, body: ['45X90'] }],
+      '/api/scans': [
+        {
+          status: 422,
+          body: {
+            error: { code: 'unknown_size', message: 'That size is not in the catalogue.' },
+          },
+        },
+      ],
+    });
+    render(<App />);
+    await openScan();
+    await screen.findByLabelText(/tile size/i);
+
+    fireEvent.change(screen.getByLabelText(/tile size/i), { target: { value: '45X90' } });
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('viewfinder-video');
+    Object.defineProperty(video, 'videoWidth', { value: 800, configurable: true });
+    Object.defineProperty(video, 'videoHeight', { value: 800, configurable: true });
+    fireEvent.click(screen.getByRole('button', { name: /^capture$/i }));
+
+    expect(await screen.findByText(/not in the catalogue/i)).toBeTruthy();
+    await waitFor(() =>
+      expect((screen.getByLabelText(/tile size/i) as HTMLSelectElement).value).toBe(''),
+    );
   });
 });

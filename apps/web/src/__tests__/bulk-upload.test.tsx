@@ -1253,6 +1253,18 @@ describe('what the report says when things go wrong around it', () => {
             ),
         } as unknown as Response);
       }
+      // Scan is the landing surface, and it reads the sizes its filter may
+      // offer on arrival. It has to succeed for the same reason the browse
+      // below does: this stub answers 401 to anything it does not recognise,
+      // and that would drop the app to the login screen before the batch this
+      // test is about is ever submitted.
+      if (key === 'GET /api/scans/sizes') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve([]),
+        } as unknown as Response);
+      }
       // The Catalogue is the route to this screen since Story 2.5, and its
       // browse has to succeed or the app drops to the login screen before the
       // batch this test is about is ever submitted.

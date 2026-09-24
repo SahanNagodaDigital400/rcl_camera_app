@@ -306,6 +306,22 @@ function Gate(): JSX.Element {
    */
   const [capturedImage, setCapturedImage] = useState<Blob | null>(null);
   /**
+   * The Size the next scan declares, or `null` for "All sizes".
+   *
+   * **Held here rather than in `ScanScreen`, and deliberately not in the
+   * browser.** A staff member working through a pallet of one size declares
+   * it once; keeping it on this component is what carries the declaration
+   * across the Scan → Results → Scan round trip that unmounts the screen
+   * between every scan. The POC persists the same choice in `localStorage`,
+   * which `no-client-token-storage.test.ts` forbids anywhere in this app —
+   * so this resets on a reload, and that is the price of the storage rule.
+   *
+   * Not cleared by `showSection`, unlike `capturedImage` and `candidates`:
+   * those are one scan's data and stale after it, while this is a standing
+   * declaration about the tiles in front of the person holding the phone.
+   */
+  const [declaredSize, setDeclaredSize] = useState<string | null>(null);
+  /**
    * Which surface opened the crop editor. `'results'` keeps the candidates
    * and the frame in place so Back can return to them; `'scan'` has nothing
    * to return to but the viewfinder.
@@ -720,10 +736,12 @@ function Gate(): JSX.Element {
           // propagates back to `ScanScreen`, which renders it beside a live
           // viewfinder — the retake is the shutter, and the crop is offered.
           onCaptured={async (image) => {
-            const result = await submitScan(image, FULL_FRAME);
+            const result = await submitScan(image, FULL_FRAME, declaredSize);
             showResults(result, image);
           }}
           onCrop={(image) => showCrop(image, 'scan')}
+          declaredSize={declaredSize}
+          onDeclareSize={setDeclaredSize}
         />
       </AppShell>
     );
@@ -757,8 +775,11 @@ function Gate(): JSX.Element {
           // which is what leaves the image and the selection in place with
           // Confirm re-enabled rather than this function clearing them on a
           // failed request.
+          // The same declaration travels with a cropped resubmission: the
+          // crop changes which pixels are matched, never which tile is in the
+          // staff member's hand.
           onConfirm={async (rect) => {
-            const result = await submitScan(capturedImage, rect);
+            const result = await submitScan(capturedImage, rect, declaredSize);
             showResults(result, capturedImage);
             return result;
           }}

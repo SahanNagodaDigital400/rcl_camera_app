@@ -19,12 +19,45 @@
  * its own preprocessing begins, independent of what this file does.
  */
 
-import type { SourceRect } from './frameGuideRect';
-
 /** A width and a height, in pixels. */
 export interface Dimensions {
   width: number;
   height: number;
+}
+
+/** A rectangle in the source image's own pixels. */
+export interface SourceRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The centre square of a frame's short edge — the region the shutter submits.
+ *
+ * This is the POC's capture, transcribed: `side = Math.min(vw, vh)`, taken
+ * from the middle (`poc/tilematch/web/index.html`). Two reasons it is a
+ * square of the short edge rather than the whole frame, both the POC's own:
+ *
+ * * It is the region the square viewfinder shows, so what the staff member
+ *   framed is exactly what reaches the model — see `ScanScreen.module.css`.
+ * * It spends the ~1024px budget below on the tile instead of on pixels the
+ *   server's own centre crop would discard anyway: `shared_vision.preprocess`
+ *   resizes the short edge to 256 and centre-crops 224, so frame that never
+ *   sat in the middle of a square was never going to be embedded.
+ *
+ * Pure, so `downscale-image.test.ts` can assert the arithmetic without a
+ * canvas — which matters because jsdom performs no layout and draws nothing.
+ */
+export function computeCentreSquare(width: number, height: number): SourceRect {
+  const side = Math.min(width, height);
+  return {
+    x: Math.round((width - side) / 2),
+    y: Math.round((height - side) / 2),
+    width: side,
+    height: side,
+  };
 }
 
 /**
@@ -65,10 +98,11 @@ export function computeDownscaledDimensions(
  * bandwidth step, not the place to trade quality against size per call site.
  *
  * `region` narrows *what is read from the source*, never how it is written:
- * the capture path passes the part of the camera frame the framing guide
- * marks out, so the crop happens at full sensor resolution and only the tile
- * spends the 1024px budget. Omitted — the upload path, which has no guide —
- * the whole source is drawn, exactly as before.
+ * the capture path passes `computeCentreSquare`'s rectangle, so the crop
+ * happens at full sensor resolution and only the tile spends the 1024px
+ * budget. Omitted — the upload path, where a gallery photo was framed
+ * somewhere else entirely and the POC leaves it alone for that reason — the
+ * whole source is drawn.
  */
 export async function downscaleToBlob(
   source: CanvasImageSource,

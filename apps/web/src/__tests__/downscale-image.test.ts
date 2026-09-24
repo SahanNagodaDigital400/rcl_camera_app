@@ -7,10 +7,45 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { computeDownscaledDimensions, downscaleToBlob } from '../scan/downscaleImage';
+import {
+  computeCentreSquare,
+  computeDownscaledDimensions,
+  downscaleToBlob,
+} from '../scan/downscaleImage';
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('computeCentreSquare', () => {
+  /**
+   * The POC's `side = Math.min(vw, vh)` taken from the middle
+   * (`poc/tilematch/web/index.html`). These cases pin the arithmetic that
+   * decides how much of a phone frame reaches the model — the framing
+   * difference that made this app's scan read as less accurate than the POC's.
+   */
+  it('takes the short edge of a landscape frame, centred horizontally', () => {
+    expect(computeCentreSquare(2000, 1000)).toEqual({ x: 500, y: 0, width: 1000, height: 1000 });
+  });
+
+  it('takes the short edge of a portrait frame, centred vertically', () => {
+    expect(computeCentreSquare(1080, 1920)).toEqual({ x: 0, y: 420, width: 1080, height: 1080 });
+  });
+
+  it('leaves an already-square frame whole', () => {
+    expect(computeCentreSquare(1440, 1440)).toEqual({ x: 0, y: 0, width: 1440, height: 1440 });
+  });
+
+  it('rounds an odd offset rather than emitting a fractional source rectangle', () => {
+    // 1001 - 500 = 501, halved is 250.5. `drawImage` would accept it, but a
+    // fractional source origin resamples where an integer one copies.
+    expect(computeCentreSquare(1001, 500)).toEqual({ x: 251, y: 0, width: 500, height: 500 });
+  });
+
+  it('is the whole frame for a square, so the shutter never discards a square photo', () => {
+    const { width, height } = computeCentreSquare(224, 224);
+    expect(width * height).toBe(224 * 224);
+  });
 });
 
 describe('computeDownscaledDimensions', () => {

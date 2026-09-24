@@ -788,6 +788,60 @@ SELECT t.id AS tile_id,
  LIMIT %s
 """
 
+#: `_SELECT_CANDIDATES` with one predicate added: only Tiles of a declared
+#: Size compete.
+#:
+#: **A hard filter, not a re-rank**, the POC's own reasoning
+#: (`poc/tilematch/search.py`): a 60X30 tile is never the answer to a scan the
+#: staff member has declared to be 45X90, and leaving those references in the
+#: running only gives them a chance to outrank the truth. Applied in the
+#: `WHERE`, before the `GROUP BY`, so a filtered-out Tile never reaches the
+#: ranking at all rather than being dropped from its tail.
+#:
+#: **A separate statement rather than a null-guard bolted onto the one above.**
+#: `_SELECT_LATEST_SCANS`/`_SELECT_SCANS_BEFORE`'s own split: two questions
+#: that read differently are two statements, and `(%s IS NULL OR s.name = %s)`
+#: would make the unfiltered scan — by far the common one — carry a predicate
+#: it never uses.
+_SELECT_CANDIDATES_OF_SIZE = """
+SELECT t.id AS tile_id,
+       t.code,
+       s.name AS size,
+       c.name AS category,
+       t.face_number,
+       -min(e.embedding <#> %s::vector) AS score
+  FROM reference_embedding e
+  JOIN reference_image ri ON ri.id = e.reference_image_id
+  JOIN tile t ON t.id = ri.tile_id
+  JOIN tile_size s ON s.id = t.size_id
+  LEFT JOIN tile_category c ON c.id = t.category_id
+ WHERE e.generation_id = %s
+   AND s.name = %s
+ GROUP BY t.id, t.code, s.name, c.name, t.face_number
+ ORDER BY min(e.embedding <#> %s::vector), t.code
+ LIMIT %s
+"""
+
+#: The Sizes a scan may declare: those with at least one Tile embedded into the
+#: active generation, commonest first.
+#:
+#: **Read from the index rather than from `tile_size`.** A Size row can exist
+#: with no indexed Tile behind it — a removal takes vectors out of the graph
+#: (AD-5) without retiring the row — and offering it would be offering a
+#: filter that can only ever return nothing. Ordered by tile count so the
+#: picker opens on the sizes staff actually meet, `Matcher.sizes`'s own order.
+_SELECT_INDEXED_SIZES = """
+SELECT s.name AS size, count(DISTINCT t.id) AS tiles
+  FROM reference_embedding e
+  JOIN reference_image ri ON ri.id = e.reference_image_id
+  JOIN tile t ON t.id = ri.tile_id
+  JOIN tile_size s ON s.id = t.size_id
+ WHERE e.generation_id = %s
+ GROUP BY s.name
+ ORDER BY count(DISTINCT t.id) DESC, s.name
+"""
+
+
 #: Both ids, never just the image's. A caller holding one Tile's id must not be
 #: able to read another Tile's image by pairing it with a guessed image id —
 #: and a mismatched pair is a `404`, not a `403`, because the pair names
@@ -906,10 +960,41 @@ class Candidate:
     score: float
 
 
+def indexed_sizes(conn: psycopg.Connection) -> list[str]:
+    """Every Size with an indexed Tile behind it, commonest first.
+
+    Empty for a catalogue that has never been indexed — the same "no active
+    generation" shape `find_candidates` answers `[]` for, and for the same
+    reason: there is nothing to filter, so there is nothing to offer.
+
+    Names only. The tile counts the statement orders by are not published:
+    the picker needs to know *which* sizes can be declared, and a count beside
+    each one is a catalogue statistic on a screen whose job is to take one
+    photo.
+    """
+    generation_id = active_generation(conn)
+    if generation_id is None:
+        return []
+    return [row["size"] for row in conn.execute(_SELECT_INDEXED_SIZES, (generation_id,)).fetchall()]
+
+
 def find_candidates(
-    conn: psycopg.Connection, image: Image.Image, limit: int = TOP_K
+    conn: psycopg.Connection, image: Image.Image, limit: int = TOP_K, size: str | None = None
 ) -> list[Candidate]:
     """The top `limit` Tiles for `image`, max-pooled over every stored view.
+
+    **`size` restricts the search to Tiles of that Size — a hard filter, never
+    a re-rank.** It is the one attribute a photo cannot carry and the person
+    holding the tile always knows, which is what makes it the cheapest
+    accuracy lever available: the POC measures it at +3.2 points of top-3
+    overall and +8.0 on 45X90 (`poc/README.md`). `None` — the default, and
+    what the Scan screen sends unless a staff member declares a size — leaves
+    every Tile in contention.
+
+    The caller is responsible for having checked the Size against
+    `indexed_sizes`: an unrecognised one is not an error here, it simply
+    matches no Tile and returns `[]`, which is the truthful answer to "which
+    tiles of that size look like this".
 
     **This is the function Epic 3's scan endpoint calls.** It embeds through
     `shared_vision` with no wrapping and no second preprocessing step, which is
@@ -957,7 +1042,13 @@ def find_candidates(
         ) from missing_model
     query = _vector_literal(embedding)
 
-    rows = conn.execute(_SELECT_CANDIDATES, (query, generation_id, query, limit)).fetchall()
+    rows = (
+        conn.execute(_SELECT_CANDIDATES, (query, generation_id, query, limit)).fetchall()
+        if size is None
+        else conn.execute(
+            _SELECT_CANDIDATES_OF_SIZE, (query, generation_id, size, query, limit)
+        ).fetchall()
+    )
     return [
         Candidate(
             rank=rank,

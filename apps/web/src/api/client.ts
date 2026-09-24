@@ -278,6 +278,20 @@ export const SCAN_QUALITY_TOO_LOW = 'scan_quality_too_low';
 export const SCAN_RATE_LIMITED = 'scan_rate_limited';
 
 /**
+ * The envelope code for a declared Size the catalogue cannot answer for.
+ *
+ * A `422`. The picker is populated from `fetchScanSizes` below, so this is
+ * only reachable when the catalogue changed under a screen already open —
+ * which is why `ScanScreen` re-reads the list and clears the selection rather
+ * than asking the staff member to correct anything they typed.
+ *
+ * The server refuses rather than quietly widening the search: candidates of
+ * every other size, handed back to someone who had explicitly narrowed it,
+ * would carry nothing to say the filter had been dropped.
+ */
+export const UNKNOWN_SIZE = 'unknown_size';
+
+/**
  * The envelope code for a Code that is already a tile's.
  *
  * Marks the **code** field. A `409`: nothing is wrong with the caller's
@@ -755,6 +769,7 @@ function asScanCandidates(body: unknown): ScanCandidate[] {
 export async function submitScan(
   image: Blob,
   rect: NormalizedCropRect,
+  size: string | null = null,
 ): Promise<ScanCandidate[]> {
   const body = new FormData();
   body.append('image', image, 'scan.jpg');
@@ -762,9 +777,32 @@ export async function submitScan(
   body.append('crop_y', String(rect.y));
   body.append('crop_width', String(rect.width));
   body.append('crop_height', String(rect.height));
+  // Omitted entirely for "All sizes" rather than sent empty: the field is
+  // optional server-side, and a request that declares nothing should look
+  // like one.
+  if (size !== null) body.append('size', size);
   return asScanCandidates(
     await apiRequest('/scans', { method: 'POST', body, timeoutMs: UPLOAD_TIMEOUT_MS }),
   );
+}
+
+/**
+ * The Sizes a scan may declare, commonest first — `GET /scans/sizes`.
+ *
+ * Read from the index, so it is what `submitScan` will actually accept rather
+ * than every Size row the catalogue has ever held. `[]` for a catalogue that
+ * has never been indexed, which `ScanScreen` renders as no picker at all.
+ *
+ * Narrowed like every other body this module returns: a non-array, or an
+ * array holding anything but strings, is a malformed response rather than a
+ * picker quietly rendering `[object Object]` as an option.
+ */
+export async function fetchScanSizes(): Promise<string[]> {
+  const body = await apiRequest('/scans/sizes');
+  if (Array.isArray(body) && body.every((entry) => typeof entry === 'string')) {
+    return body as string[];
+  }
+  throw new ApiRequestError(MALFORMED_RESPONSE, 'The server returned an unexpected response.', 200);
 }
 
 /**

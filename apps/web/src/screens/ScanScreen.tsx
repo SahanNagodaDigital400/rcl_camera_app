@@ -2,17 +2,20 @@ import { ArrowsClockwise, Camera, Crop, Image, X } from '@phosphor-icons/react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { ChangeEvent, JSX } from 'react';
 
-import { ApiRequestError, SCAN_QUALITY_TOO_LOW } from '../api/client';
-import { computeDownscaledDimensions, downscaleToBlob } from '../scan/downscaleImage';
-import { computeGuideSourceRect } from '../scan/frameGuideRect';
+import { ApiRequestError, fetchScanSizes, SCAN_QUALITY_TOO_LOW, UNKNOWN_SIZE } from '../api/client';
+import {
+  computeCentreSquare,
+  computeDownscaledDimensions,
+  downscaleToBlob,
+} from '../scan/downscaleImage';
 import styles from './ScanScreen.module.css';
 
 /**
  * Scan — the entry point to the match pipeline, and the default landing
  * surface (EXPERIENCE.md Information Architecture).
  *
- * **One tap from a live viewfinder to a ranked answer.** A capture (the part
- * of the frame the framing guide marks out), or a chosen file (whole), is
+ * **One tap from a live viewfinder to a ranked answer.** A capture (the
+ * centre square of the camera frame), or a chosen file (whole), is
  * downscaled and handed to `onCaptured`, which submits it for matching and
  * moves to Results when the answer lands. There
  * is no mandatory crop step in between: cropping is an *option* — offered on
@@ -43,23 +46,30 @@ import styles from './ScanScreen.module.css';
  * close control, and taking another photo clears them anyway, so the live
  * feed is never blocked by a message the staff member has finished with.
  *
- * **The framing guide is what gets captured.** DESIGN.md's
- * `framing-guide-overlay` block is an accent outline with a transparent fill,
- * and the shutter submits the part of the camera frame that outline marks
- * out: the tile the staff member lined up, not the shop floor around it.
- * The crop is taken from the full-resolution frame before the downscale
- * (`frameGuideRect.ts` maps the outline's on-screen box back through the
- * viewfinder's `object-fit: cover` into camera pixels), so the tile spends
- * the whole ~1024px budget instead of a third of it. It is a framing aid, not
- * a gate: nothing is rejected for sitting outside the outline, the guide is
- * measured at the moment of capture rather than tracked, and if it cannot be
- * measured — a viewfinder that has not been laid out yet — the whole frame is
- * submitted as before. The quality check still runs server-side on whatever
- * region arrives.
+ * **The shutter submits the centre square of the camera frame** —
+ * `computeCentreSquare`, which is the POC's own capture
+ * (`poc/tilematch/web/index.html`: `side = Math.min(vw, vh)`, taken from the
+ * middle) transcribed. The square viewfinder shows exactly that region under
+ * `object-fit: cover`, so the accent outline is a framing aid around what is
+ * genuinely being matched rather than a second, smaller crop inside it.
  *
- * **Only the capture path is cropped.** A chosen file never passed under the
- * guide, so "Choose a photo" submits the whole image and the optional crop
- * editor is how a staff member narrows it.
+ * **This deliberately replaced a guide-shaped crop, and the reason is
+ * accuracy.** The outline used to be inset on all four edges and *that*
+ * region was what got submitted — a fraction of the frame, where the POC
+ * sends the whole centre square. Nothing in `shared/vision` differed between
+ * the two systems (the active generation's `config_hash` is identical to the
+ * POC index's), so the framing was the difference. Narrowing it again, here
+ * or in the stylesheet, re-opens the same gap and will not fail a test that
+ * is not looking for it.
+ *
+ * It remains a framing aid, not a gate: nothing is rejected for sitting
+ * outside the outline, and the quality check still runs server-side on
+ * whatever region arrives.
+ *
+ * **Only the capture path is squared off.** A chosen file was framed
+ * somewhere else entirely — the POC leaves the file picker uncropped for that
+ * same reason — so "Choose a photo" submits the whole image and the optional
+ * crop editor is how a staff member narrows it.
  *
  * **Content decides, never the extension** — `AddTileScreen`'s own rule,
  * applied here to the file picker: `accept="image/*"` is a hint to the
@@ -128,6 +138,9 @@ async function cameraAlreadyGranted(): Promise<boolean> {
  */
 type CameraState = 'unrequested' | 'checking' | 'starting' | 'requesting' | 'granted' | 'denied';
 
+/** The picker's "declare nothing" option. Not a Size, so it is not a string. */
+export const ALL_SIZES = '';
+
 interface ScanScreenProps {
   /**
    * Submit the downscaled frame for matching. Resolves once Results is
@@ -137,6 +150,22 @@ interface ScanScreenProps {
   onCaptured: (image: Blob) => Promise<void>;
   /** Open the optional crop editor on the frame just captured. */
   onCrop: (image: Blob) => void;
+  /**
+   * The Size the next scan declares, or `null` for "All sizes".
+   *
+   * **Held by `App`, not by this screen, and deliberately not by the
+   * browser.** The POC remembers the choice in `localStorage` between scans;
+   * `no-client-token-storage.test.ts` forbids browser storage anywhere in
+   * this app — explicitly including "just a UI preference", because a rule
+   * with that exception is one the next person reads as negotiable. Lifting
+   * it to `App` gets the behaviour that matters: a staff member working
+   * through a pallet of one size sets it once and it survives every
+   * Scan → Results → Scan round trip. It resets on a reload, which is the
+   * price of the storage rule and is worth saying out loud.
+   */
+  declaredSize: string | null;
+  /** Record a new declaration. `null` is "All sizes". */
+  onDeclareSize: (size: string | null) => void;
 }
 
 /**
@@ -144,7 +173,12 @@ interface ScanScreenProps {
  * else, and a control that leads "back" from the place a shift starts is one
  * more thing on a phone screen whose whole job is the viewfinder.
  */
-export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element {
+export function ScanScreen({
+  onCaptured,
+  onCrop,
+  declaredSize,
+  onDeclareSize,
+}: ScanScreenProps): JSX.Element {
   const [cameraState, setCameraState] = useState<CameraState>(() =>
     canQueryPermission() ? 'checking' : 'unrequested',
   );
@@ -155,10 +189,17 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
   const [submitting, setSubmitting] = useState(false);
   /** The last frame submitted, kept for "Try again" and "Crop this photo". */
   const [lastImage, setLastImage] = useState<Blob | null>(null);
+  /**
+   * The Sizes this catalogue can be asked about, commonest first.
+   *
+   * Empty until the read resolves, and empty for good on a catalogue that has
+   * never been indexed or a read that failed — in all three cases the picker
+   * simply does not render. A failure is deliberately silent: the size filter
+   * is an accuracy *option*, and a banner about it over a live viewfinder
+   * would be in the way of the one thing this screen is for.
+   */
+  const [sizes, setSizes] = useState<readonly string[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
-  // The framing guide's element, measured at capture time to find the region
-  // of the camera frame it marks out.
-  const guideRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // `true` while this screen is in the document, so a `getUserMedia` call
@@ -170,6 +211,8 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
   // two streams and keep the hardware light on for the one nobody holds.
   const requestingRef = useRef(false);
   const fileId = useId();
+  const sizeId = useId();
+  const sizeHintId = useId();
 
   /**
    * Ask the browser for the rear camera, and remember the answer.
@@ -250,6 +293,27 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
   }, [requestCamera]);
 
   /**
+   * Read the Sizes this catalogue can be filtered by, once, on arrival.
+   *
+   * `mountedRef` is checked in the `then`, `requestCamera`'s own reason: the
+   * screen can be left while the request is in flight, and setting state
+   * afterward would be a warning for a picker nobody is looking at.
+   *
+   * A rejection leaves `sizes` empty and renders no picker — see its own
+   * declaration above. `void` rather than a floating promise so the intent is
+   * explicit: nothing downstream waits for this, and the viewfinder must not.
+   */
+  useEffect(() => {
+    void fetchScanSizes()
+      .then((available) => {
+        if (mountedRef.current) setSizes(available);
+      })
+      .catch(() => {
+        // Deliberately swallowed. See `sizes`.
+      });
+  }, []);
+
+  /**
    * Bind the stream to the `<video>` element only once it exists.
    *
    * `<video>` renders exclusively in the `'granted'` branch below, so the
@@ -270,6 +334,26 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
    * unmounts, so nothing is set after the `await`; a refusal is rendered in
    * place, with the viewfinder still live for the next attempt.
    */
+  /**
+   * A declaration the catalogue has since stopped recognising.
+   *
+   * Only reachable when the catalogue changed under a screen already open, so
+   * the recovery is to re-read the list and drop the stale choice rather than
+   * to ask the staff member to fix something they did not get wrong. The
+   * photo is still in `lastImage`, so the next tap re-submits it against
+   * every size.
+   */
+  function forgetStaleSize(): void {
+    onDeclareSize(null);
+    void fetchScanSizes()
+      .then((available) => {
+        if (mountedRef.current) setSizes(available);
+      })
+      .catch(() => {
+        // See `sizes`.
+      });
+  }
+
   async function submit(image: Blob): Promise<void> {
     setLastImage(image);
     setFileError(null);
@@ -283,6 +367,9 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
         // photo (the shutter is right there) or, if the tile is small in the
         // frame, a crop of this one.
         setQualityRefusal(failure.message);
+      } else if (failure instanceof ApiRequestError && failure.code === UNKNOWN_SIZE) {
+        forgetStaleSize();
+        setFileError(failure.message);
       } else {
         setFileError(failure instanceof ApiRequestError ? failure.message : SUBMIT_FAILURE);
       }
@@ -301,24 +388,11 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
     setCapturing(true);
     let blob: Blob;
     try {
-      // What the guide marks out, in camera pixels — or the whole frame when
-      // the guide cannot be measured (no layout yet), which is the same
-      // submission this screen made before the guide framed anything.
-      const guide = guideRef.current;
-      const region =
-        guide === null
-          ? null
-          : computeGuideSourceRect(
-              { width: video.videoWidth, height: video.videoHeight },
-              video.getBoundingClientRect(),
-              guide.getBoundingClientRect(),
-            );
-      const captured = region ?? {
-        x: 0,
-        y: 0,
-        width: video.videoWidth,
-        height: video.videoHeight,
-      };
+      // The POC's capture: the centre square of the camera's short edge, read
+      // straight from the frame's own dimensions rather than from a measured
+      // overlay. Deterministic — there is no layout to get wrong and no
+      // fallback path that submits a different region than the one on screen.
+      const captured = computeCentreSquare(video.videoWidth, video.videoHeight);
       const { width, height } = computeDownscaledDimensions(captured.width, captured.height);
       blob = await downscaleToBlob(video, width, height, captured);
     } catch {
@@ -393,12 +467,12 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
               playsInline
               data-testid="viewfinder-video"
             />
-            {/* The region the shutter captures — see the module comment
-                above. Still `aria-hidden`: it is a line on the video, and the
-                sentence below it is what says what to do with it. */}
+            {/* The region the shutter captures — the whole square stage, see
+                the module comment above. Still `aria-hidden`: it is a line on
+                the video, and the sentence below it is what says what to do
+                with it. */}
             <div
               className={styles.frameGuide}
-              ref={guideRef}
               aria-hidden="true"
               data-testid="framing-guide-overlay"
             />
@@ -555,6 +629,58 @@ export function ScanScreen({ onCaptured, onCrop }: ScanScreenProps): JSX.Element
           </div>
         )}
       </div>
+
+      {/* The size declaration — on the capture screen rather than in a
+          settings page, the POC's own placement and for its reason: it is the
+          one attribute a photo cannot carry and the person holding the tile
+          always knows, so it is answered where the tile is being photographed.
+
+          **A sibling of the viewfinder, never a child of it.** Everything
+          inside that element is absolutely positioned over the camera feed —
+          the guide, the copy, the spinner, the controls row — so a field box
+          placed there renders as an opaque card on top of the live picture.
+          It belongs under the stage, in the screen's own column flow.
+
+          Rendered only when the catalogue has sizes to offer.
+
+          **Defaults to All sizes and is never guessed.** A *mis*-declared
+          size makes the true tile unreachable — no amount of ranking
+          recovers from it — so the cost of a wrong declaration is higher
+          than the gain from a right one, and the hint says to leave it
+          alone when unsure. */}
+      {sizes.length > 0 && (
+        <div className={styles.sizeField}>
+          <label className={styles.sizeLabel} htmlFor={sizeId}>
+            Tile size
+          </label>
+          {/* The hint below is bound to this control — `AddTileScreen`'s own
+              rule, and it earns it here: the sentence carries the *cost* of
+              declaring a size, which is stated nowhere else. A screen-reader
+              user who never reaches that paragraph would otherwise meet it
+              as a scan that quietly could not find the tile. */}
+          <select
+            className={styles.sizeSelect}
+            id={sizeId}
+            value={declaredSize ?? ALL_SIZES}
+            disabled={busy}
+            aria-describedby={sizeHintId}
+            onChange={(event) =>
+              onDeclareSize(event.target.value === ALL_SIZES ? null : event.target.value)
+            }
+          >
+            <option value={ALL_SIZES}>All sizes</option>
+            {sizes.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+          <p className={styles.sizeHint} id={sizeHintId}>
+            Narrows the search when you know the size. Leave on All sizes if unsure — a wrong size
+            hides the right tile.
+          </p>
+        </div>
+      )}
     </section>
   );
 }

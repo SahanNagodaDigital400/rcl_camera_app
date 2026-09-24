@@ -37,17 +37,31 @@
 
 /* The camera surface: navy while there is nothing to show yet (the
  * explanation, or the denial), the live feed once granted. Full-bleed on a
- * phone — it steps out of the main region's gutter — and as tall as the
- * viewport allows short of the chrome. `position: relative` so the video, the
- * guide, the copy and the controls layer on top of one another. */
+ * phone — it steps out of the main region's gutter. `position: relative` so
+ * the video, the guide, the copy and the controls layer on top of one
+ * another.
+ *
+ * **Square, and that is a matching decision rather than a visual one.** The
+ * shutter submits the centre square of the camera's short edge (the POC's own
+ * capture, `poc/tilematch/web/index.html`), and `object-fit: cover` on a
+ * square stage shows exactly that region and nothing else — so what is on
+ * screen is what reaches the model. A stage of any other shape would crop the
+ * preview on one axis while the capture stayed square, and the two would
+ * silently disagree about what was being matched.
+ *
+ * `min-height` is kept as a layout floor for the pre-grant explanation. On a
+ * viewport too narrow for the square to reach it the stage goes slightly
+ * tall, and the preview then shows a little *less* than is captured — the
+ * safe direction, and the capture itself stays the POC's centre square. */
 .viewfinder {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  aspect-ratio: 1 / 1;
   min-height: var(--viewfinder-min-height);
-  height: var(--viewfinder-max-height);
+  max-height: var(--viewfinder-max-height);
   margin-inline: calc(-1 * var(--space-4));
   margin-top: calc(-1 * var(--space-5));
   background: var(--color-primary);
@@ -64,17 +78,22 @@
 }
 
 /* DESIGN.md's `framing-guide-overlay`: accent outline, transparent fill,
- * `rounded.md` corners, with the mockup's dimming outside it — a shadow
- * spread wider than the stage, the crop selector's own punched-hole trick.
- * Decorative only; `pointer-events: none` so it never intercepts a tap on
- * the controls beneath it. The bottom inset leaves room for those controls. */
+ * `rounded.md` corners. Decorative only; `pointer-events: none` so it never
+ * intercepts a tap on the controls beneath it.
+ *
+ * **`inset: 0` — the outline is the square stage, because the whole square
+ * stage is what the shutter captures.** It was previously inset on all four
+ * edges, which made it a genuinely smaller crop than the preview around it;
+ * that region was measured back into camera pixels and submitted, and it is
+ * what this change exists to undo. There is no dimming scrim any more for the
+ * same reason: with the guide flush to the stage there is nothing outside it
+ * left to dim. */
 .frameGuide {
   position: absolute;
-  inset: var(--space-16) var(--space-6) calc(var(--shutter-size) + var(--space-12));
+  inset: 0;
   border: var(--framing-guide-border-width) solid var(--color-accent);
   border-radius: var(--radius-md);
   background: transparent;
-  box-shadow: 0 0 0 var(--crop-scrim-spread) var(--scrim);
   pointer-events: none;
 }
 
@@ -413,20 +432,23 @@
     white-space: normal;
   }
 
-  /* A framed panel rather than a bleed: the desktop case is a laptop webcam,
-   * and the camera's 4:3 frame is the natural shape for it. */
+  /* A framed panel rather than a bleed: the desktop case is a laptop webcam.
+   * Still square — the capture is the centre square of the camera's short
+   * edge on this surface too, and the stage's whole job is to show it.
+   *
+   * `max-width` is what keeps it square here, and it is set to the *height*
+   * cap deliberately. A wide column would otherwise give the square a height
+   * above `--viewfinder-max-height`, `max-height` would clamp it, and the
+   * stage would go wide-and-short while the capture stayed square — the
+   * preview and the matched region drifting apart, which is the whole failure
+   * this screen was just changed to close. Bounding the width instead means
+   * the height can never reach the cap and `aspect-ratio` always wins. */
   .viewfinder {
-    height: auto;
-    aspect-ratio: 4 / 3;
-    max-height: var(--viewfinder-max-height);
-    margin-inline: 0;
+    max-width: var(--viewfinder-max-height);
+    margin-inline: auto;
     margin-top: 0;
     border-radius: var(--radius-lg);
     box-shadow: var(--elevation-card);
-  }
-
-  .frameGuide {
-    inset: var(--space-16) var(--space-10) calc(var(--shutter-size) + var(--space-12));
   }
 
   /* Room for the label on one line beside the shutter. */
@@ -435,4 +457,49 @@
     line-height: var(--type-label-line);
     white-space: nowrap;
   }
+}
+
+/* The size declaration. `EditUserScreen`'s field idiom, not a second one:
+ * the same column stack, the same hairline box as an input so the control
+ * reads as part of this product's forms rather than as a platform widget, and
+ * the same caption treatment for the hint under it.
+ *
+ * `global.css` already gives `select` the font reset, the touch-target floor
+ * on both axes and the accent focus ring — deliberately not restated here,
+ * exactly as the rest of this stylesheet does not restate them. */
+.sizeField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sizeLabel {
+  color: var(--color-text);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+.sizeSelect {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* Frozen while a capture or a submission is in flight, and visibly so —
+ * `EditUserScreen`'s own reason: a control that quietly stops responding is
+ * worse than one that is visibly unavailable. `progress`, not
+ * `not-allowed`: the declaration is not forbidden, it is briefly busy. */
+.sizeSelect:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+.sizeHint {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
 }

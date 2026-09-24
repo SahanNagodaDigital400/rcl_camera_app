@@ -473,7 +473,13 @@ describe('returning to a backgrounded tab', () => {
 
     fireEvent(document, new Event('visibilitychange'));
 
-    await waitFor(() => expect(failing).toHaveBeenCalledTimes(2));
+    // Counted over the *session* reads rather than over every request this
+    // app makes: Scan is the landing surface and reads its size filter's
+    // options on arrival, so a bare call count here would be an assertion
+    // about how many requests the landing screen happens to make.
+    const sessionReads = (): number =>
+      failing.mock.calls.filter(([path]) => String(path) === '/api/auth/session').length;
+    await waitFor(() => expect(sessionReads()).toBe(2));
     expect(screen.getByTestId('app-bar')).toBeTruthy();
     expect(screen.queryByText(NOTICE)).toBeNull();
   });

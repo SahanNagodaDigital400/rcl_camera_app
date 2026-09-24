@@ -45,6 +45,7 @@ from shared_vision import pipeline
 MakeUser = Callable[..., Any]
 
 SCANS = "/scans"
+SCAN_SIZES = "/scans/sizes"
 ADD_TILE = "/admin/tiles"
 LOGIN = "/auth/login"
 
@@ -106,14 +107,22 @@ def submit_scan(
     crop_width: float = 0.8,
     crop_height: float = 0.8,
     image: tuple[str, bytes, str] | None = None,
+    size: str | None = None,
 ) -> Any:
-    """`POST /scans` as multipart, the shape `submitScan` (`apps/web`) builds."""
-    data = {
+    """`POST /scans` as multipart, the shape `submitScan` (`apps/web`) builds.
+
+    `size` omitted sends no field at all, which is what the screen does on
+    "All sizes" and what every test written before the filter existed relies
+    on: the route must still accept a submission that declares nothing.
+    """
+    data: dict[str, Any] = {
         "crop_x": crop_x,
         "crop_y": crop_y,
         "crop_width": crop_width,
         "crop_height": crop_height,
     }
+    if size is not None:
+        data["size"] = size
     files = [("image", image or ("scan.jpg", jpeg_bytes(), "image/jpeg"))]
     return client.post(SCANS, data=data, files=files)
 
@@ -279,7 +288,11 @@ def a_photograph_of(image: Image.Image) -> Image.Image:
 
 
 def add_reference_tile(
-    client: TestClient, make_user: MakeUser, code: str, image: Image.Image
+    client: TestClient,
+    make_user: MakeUser,
+    code: str,
+    image: Image.Image,
+    size: str = "45X90",
 ) -> Any:
     """Seed one Tile through the real add route, as an Administrator.
 
@@ -292,7 +305,7 @@ def add_reference_tile(
     sign_in(client, account)
     response = client.post(
         ADD_TILE,
-        data={"code": code, "size": "45X90", "category": "POLISH"},
+        data={"code": code, "size": size, "category": "POLISH"},
         files=[("images", (f"{code}.jpg", jpeg_bytes(image), "image/jpeg"))],
     )
     assert response.status_code == 201, response.text
@@ -686,3 +699,147 @@ def a_png_header_claiming(width: int, height: int) -> bytes:
         + chunk(b"IDAT", zlib.compress(b"\x00"))
         + chunk(b"IEND", b"")
     )
+
+
+# --- The declared Size (the POC's largest accuracy lever) ------------------------
+#
+# `poc/README.md`: +3.2 points of top-3 overall and +8.0 on 45X90, for an
+# attribute a photo cannot carry and the person holding the tile always knows.
+# A hard filter applied before ranking, never a re-rank — the tests below are
+# about what reaches the ranking at all.
+
+
+def test_the_size_picker_is_empty_for_a_catalogue_that_was_never_indexed(
+    client: TestClient, make_user: MakeUser
+) -> None:
+    """No active generation is not an error: there is simply nothing to narrow."""
+    sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
+
+    response = client.get(SCAN_SIZES)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_a_signed_out_caller_cannot_read_the_size_list(client: TestClient) -> None:
+    assert client.get(SCAN_SIZES).status_code == 401
+
+
+@needs_model
+def test_the_size_picker_lists_indexed_sizes_commonest_first(
+    client: TestClient, make_user: MakeUser
+) -> None:
+    """Two Tiles at 45X90, one at 60X30 — so 45X90 leads.
+
+    Ordered by how many Tiles sit behind each Size so the picker opens on the
+    sizes staff actually meet, `Matcher.sizes`' own order.
+    """
+    add_reference_tile(client, make_user, "RP.CMA.0001DJ.SM.0T", a_tile(41), size="45X90")
+    add_reference_tile(client, make_user, "RP.CMA.0002DJ.SM.0T", a_tile(42), size="45X90")
+    add_reference_tile(client, make_user, "RP.RSS.0062ST.PL.0T", a_tile(43), size="60X30")
+
+    sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
+    response = client.get(SCAN_SIZES)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == ["45X90", "60X30"]
+
+
+@needs_model
+def test_a_declared_size_keeps_every_other_size_out_of_the_ranking(
+    client: TestClient, make_user: MakeUser
+) -> None:
+    """The lever itself: a photo of a 60X30 tile, scanned as 45X90.
+
+    The true Tile is the 60X30 one and it is deliberately unreachable here —
+    that is the *cost* of the filter, stated in `submit_scan`'s own docstring,
+    and asserting it is what proves the filter is hard rather than a re-rank
+    that would have let the correct answer back in at rank 1.
+    """
+    add_reference_tile(client, make_user, "RP.CMA.0001DJ.SM.0T", a_tile(41), size="45X90")
+    true_tile = a_tile(43)
+    add_reference_tile(client, make_user, "RP.RSS.0062ST.PL.0T", true_tile, size="60X30")
+
+    sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
+    photo = ("scan.jpg", jpeg_bytes(a_photograph_of(true_tile)), "image/jpeg")
+
+    undeclared = submit_scan(client, crop_x=0, crop_y=0, crop_width=1, crop_height=1, image=photo)
+    assert undeclared.status_code == 200, undeclared.text
+    assert [c["code"] for c in undeclared.json()][:1] == ["RP.RSS.0062ST.PL.0T"]
+
+    declared = submit_scan(
+        client, crop_x=0, crop_y=0, crop_width=1, crop_height=1, image=photo, size="45X90"
+    )
+    assert declared.status_code == 200, declared.text
+    body = declared.json()
+    assert {candidate["size"] for candidate in body} == {"45X90"}
+    assert "RP.RSS.0062ST.PL.0T" not in [candidate["code"] for candidate in body]
+
+
+@needs_model
+def test_a_declared_size_is_normalized_before_it_is_matched(
+    client: TestClient, make_user: MakeUser
+) -> None:
+    """`  45x90  ` names the Size `45X90`, and is not an unknown one.
+
+    Sizes are stored upper-case, and a picker value that arrives with
+    whitespace or in the wrong case is the same declaration.
+    """
+    reference = a_tile(41)
+    add_reference_tile(client, make_user, "RP.CMA.0001DJ.SM.0T", reference, size="45X90")
+
+    sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
+    response = submit_scan(
+        client,
+        crop_x=0,
+        crop_y=0,
+        crop_width=1,
+        crop_height=1,
+        image=("scan.jpg", jpeg_bytes(a_photograph_of(reference)), "image/jpeg"),
+        size="  45x90  ",
+    )
+
+    assert response.status_code == 200, response.text
+    assert [candidate["code"] for candidate in response.json()][:1] == ["RP.CMA.0001DJ.SM.0T"]
+
+
+@needs_model
+def test_an_empty_size_field_searches_every_size(client: TestClient, make_user: MakeUser) -> None:
+    """ "All sizes" may be sent as an empty field, not only as no field at all."""
+    reference = a_tile(43)
+    add_reference_tile(client, make_user, "RP.RSS.0062ST.PL.0T", reference, size="60X30")
+
+    sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
+    response = submit_scan(
+        client,
+        crop_x=0,
+        crop_y=0,
+        crop_width=1,
+        crop_height=1,
+        image=("scan.jpg", jpeg_bytes(a_photograph_of(reference)), "image/jpeg"),
+        size="",
+    )
+
+    assert response.status_code == 200, response.text
+    assert [candidate["code"] for candidate in response.json()][:1] == ["RP.RSS.0062ST.PL.0T"]
+
+
+def test_an_unknown_size_is_refused_rather_than_silently_ignored(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    """A size the index cannot answer for is a `422`, and writes no `scan` row.
+
+    Searching every size instead would hand back candidates the staff member
+    explicitly ruled out, with nothing in the response to say the filter had
+    been dropped. Refused before the upload is read, so it costs no pixels —
+    which is also why this test needs no model.
+    """
+    user = make_user(role=Role.STAFF, name="Kasun Perera")
+    sign_in(client, user)
+
+    response = submit_scan(client, size="99X99")
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "unknown_size"
+    assert _scan_rows(conn) == []

@@ -67,6 +67,7 @@ from api.catalogue import (
     UNREADABLE_IMAGE,
     _read_upload,
     find_candidates,
+    indexed_sizes,
     primary_reference_image_ids,
 )
 from api.db import get_connection
@@ -105,6 +106,23 @@ SCAN_QUALITY_TOO_LOW = "scan_quality_too_low"
 #: one. This exact wording is pinned by nothing but
 #: `test_scan_submission.py`'s own direct assertion against it.
 SCAN_QUALITY_MESSAGE = "This photo's a little blurry — try again."
+
+#: The Size the submission declared is not one the active generation holds.
+#:
+#: **Validated against the index, never taken on trust** — the POC's own rule
+#: (`poc/tilematch/server.py`). The picker is populated from
+#: `GET /scans/sizes`, so a caller reaching this has sent a size the catalogue
+#: cannot answer for, and silently searching every size instead would return
+#: candidates the staff member explicitly ruled out.
+#:
+#: Distinct from `catalogue.INVALID_SIZE`, which is a malformed Size *string*
+#: on the write path. This one is well-formed and simply names nothing.
+UNKNOWN_SIZE = "unknown_size"
+
+#: Worded for a staff member who has just watched their own picker offer this
+#: size — which is only reachable if the catalogue changed underneath them, so
+#: the instruction is to look again rather than to retype anything.
+UNKNOWN_SIZE_MESSAGE = "That size is not in the catalogue. Pick another, or scan all sizes."
 
 #: Story 3.6 / FR-23: this account has submitted more scans than
 #: `scan_throttle.SCAN_RATE_LIMIT` allows within `scan_throttle.SCAN_RATE_LIMIT_WINDOW`.
@@ -154,6 +172,7 @@ def submit_scan(
     crop_height: Annotated[float, Form()],
     image: Annotated[UploadFile, File()],
     source_ip: Annotated[str | None, Depends(audit.source_ip)],
+    size: Annotated[str, Form()] = "",
 ) -> list[ScanCandidate]:
     """Crop, gate on quality, match, and answer up to three ranked Candidates.
 
@@ -172,6 +191,22 @@ def submit_scan(
     the uploaded image's actual pixel dimensions (AD-11) — never absolute
     pixels, and never a rectangle already applied to the bytes that arrive
     here.
+
+    **`size` is optional and declares what the staff member already knows.**
+    Empty — the default, and what the Scan screen sends on "All sizes" — puts
+    every Tile in contention. A declared Size is a hard filter applied before
+    ranking, not a re-rank: it is the one attribute a photo cannot carry and
+    the person holding the tile always knows, which the POC measures as the
+    largest accuracy lever it has (+3.2 top-3 overall, +8.0 on 45X90 —
+    `poc/README.md`). The cost is symmetrical and worth stating: a
+    *mis*-declared Size makes the true Tile unreachable, no amount of ranking
+    recovers from it, and that is why the screen defaults to All sizes rather
+    than guessing one.
+
+    Checked against `indexed_sizes` before it is used. An unrecognised Size is
+    a `422`, never a silent fall back to searching everything — a staff member
+    who declared a size and got candidates of every other size would have no
+    way to tell the filter had been ignored.
 
     **`200`, with a bare JSON array — up to three Candidates, or none.** The
     request is no longer "accepted for later": by the time this returns, the
@@ -244,6 +279,14 @@ def submit_scan(
             SCAN_RATE_LIMITED, SCAN_RATE_LIMITED_MESSAGE, status.HTTP_429_TOO_MANY_REQUESTS
         )
 
+    # Before the upload is read, for `scan_throttle`'s own reason: a refusal
+    # that needs no pixels should cost none. `strip().upper()` is the POC's
+    # own normalization — Sizes are stored upper-case (`shared_schema.tile`),
+    # and a picker value that arrived with whitespace names the same Size.
+    declared_size = size.strip().upper() or None
+    if declared_size is not None and declared_size not in indexed_sizes(conn):
+        raise _refusal(UNKNOWN_SIZE, UNKNOWN_SIZE_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT)
+
     data = _read_upload(image)
     try:
         accepted = shared_vision.intake_image(data, max_pixels=shared_vision.UPLOAD_MAX_PIXELS)
@@ -273,7 +316,7 @@ def submit_scan(
 
     # Matching runs on `cropped`, never on the pre-crop frame (AD-1). One call,
     # through the function Epic 2 already tested — no second search here.
-    candidates = find_candidates(conn, cropped)
+    candidates = find_candidates(conn, cropped, size=declared_size)
     image_ids = primary_reference_image_ids(conn, [candidate.tile_id for candidate in candidates])
 
     # FR-7's floor ("every Tile keeps at least one Reference Image") holds for
@@ -307,6 +350,39 @@ def submit_scan(
     )
 
     return answer
+
+
+# --- `GET /scans/sizes` — what the size picker may offer -----------------------
+
+
+@router.get("/scans/sizes", response_model=list[str])
+def read_scan_sizes(
+    response: Response,
+    user: Annotated[User, Depends(require_claimed_user)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> list[str]:
+    """The Sizes a scan may declare, commonest first.
+
+    **Read from the index, not from `tile_size`.** A Size row can outlive the
+    last Tile indexed under it, and offering one is offering a filter that can
+    only ever return nothing — see `catalogue.indexed_sizes`.
+
+    **A sub-path of the Scan surface rather than a top-level `/sizes`.** This
+    list exists for one control on one screen: what `POST /scans` will accept
+    in its `size` field. A `/sizes` at the root would read as a catalogue
+    resource, which is `GET /admin/tiles`' territory and Administrator-only;
+    this is reachable by every claimed account, exactly as the scan it
+    configures is.
+
+    `[]` for a catalogue that has never been indexed. The screen renders that
+    as the picker simply not appearing: there is nothing to narrow.
+
+    `require_claimed_user`, never `require_administrator` — this module's own
+    rule, and `tests/test_admin_authorization.py`'s route-table guard fails
+    the build for a route outside `/admin/` that declares the latter.
+    """
+    response.headers.update(NO_STORE)
+    return indexed_sizes(conn)
 
 
 # --- `GET /scans` — a caller's own scan history (Story 3.5) -------------------
