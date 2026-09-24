@@ -6,6 +6,25 @@
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#131B5E" />
     <meta name="description" content="Rocell Tile Scanner — internal staff tool for identifying a tile from a photo." />
+
+    <!--
+      Installed to a phone's home screen, this is the whole of the app's
+      identity: the icon is the only thing a staff member taps, and there is no
+      address bar to read a title from once it launches.
+
+      The manifest carries the icons Android and the desktop browsers read.
+      iOS reads none of it — it takes `apple-touch-icon` from this head and its
+      own name from `apple-mobile-web-app-title` — so both are stated here
+      rather than left to the manifest. Every file below is generated from
+      `brand/rocell-logo.png` by `scripts/generate_brand_icons.py`.
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="icon" type="image/png" href="/icons/icon-192.png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" sizes="180x180" />
+    <meta name="apple-mobile-web-app-title" content="Tile Scanner" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
     <title>Rocell Tile Scanner</title>
   </head>
   <body>

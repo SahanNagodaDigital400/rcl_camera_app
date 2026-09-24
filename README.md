@@ -368,6 +368,32 @@ keep it that way:
 
 Fonts are self-hosted through `@fontsource`; nothing is fetched from a third-party font CDN.
 
+## Brand assets and the install icon
+
+`apps/web/brand/rocell-logo.png` is the master logo, as supplied. It is the only brand image in
+the repository that is not generated, and it is not shipped — `apps/web/public/` is.
+
+Everything under `apps/web/public/icons/`, plus `apps/web/public/favicon.ico`, is rendered from
+that master by `scripts/generate_brand_icons.py`:
+
+```bash
+uv run python scripts/generate_brand_icons.py
+```
+
+The output is committed, because `apps/web` builds with npm and never runs Python. Re-run the
+script after replacing the master, and commit what it writes.
+
+Two families come out of it, and they are not interchangeable. An `any` icon is shown as given,
+so it is the master resized — the master's own white frame is what a platform's corner rounding
+eats into. A `maskable` icon is cropped to a shape the platform chooses, which guarantees nothing
+outside a centred circle of 80% diameter, so the mark is scaled onto a white field to sit inside
+it. Hand a platform an `any` icon as `maskable` and the tail of the wordmark is cut off.
+
+`src/__tests__/pwa-icons.test.ts` guards the wiring: every icon the manifest declares exists at
+the pixel size it claims, both purposes are covered at both install sizes, the maskable variant is
+not a copy of its `any` twin, the `apple-touch-icon` iOS reads instead of the manifest is present
+at 180×180, and the manifest's `theme_color` and `background_color` still match the token layer.
+
 ## A note on ESLint
 
 `make lint` runs **oxlint**, not ESLint, over `apps/web`. The architecture spine pins TypeScript
