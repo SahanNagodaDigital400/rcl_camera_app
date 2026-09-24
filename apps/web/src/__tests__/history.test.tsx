@@ -32,6 +32,8 @@ afterEach(() => {
 });
 
 const HISTORY = '/api/scans';
+/** The denominator behind "Showing 10 of 213 scans" — `GET /scans/count`. */
+const COUNT = '/api/scans/count';
 
 const ADMIN: User = {
   id: '9c2f1e4a-7b3d-4c58-9e10-2a6f8d4b1c07',
@@ -110,12 +112,28 @@ function stubFetch(replies: Record<string, Reply[]>): { calls: [string, RequestI
   return { calls };
 }
 
-/** `audit-log.test.tsx`'s own deferred stub, for the stale-answer race. */
+/**
+ * `audit-log.test.tsx`'s own deferred stub, for the stale-answer race.
+ *
+ * `GET /scans/count` is answered immediately and left out of `calls`
+ * entirely: every test using this stub settles its requests by ordinal, and
+ * those ordinals are about *pages*. A count interleaved among them would make
+ * each `settle(n)` a claim about request ordering that no test here means to
+ * make, and the screen already treats the count as a subtitle that lands
+ * whenever it lands.
+ */
 function stubDeferred(): { settle: (nth: number, reply: Reply) => void; calls: string[] } {
   const settlers: ((reply: Reply) => void)[] = [];
   const calls: string[] = [];
 
   vi.stubGlobal('fetch', (input: string) => {
+    if (input === COUNT) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ count: 0 }),
+      } as Response);
+    }
     calls.push(input);
     return new Promise<Response>((resolve) => {
       settlers.push((reply) =>
@@ -138,8 +156,22 @@ function stubDeferred(): { settle: (nth: number, reply: Reply) => void; calls: s
   };
 }
 
-function stubPage(entries: readonly ScanHistoryEntry[]): { calls: [string, RequestInit][] } {
-  return stubFetch({ [HISTORY]: [{ status: 200, body: entries }] });
+/** A `{ count }` body for `GET /scans/count`. */
+const counted = (count: number): Reply => ({ status: 200, body: { count } });
+
+/**
+ * One page of history and the total behind it.
+ *
+ * `total` defaults to the page's own length — the ordinary case for a short
+ * page, where every scan the caller has is on screen. A test that wants the
+ * count to disagree with the rows, or to fail outright, stubs the two paths
+ * itself.
+ */
+function stubPage(
+  entries: readonly ScanHistoryEntry[],
+  total = entries.length,
+): { calls: [string, RequestInit][] } {
+  return stubFetch({ [HISTORY]: [{ status: 200, body: entries }], [COUNT]: [counted(total)] });
 }
 
 const refusal = (code: string, message: string, status: number): Reply => ({
@@ -184,13 +216,16 @@ describe('the request', () => {
     expect(init.body).toBeUndefined();
   });
 
-  it('sends no cursor on the first page', async () => {
+  it('sends no cursor on the first page, and asks for the total beside it', async () => {
     const { calls } = stubPage([A_SCAN]);
     renderScreen();
 
     await screen.findByText(A_SCAN.candidates[0]?.code ?? '');
 
-    expect(calls.map(([path]) => path)).toEqual([HISTORY]);
+    // Exactly two requests, the page first: no cursor on the first page, and
+    // the count is a second request rather than a field on it — `GET /scans`
+    // answers with a bare array and has nowhere to carry a total.
+    expect(calls.map(([path]) => path)).toEqual([HISTORY, COUNT]);
   });
 
   it('announces the wait rather than showing nothing', async () => {
@@ -473,6 +508,88 @@ describe('Load more', () => {
       expect(screen.getByRole('status').textContent).toMatch(/loading more scans/i);
     });
     expect(calls).toHaveLength(2);
+  });
+});
+
+// --- How many, out of how many -------------------------------------------------
+
+describe('the count', () => {
+  const FULL = run(HISTORY_PAGE_SIZE);
+  const AFTER_FULL = `${HISTORY}?before=${FULL[HISTORY_PAGE_SIZE - 1]?.id ?? ''}`;
+  /** Off the shared constant, never a literal — the page size is the server's. */
+  const A_FULL_PAGE_OF = `Showing ${HISTORY_PAGE_SIZE} of 213 scans`;
+
+  it('says how many scans are on screen, out of how many the caller has', async () => {
+    stubFetch({ [HISTORY]: [{ status: 200, body: FULL }], [COUNT]: [counted(213)] });
+    renderScreen();
+
+    expect(await screen.findByText(A_FULL_PAGE_OF)).toBeTruthy();
+  });
+
+  it('counts a single scan in the singular', async () => {
+    stubPage([A_SCAN], 1);
+    renderScreen();
+
+    await screen.findByText(BEST_CANDIDATE.code);
+
+    expect(screen.getByText('Showing 1 of 1 scan')).toBeTruthy();
+  });
+
+  it('grows with the rows as pages are appended, and keeps the same total', async () => {
+    stubFetch({
+      [HISTORY]: [{ status: 200, body: FULL }],
+      [AFTER_FULL]: [{ status: 200, body: run(3, HISTORY_PAGE_SIZE) }],
+      [COUNT]: [counted(213)],
+    });
+    renderScreen();
+
+    await screen.findByText(A_FULL_PAGE_OF);
+    fireEvent.click(screen.getByRole('button', { name: /^load more$/i }));
+
+    // The denominator is read once, with the first page: paging cannot change
+    // how many scans exist, and a second count per page would only give the
+    // number a chance to move under the reader.
+    expect(
+      await screen.findByText(`Showing ${HISTORY_PAGE_SIZE + 3} of 213 scans`),
+    ).toBeTruthy();
+  });
+
+  it('drops the denominator rather than the history when the total does not arrive', async () => {
+    stubFetch({
+      [HISTORY]: [{ status: 200, body: run(2) }],
+      [COUNT]: [refusal('internal_error', 'Something went wrong.', 500)],
+    });
+    renderScreen();
+
+    // The rows are the screen; the total is a subtitle on them. A count that
+    // failed must not cost the reader the history, and must not raise an
+    // alert of its own over a page that loaded perfectly well.
+    expect(await screen.findByText('Showing 2 scans')).toBeTruthy();
+    expect(screen.getByText('RP.CMA.0000')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('never claims fewer scans than are on screen', async () => {
+    // The count and the first page are two requests: a scan submitted between
+    // them leaves a total the rendered rows have already passed. "Showing 2 of
+    // 2" is a stale denominator; "Showing 2 of 1" is a bug on screen.
+    stubPage(run(2), 1);
+    renderScreen();
+
+    await screen.findByText('RP.CMA.0000');
+
+    expect(screen.getByText('Showing 2 of 2 scans')).toBeTruthy();
+  });
+
+  it('says nothing at all about an empty history', async () => {
+    stubPage([]);
+    renderScreen();
+
+    await screen.findByText('No scans yet.');
+
+    // "No scans yet." already is the count. A "Showing 0 of 0 scans" beneath
+    // it would be a second, worse way of saying the same thing.
+    expect(screen.queryByText(/^showing /i)).toBeNull();
   });
 });
 

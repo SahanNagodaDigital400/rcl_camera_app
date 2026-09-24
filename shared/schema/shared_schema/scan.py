@@ -22,6 +22,11 @@ as `GET /scans` renders it — a timestamp and the same closed `ScanCandidate`
 array the original `POST /scans` answered with, persisted as a denormalized
 snapshot (AD-10) rather than re-derived from the catalogue on every read.
 
+`ScanHistoryCount` is the denominator that history cannot state for itself:
+`GET /scans` answers with a bare array, so a full page says "at least
+`HISTORY_PAGE_SIZE`" and never "ten of two hundred". `GET /scans/count` says
+the total.
+
 `shared_schema/ts/scan.ts` is the TypeScript twin. The two files are one
 contract in two languages and change together or not at all.
 """
@@ -72,7 +77,16 @@ class ScanCandidate(BaseModel):
 #: will: the client is told this number, it never chooses it, and a page
 #: shorter than it is what lets the screen tell a last page from a full one
 #: — the bare-array response says nothing else about what follows it.
-HISTORY_PAGE_SIZE = 50
+#:
+#: **Ten, where the audit log's own page is fifty**, and the reason the two
+#: are restated rather than shared: a history row is not a log line. Each one
+#: carries up to three Candidate cards, each with a reference image fetched
+#: through `GET /tiles/{tileId}/images/{imageId}` — so a page of fifty is up
+#: to a hundred and fifty image requests from a phone, for rows the reader
+#: has to scroll past to reach Load more. Ten rows is a page a staff member
+#: can take in, and the total beside it (`ScanHistoryCount`) is what says how
+#: much more there is.
+HISTORY_PAGE_SIZE = 10
 
 #: The query parameter the keyset cursor travels in —
 #: `GET /scans?before=<id of the oldest row already rendered>`.
@@ -119,3 +133,28 @@ class ScanHistoryEntry(BaseModel):
         spine's ISO 8601 UTC convention.
         """
         return value.astimezone(UTC).isoformat()
+
+
+class ScanHistoryCount(BaseModel):
+    """How many past Scans the caller has in all, as `GET /scans/count` says.
+
+    The one thing a keyset-paginated history cannot tell the reader about
+    itself. `GET /scans` answers with a bare array, so a full page means "at
+    least `HISTORY_PAGE_SIZE`" and nothing more — the screen can say how many
+    it is showing but not what it is showing them out of. This is that
+    denominator, and it is all it is: no cursor, no page, no rows.
+
+    **A one-field object, not a bare integer.** `GET /scans/sizes`' own
+    precedent runs the other way — a bare `list[str]` — because a list is
+    already self-describing. A bare `5` on the wire is not: the first field
+    this ever grows beside it (a count of matched scans, say) would change
+    the response's *type*, and every reader with it. An object grows a key.
+
+    Closed shape, `ScanHistoryEntry`'s own reason.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Every `scan` row belonging to the caller, unfiltered and uncapped by
+    #: `HISTORY_PAGE_SIZE` — a total, not a page's length.
+    count: int

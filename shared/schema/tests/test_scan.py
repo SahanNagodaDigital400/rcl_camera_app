@@ -26,6 +26,7 @@ from shared_schema.scan import (
     HISTORY_CURSOR_PARAM,
     HISTORY_PAGE_SIZE,
     ScanCandidate,
+    ScanHistoryCount,
     ScanHistoryEntry,
 )
 
@@ -234,3 +235,26 @@ def test_the_history_cursor_parameter_is_the_same_name_in_both_languages() -> No
     assert match is not None, "HISTORY_CURSOR_PARAM is no longer a literal string in scan.ts"
 
     assert match.group(1) == HISTORY_CURSOR_PARAM
+
+
+# --- `ScanHistoryCount` ---------------------------------------------------
+
+
+def test_a_history_count_round_trips() -> None:
+    assert ScanHistoryCount.model_validate({"count": 213}).count == 213
+
+
+def test_the_history_count_shape_is_closed() -> None:
+    # An envelope growing a second field has to fail here rather than arrive
+    # on the wire past a TypeScript twin that rejects it — `ScanCandidate`'s
+    # own reason, and the reason this is an object rather than a bare integer.
+    with pytest.raises(ValidationError):
+        ScanHistoryCount.model_validate({"count": 1, "pages": 1})
+
+
+def test_the_typescript_interface_declares_every_history_count_field() -> None:
+    assert _history_interface("ScanHistoryCount") == set(ScanHistoryCount.model_fields)
+
+
+def test_the_history_count_narrowing_check_covers_every_python_field() -> None:
+    assert _key_array("HISTORY_COUNT_CONTRACT_KEYS") == set(ScanHistoryCount.model_fields)

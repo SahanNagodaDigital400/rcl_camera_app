@@ -1,6 +1,6 @@
 /**
- * `ScanCandidate` and `ScanHistoryEntry` — the TypeScript twins of
- * `shared_schema/scan.py`.
+ * `ScanCandidate`, `ScanHistoryEntry` and `ScanHistoryCount` — the
+ * TypeScript twins of `shared_schema/scan.py`.
  *
  * `ScanCandidate` is one ranked match `POST /scans` answers with, up to
  * three, best match first. **Order in the array is the rank** — there is no
@@ -19,6 +19,10 @@
  * `ScanHistoryEntry` is Story 3.5's addition — one past Scan `GET /scans`
  * renders, carrying the same closed `ScanCandidate` array the original
  * `POST /scans` answered with, persisted as a denormalized snapshot (AD-10).
+ *
+ * `ScanHistoryCount` is what a keyset-paginated history cannot say about
+ * itself — the total `GET /scans/count` answers with, so the screen can show
+ * "10 of 213" rather than only "10 so far".
  *
  * These two files are one contract in two languages; change them together.
  */
@@ -106,8 +110,12 @@ export function isScanCandidate(value: unknown): value is ScanCandidate {
  * `limit` parameter, so this is here only so a page shorter than it *is* the
  * end of a caller's history — the only thing the bare-array response cannot
  * say for itself.
+ *
+ * Ten, where the audit log's own page is fifty: a history row carries up to
+ * three Candidate cards and their reference images, not one line of text.
+ * See the Python twin for the full reasoning.
  */
-export const HISTORY_PAGE_SIZE = 50;
+export const HISTORY_PAGE_SIZE = 10;
 
 /**
  * The query parameter the keyset cursor travels in — the twin of
@@ -187,4 +195,50 @@ export function isScanHistoryEntry(value: unknown): value is ScanHistoryEntry {
 
   const candidates = value['candidates'];
   return Array.isArray(candidates) && candidates.every(isScanCandidate);
+}
+
+/**
+ * `ScanHistoryCount` — how many past Scans the caller has in all, as
+ * `GET /scans/count` answers (the twin of `shared_schema/scan.py`'s model).
+ *
+ * The one thing the paginated history cannot say about itself: `GET /scans`
+ * is a bare array, so a full page means "at least `HISTORY_PAGE_SIZE`" and
+ * never "ten of two hundred". `HistoryScreen` counts the rows it has
+ * rendered itself and reads the denominator from here.
+ *
+ * A snapshot, not a live figure — a scan submitted in another tab after this
+ * was read is not in it. The screen re-reads it whenever it re-reads the
+ * first page, and never treats it as authority over the rows on screen: the
+ * rows are what they are, and this is only what they are shown out of.
+ */
+export interface ScanHistoryCount {
+  /** Every scan of the caller's own — a total, not a page's length. */
+  count: number;
+}
+
+const HISTORY_COUNT_CONTRACT_KEYS: readonly (keyof ScanHistoryCount)[] = ['count'];
+
+/** Sorted, because `isScanHistoryCount` compares it against a sorted `Object.keys`. */
+export const SCAN_HISTORY_COUNT_KEYS: readonly (keyof ScanHistoryCount)[] = [
+  ...HISTORY_COUNT_CONTRACT_KEYS,
+].sort();
+
+/**
+ * Narrow an unknown response body to the shared `ScanHistoryCount`.
+ *
+ * `isScanHistoryEntry`'s own strictness, plus the two things `typeof
+ * value === 'number'` alone would let through: a `NaN` — which `JSON.parse`
+ * cannot produce but a hand-built stub can — and a fraction, neither of
+ * which is a number of rows. A count that fails this is a malformed
+ * response, and the screen renders no denominator rather than a wrong one.
+ */
+export function isScanHistoryCount(value: unknown): value is ScanHistoryCount {
+  if (!isPlainObject(value)) return false;
+
+  const keys = Object.keys(value).sort();
+  if (keys.length !== SCAN_HISTORY_COUNT_KEYS.length) return false;
+  if (keys.some((key, index) => key !== SCAN_HISTORY_COUNT_KEYS[index])) return false;
+
+  const count = value['count'];
+  return typeof count === 'number' && Number.isInteger(count) && count >= 0;
 }

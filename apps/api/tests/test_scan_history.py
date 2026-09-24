@@ -1,4 +1,5 @@
-"""`GET /scans` — Story 3.5's read: a caller's own scan history.
+"""`GET /scans` and `GET /scans/count` — a caller's own scan history, and how
+much of it there is.
 
 `test_audit_read.py`'s own shape, scoped to one caller's rows rather than the
 whole table: the order, the keyset paging and the two-answers-for-"nothing
@@ -7,6 +8,11 @@ older" distinction are `GET /admin/audit`'s own claims, restated here with
 has no audit-log counterpart is cross-user isolation (FR-8: a caller sees only
 their own scans, never another user's) and AD-10 survival (a history entry's
 snapshot renders unchanged after the Tile it matched is removed).
+
+`GET /scans/count` is the total those pages add up to — the one thing a
+keyset-paginated bare array cannot say about itself. It is tested here rather
+than in a file of its own because every claim it makes is one of this file's:
+the same door, the same `user_id` scope, the same `no-store`.
 
 Every test below drives `POST /scans` and `GET /scans` through the real app,
 `test_scan_submission.py`'s own reason: `require_claimed_user` is a
@@ -39,6 +45,7 @@ from shared_vision import pipeline
 MakeUser = Callable[..., Any]
 
 SCANS = "/scans"
+SCANS_COUNT = "/scans/count"
 ADD_TILE = "/admin/tiles"
 LOGIN = "/auth/login"
 
@@ -371,6 +378,122 @@ def test_a_deleted_users_scans_cascade(
 
     assert response.status_code == 204, response.text
     assert _scan_count(conn, target.id) == 0
+
+
+# --- `GET /scans/count` — the denominator History shows its rows out of ---------
+#
+# The history read above answers with a bare array, so a full page says "at
+# least `HISTORY_PAGE_SIZE`" and nothing more. This route is the total behind
+# it. Every claim `GET /scans` makes about *whose* rows it touches is restated
+# here, because a count is a disclosure like any other: "how many scans does
+# this account have" is exactly as much someone else's business as the scans
+# themselves.
+
+
+def _count(client: TestClient) -> int:
+    response = client.get(SCANS_COUNT)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert isinstance(body, dict)
+    return body["count"]
+
+
+def test_the_count_is_every_scan_the_caller_has(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    account = make_user()
+    _sign_in(client, account)
+    _arrange(conn, account.id, 3)
+
+    assert _count(client) == 3
+
+
+def test_a_caller_with_no_scans_counts_zero(client: TestClient, make_user: MakeUser) -> None:
+    # `count(*)` over an empty set is one row holding `0`, never no row at
+    # all — the handler's `None` branch is unreachable and this is what says so.
+    _sign_in(client, make_user())
+
+    assert _count(client) == 0
+
+
+def test_the_count_is_not_capped_by_the_page_size(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    # The whole point of the route: a number the first page cannot express.
+    account = make_user()
+    _sign_in(client, account)
+    _arrange(conn, account.id, HISTORY_PAGE_SIZE + 10)
+
+    assert _count(client) == HISTORY_PAGE_SIZE + 10
+    assert len(_read(client)) == HISTORY_PAGE_SIZE
+
+
+def test_the_count_measures_only_the_callers_own_scans(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    # FR-8, restated for the total: a caller learns how many scans *they* have
+    # submitted, never how many the installation holds.
+    mine = make_user(name="Kasun Perera")
+    theirs = make_user(name="Nadeesha Silva")
+    _arrange(conn, mine.id, 2)
+    _arrange(conn, theirs.id, 7, first_at=datetime.now(UTC) + timedelta(minutes=2))
+
+    _sign_in(client, mine)
+
+    assert _count(client) == 2
+
+
+def test_the_count_body_carries_nothing_but_the_count(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    account = make_user()
+    _sign_in(client, account)
+    _arrange(conn, account.id, 1)
+
+    assert client.get(SCANS_COUNT).json() == {"count": 1}
+
+
+def test_the_count_is_never_stored(client: TestClient, make_user: MakeUser) -> None:
+    _sign_in(client, make_user())
+
+    assert client.get(SCANS_COUNT).headers["cache-control"] == "no-store"
+
+
+def test_an_unauthenticated_caller_cannot_count_anything(client: TestClient) -> None:
+    response = client.get(SCANS_COUNT)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_a_caller_on_a_temporary_credential_cannot_count_anything(
+    client: TestClient, make_user: MakeUser
+) -> None:
+    account = make_user(
+        must_change_password=True,
+        temp_credential_expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    _sign_in(client, account)
+
+    response = client.get(SCANS_COUNT)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "password_change_required"
+
+
+def test_the_count_route_is_not_read_as_a_cursor(
+    client: TestClient, conn: psycopg.Connection, make_user: MakeUser
+) -> None:
+    # `/scans/count` is a literal segment, and `GET /scans` takes its cursor in
+    # a query parameter rather than a path one — so there is no
+    # `/scans/{something}` for this path to be swallowed by. If one is ever
+    # added, this is what fails.
+    account = make_user()
+    _sign_in(client, account)
+    _arrange(conn, account.id, 1)
+
+    assert client.get(SCANS_COUNT).json() == {"count": 1}
+    assert client.get(f"{SCANS}?before={uuid4()}").status_code == 404
 
 
 # --- The response's own shape -----------------------------------------------------

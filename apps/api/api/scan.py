@@ -46,6 +46,8 @@ in its threadpool, where that cost cannot block the event loop.
 from __future__ import annotations
 
 import logging
+import math
+import os
 from collections.abc import Iterable
 from typing import Annotated, Any
 from uuid import UUID
@@ -55,7 +57,12 @@ import shared_vision
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
 from psycopg.types.json import Jsonb
 from shared_schema.errors import ApiError
-from shared_schema.scan import HISTORY_PAGE_SIZE, ScanCandidate, ScanHistoryEntry
+from shared_schema.scan import (
+    HISTORY_PAGE_SIZE,
+    ScanCandidate,
+    ScanHistoryCount,
+    ScanHistoryEntry,
+)
 from shared_schema.user import User
 
 from api import anomaly, audit, scan_throttle
@@ -109,6 +116,99 @@ UNKNOWN_SIZE = "unknown_size"
 #: size — which is only reachable if the catalogue changed underneath them, so
 #: the instruction is to look again rather than to retype anything.
 UNKNOWN_SIZE_MESSAGE = "That size is not in the catalogue. Pick another, or scan all sizes."
+
+# --- The match floor ------------------------------------------------------------
+
+#: The similarity a Candidate must reach to be shown at all.
+#:
+#: `find_candidates` scores a Tile as the inner product of two L2-normalized
+#: embeddings (`shared_vision.pipeline` normalizes both halves and then the
+#: concatenation), so a score **is** cosine similarity on [-1.0, 1.0] and
+#: `0.50` is the "50%" this bar is spoken about as. Every Candidate scoring
+#: below it is dropped before the response is built, and a Scan where nothing
+#: clears it answers the empty array — which `ResultsScreen` already renders
+#: as "No confident match" rather than as a failure.
+#:
+#: **This is a display decision, not a pipeline one** (`poc/README.md`, "What
+#: the match bar does"). It trims the tail off a results screen; it does not
+#: touch preprocessing, embedding or the index, so moving it never invalidates
+#: a generation the way anything in `shared/vision` would. It is applied after
+#: `find_candidates` for exactly that reason — the search stays a pure ranker
+#: and this route decides what reaches a screen.
+#:
+#: **It is not, and must never be presented as, a confidence signal** (AD-20).
+#: The POC measured the two top-1 distributions on the 381-tile eval and they
+#: are almost indistinguishable — correct answers median 0.918 against 0.907
+#: for wrong ones, with the *wrong* answers' p10 and p90 both higher. A bar
+#: keeps obviously-unrelated tiles off the screen; it does not make what
+#: remains more likely to be right. Nothing derived from it — a number, a bar,
+#: a star, a word like "strong" — may reach the client, and `ScanCandidate`
+#: has no field that could carry one.
+#:
+#: At `0.50` the POC measured the bar as **inert on this catalogue**: 100% of
+#: correct answers kept, 100% of wrong ones still shown, 0% of scans left with
+#: nothing. That is the documented behaviour of this default, not a bug in it
+#: — the knob exists so the value can be fitted against real staff photos
+#: without a code change. For reference, the same measurement at 0.80 keeps
+#: 91% of correct answers and 92% of wrong ones, and at 0.90 keeps 64% of
+#: correct answers while leaving 40% of scans with nothing at all.
+DEFAULT_MATCH_FLOOR = 0.50
+
+#: Overrides `DEFAULT_MATCH_FLOOR` at start-up. `poc/tilematch/server.py` spells
+#: the same knob `TILEMATCH_FLOOR`; the longer name here is this package's own
+#: `TILEMATCH_SCAN_*` convention, which `TILEMATCH_SCAN_RATE_LIMIT` already sets.
+MATCH_FLOOR_ENV = "TILEMATCH_SCAN_MATCH_FLOOR"
+
+
+def _read_match_floor() -> float:
+    """`MATCH_FLOOR_ENV`'s value, falling back to the default.
+
+    `anomaly._read_multiplier`'s shape: an unparseable or out-of-range value
+    warns and yields the default rather than raising, so a typo in a
+    deployment's environment degrades to the documented behaviour instead of
+    refusing to start a process whose main job is unrelated to this bar.
+
+    **Bounded to [-1.0, 1.0], the range a cosine similarity can occupy**, and
+    both ends matter for the same reason `_read_multiplier` rejects `0`: a
+    value outside the range silently turns the feature into something nobody
+    asked for. Above `1.0` no Candidate can ever clear the bar, so every scan
+    answers "No confident match" and the product stops working from a single
+    stray digit. Below `-1.0` every Candidate clears it, so the bar quietly
+    stops existing. Neither is a value this parameter can mean.
+    """
+    raw = os.environ.get(MATCH_FLOOR_ENV)
+    if raw is None:
+        return DEFAULT_MATCH_FLOOR
+
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a number; using the default match floor (%s) instead",
+            MATCH_FLOOR_ENV,
+            raw,
+            DEFAULT_MATCH_FLOOR,
+        )
+        return DEFAULT_MATCH_FLOOR
+
+    if not math.isfinite(value) or not -1.0 <= value <= 1.0:
+        logger.warning(
+            "%s=%r is not a finite similarity in [-1.0, 1.0]; "
+            "using the default match floor (%s) instead",
+            MATCH_FLOOR_ENV,
+            raw,
+            DEFAULT_MATCH_FLOOR,
+        )
+        return DEFAULT_MATCH_FLOOR
+
+    return value
+
+
+#: The bar `submit_scan` applies. Read once at import —
+#: `anomaly.ANOMALY_DEVIATION_MULTIPLIER`'s own pattern — so the value in
+#: effect for the life of a process is fixed at start-up.
+MATCH_FLOOR = _read_match_floor()
+
 
 #: Story 3.6 / FR-23: this account has submitted more scans than
 #: `scan_throttle.SCAN_RATE_LIMIT` allows within `scan_throttle.SCAN_RATE_LIMIT_WINDOW`.
@@ -200,6 +300,17 @@ def submit_scan(
     tile ever indexed) is not an error — `find_candidates` answers `[]`, and
     this route answers the same empty array, which `apps/web`'s Results screen
     reads as "no confident match" rather than a failure.
+
+    **Candidates below `MATCH_FLOOR` are not shown.** The bar is a similarity
+    on [-1.0, 1.0] — `TILEMATCH_SCAN_MATCH_FLOOR` moves it without a code
+    edit, default `0.50` — and it is a *display* decision: it trims the tail
+    off the results screen and changes nothing about preprocessing, embedding
+    or the index, so moving it never requires a re-index. It is emphatically
+    not a confidence gate, and nothing derived from it reaches the client
+    (AD-20); see `MATCH_FLOOR` above for the measurement, including the fact
+    that at the default `0.50` it trims nothing at all on this catalogue.
+    A scan where nothing clears the bar answers the same empty array an empty
+    catalogue does, which the Results screen reads as "No confident match".
 
     **There is no blur or framing gate.** One was specified (FR-9, AD-12) and
     built, on a threshold its own module described as an uncalibrated
@@ -300,7 +411,19 @@ def submit_scan(
 
     # Matching runs on `cropped`, never on the pre-crop frame (AD-1). One call,
     # through the function Epic 2 already tested — no second search here.
-    candidates = find_candidates(conn, cropped, size=declared_size)
+    #
+    # `MATCH_FLOOR` trims the tail *here*, not in the search: `find_candidates`
+    # stays a pure ranker and this route decides what reaches a screen. The
+    # filter runs before `primary_reference_image_ids` so a dropped Candidate
+    # never costs an image lookup, and because the search already returns its
+    # rows best-first the survivors keep that order — this is a prefix of the
+    # ranked list, never a re-sort. Everything clearing the bar survives; an
+    # empty result is a real answer, and the insert below records it as one.
+    candidates = [
+        candidate
+        for candidate in find_candidates(conn, cropped, size=declared_size)
+        if candidate.score >= MATCH_FLOOR
+    ]
     image_ids = primary_reference_image_ids(conn, [candidate.tile_id for candidate in candidates])
 
     # FR-7's floor ("every Tile keeps at least one Reference Image") holds for
@@ -514,3 +637,59 @@ def read_scan_history(
     if not entries and conn.execute(_SELECT_SCAN_EXISTS, (before, user.id)).fetchone() is None:
         raise _scan_entry_not_found()
     return entries
+
+
+# --- `GET /scans/count` — the denominator the history page cannot state -------
+
+
+#: Every `scan` row belonging to one caller.
+#:
+#: `count(*)`, not `count(id)`: the two are equivalent for a `NOT NULL`
+#: primary key and the planner treats them alike, and `count(*)` is what
+#: "how many rows" reads as.
+#:
+#: **No cursor and no `LIMIT`.** This is deliberately not a page: a reader
+#: paging through history is asking what the pages add up to, and a count
+#: bounded by the same cursor would answer with the page they already have.
+_COUNT_SCANS = """
+SELECT count(*) AS count
+FROM scan
+WHERE user_id = %s
+"""
+
+
+@router.get("/scans/count", response_model=ScanHistoryCount)
+def read_scan_history_count(
+    response: Response,
+    user: Annotated[User, Depends(require_claimed_user)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> ScanHistoryCount:
+    """How many past Scans the caller has in all (History's denominator).
+
+    **A sub-path of the Scan surface, `GET /scans/sizes`' own precedent**, and
+    a separate request rather than a field on `GET /scans`: that route answers
+    with a bare array and this one number would have to become an envelope
+    around it to travel there — changing the shape of every page of history
+    for the sake of a subtitle. The screen asks for both and renders the rows
+    whether or not the count arrives.
+
+    **Scoped to `user.id`, exactly as `read_scan_history` is.** A count is a
+    disclosure like any other row read: it is the caller's own history that is
+    being measured, never the installation's.
+
+    `require_claimed_user`, never `require_administrator` — this module's own
+    rule; see `read_scan_sizes`.
+
+    A snapshot, like the page beside it. A scan submitted between this request
+    and the one for the first page moves the total, and neither number waits
+    for the other: the screen shows the rows it actually has out of the total
+    it was told, and a stale denominator is a subtitle that is briefly one
+    behind, not a row missing or a row invented.
+    """
+    response.headers.update(NO_STORE)
+
+    row = conn.execute(_COUNT_SCANS, (user.id,)).fetchone()
+    # `count(*)` over an empty set is `0`, not no row at all — the aggregate
+    # always returns exactly one row. The `None` branch is unreachable and is
+    # here so that this function never depends on `row` being subscriptable.
+    return ScanHistoryCount(count=0 if row is None else row["count"])

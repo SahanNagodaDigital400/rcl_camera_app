@@ -271,6 +271,17 @@ def test_the_route_table_is_the_nineteen_routes_the_product_serves() -> None:
     # rather than a root `/sizes`, which would read as a catalogue resource
     # and belong behind `require_administrator` with the rest of them.
     #
+    # `/scans/count` is the fourteenth new path and the fourth outside
+    # `/admin/`: how many past scans the caller has in all, read by History so
+    # it can say "10 of 213" rather than only "10 so far" — the one thing its
+    # keyset-paginated, bare-array pages cannot say for themselves. A read of
+    # a single integer, scoped to the caller's own rows by the same
+    # `user_id = %s` predicate `/scans`' own history read carries, so it
+    # measures nobody else's history and discloses nothing about the
+    # installation. It takes no body, writes nothing, and names no person,
+    # address or password. `require_claimed_user`, `/scans/sizes`' own door
+    # and sub-path precedent.
+    #
     # `/tiles/{tile_id}/images/{image_id}` (Story 3.4) is the twelfth new
     # path, and the second outside `/admin/` — the Scan surface's own
     # reference-image proxy behind Results' Candidate cards, gated by
@@ -305,6 +316,7 @@ def test_the_route_table_is_the_nineteen_routes_the_product_serves() -> None:
         "/admin/tiles/{tile_id}",
         "/admin/tiles/{tile_id}/images/{image_id}",
         "/scans",
+        "/scans/count",
         "/scans/sizes",
         "/tiles/{tile_id}/images/{image_id}",
     }

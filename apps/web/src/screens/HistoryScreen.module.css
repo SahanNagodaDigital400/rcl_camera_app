@@ -98,6 +98,16 @@
   text-align: center;
 }
 
+/* "Showing 10 of 213 scans" — the sentence Load more cannot say for itself.
+ * Caption-sized and muted, the same register as an entry's own timestamp:
+ * it labels the list above it, and the only control down here is Load more. */
+.count {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
 .more {
   align-self: flex-start;
   justify-content: center;

@@ -4,7 +4,12 @@ import type { JSX } from 'react';
 import { API_PREFIX, ApiRequestError, MALFORMED_RESPONSE, apiRequest } from '../api/client';
 import { ImageViewer } from '../components/ImageViewer';
 import styles from './HistoryScreen.module.css';
-import { HISTORY_CURSOR_PARAM, HISTORY_PAGE_SIZE, isScanHistoryEntry } from '@rocell/schema/scan';
+import {
+  HISTORY_CURSOR_PARAM,
+  HISTORY_PAGE_SIZE,
+  isScanHistoryCount,
+  isScanHistoryEntry,
+} from '@rocell/schema/scan';
 import { UNKNOWN_CATEGORY } from '@rocell/schema/tile';
 import type { ScanCandidate, ScanHistoryEntry } from '@rocell/schema/scan';
 
@@ -42,6 +47,13 @@ import type { ScanCandidate, ScanHistoryEntry } from '@rocell/schema/scan';
  * that 404 (`ResultsScreen`, `CatalogueScreen`), and this one does not
  * either.
  *
+ * **The page count is a second request, not a field.** `GET /scans` answers
+ * with a bare array, so a full page tells this screen "at least
+ * `HISTORY_PAGE_SIZE`" and nothing more — it can say how many rows it has rendered but not what it is
+ * rendering them out of. `GET /scans/count` is that denominator, fetched
+ * beside the first page and allowed to fail on its own: a total that does not
+ * arrive costs the subtitle its "of N", never the history.
+ *
  * **No row-end actions.** `rocell_app` holds full DML on `scan` (see the
  * migration's own Design Notes), but nothing in this story asks for an edit
  * or a delete control, and none is built — `AuditLogScreen`'s own precedent
@@ -49,6 +61,16 @@ import type { ScanCandidate, ScanHistoryEntry } from '@rocell/schema/scan';
  */
 
 const HISTORY_PATH = '/scans';
+
+/**
+ * The denominator behind "Showing 10 of 213 scans".
+ *
+ * A second request rather than a field on the page above it: `GET /scans`
+ * answers with a bare array (`read_scan_history`'s own docstring), so a total
+ * could only travel there inside an envelope wrapping every page of history.
+ * The two are fetched together and land independently — see `load`.
+ */
+const COUNT_PATH = '/scans/count';
 
 /** Shown for a failure that arrives as something other than an `ApiRequestError`. */
 const UNEXPECTED = 'Your scan history could not be loaded. Try again.';
@@ -67,6 +89,25 @@ const TRY_AGAIN = 'Try again';
 const LOAD_MORE = 'Load more';
 const BEST_MATCH = 'Best match';
 
+/**
+ * The subtitle under the rendered pages: how many scans are on screen, out of
+ * how many the caller has.
+ *
+ * `total` is `null` when `GET /scans/count` did not answer — the sentence
+ * then drops the denominator rather than the whole line, because "Showing 10
+ * scans" is still true and still tells a reader that what they are looking at
+ * is a page and not the lot.
+ */
+function showing(shown: number, total: number | null): string {
+  // Clamped, never trusted over the rows themselves: the count and the first
+  // page are two requests, so a scan submitted between them (or in another
+  // tab) leaves a total the rendered rows have already passed. "Showing 53 of
+  // 53" is a stale denominator; "Showing 53 of 50" is a bug on screen.
+  const denominator = total === null ? null : Math.max(total, shown);
+  if (denominator === null) return `Showing ${shown} ${shown === 1 ? 'scan' : 'scans'}`;
+  return `Showing ${shown} of ${denominator} ${denominator === 1 ? 'scan' : 'scans'}`;
+}
+
 function imageSrc(candidate: ScanCandidate): string {
   return `${API_PREFIX}/tiles/${candidate.tile_id}/images/${candidate.image_id}`;
 }
@@ -84,6 +125,19 @@ function asHistoryEntries(body: unknown): readonly ScanHistoryEntry[] {
     const rows: unknown[] = body;
     if (rows.every(isScanHistoryEntry)) return rows;
   }
+  throw new ApiRequestError(MALFORMED_RESPONSE, 'The server returned an unexpected response.', 200);
+}
+
+/**
+ * Narrow the response body to the caller's own scan total, or fail loudly.
+ *
+ * Thrown from rather than returning `null` on a malformed body, for
+ * `asHistoryEntries`' reason — but the one caller catches it and renders the
+ * sentence without a denominator, because a count nobody can parse must not
+ * cost the reader the history it is only a subtitle for.
+ */
+function asHistoryCount(body: unknown): number {
+  if (isScanHistoryCount(body)) return body.count;
   throw new ApiRequestError(MALFORMED_RESPONSE, 'The server returned an unexpected response.', 200);
 }
 
@@ -123,6 +177,13 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): JSX.Element {
   const [appendFailure, setAppendFailure] = useState<string | null>(null);
   /** The Candidate whose reference image is open full-screen, or `null`. */
   const [viewing, setViewing] = useState<ScanCandidate | null>(null);
+  /**
+   * Every scan the caller has, or `null` while it is in flight or after it
+   * failed. Read once per first page and never re-read by Load more: paging
+   * does not change how many scans exist, and a second request per page would
+   * buy nothing but a chance for the denominator to shift under the reader.
+   */
+  const [total, setTotal] = useState<number | null>(null);
 
   const titleRef = useRef<HTMLHeadingElement>(null);
   const entriesRef = useRef<HTMLDivElement>(null);
@@ -155,6 +216,22 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): JSX.Element {
           message: failure instanceof ApiRequestError ? failure.message : UNEXPECTED,
         });
       });
+
+    // Alongside the page, and started after it: the rows are the screen and
+    // the total is a subtitle on them, so the two race deliberately and
+    // whichever lands first renders. A failure here is swallowed — `showing`
+    // drops the denominator and the history itself is untouched. The `401`
+    // case is not swallowed with it: `apiRequest` tells the session observer
+    // from inside `fetch`, before this handler ever runs.
+    apiRequest(COUNT_PATH)
+      .then((body) => {
+        if (generation.current !== mine) return;
+        setTotal(asHistoryCount(body));
+      })
+      .catch(() => {
+        if (generation.current !== mine) return;
+        setTotal(null);
+      });
   }, []);
 
   useEffect(() => {
@@ -174,6 +251,11 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): JSX.Element {
   function retry(): void {
     titleRef.current?.focus();
     setListing({ kind: 'loading' });
+    // Cleared here rather than inside `load`, which the mount effect also
+    // calls: a `setState` in an effect body is a cascading render the linter
+    // is right to refuse, and on mount there is nothing to clear. This is the
+    // only path that re-runs `load` with a stale total behind it.
+    setTotal(null);
     load();
   }
 
@@ -283,6 +365,14 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): JSX.Element {
             ))}
           </div>
         ))}
+
+      {listing.kind === 'loaded' && listing.entries.length > 0 && (
+        /* Not a live region. The two this screen already has — the appended
+         * page's status line and the failure alert — are the ones a reader
+         * needs read out; a third announcing a count over them would talk
+         * across both. It is text beside Load more, read on demand. */
+        <p className={styles.count}>{showing(listing.entries.length, total)}</p>
+      )}
 
       {appendFailure !== null && (
         <p className={styles.error} role="alert">
