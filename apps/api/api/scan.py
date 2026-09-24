@@ -25,11 +25,11 @@ route-table guard fails the build if a route outside that prefix declares it.
 **The uploaded image is untrusted content from a phone camera, not an
 Administrator's studio asset**, so intake runs at `UPLOAD_MAX_PIXELS` —
 AD-7's tighter of the two ceilings — rather than `REFERENCE_MAX_PIXELS`. The
-read-then-intake sequence and the exception mapping are `catalogue._accept_bytes`'s
-own shape, reused rather than reimplemented: `_read_upload` is imported
-directly from `api.catalogue`, and so are the four envelope codes and
-sentences intake can produce, so this module never redefines what "too
-large" or "not a readable image" means.
+read-then-intake sequence and the exception mapping are `catalogue._accept`'s
+own shape, reused rather than reimplemented: `_read_upload` — the bounded read
+both share — is imported directly from `api.catalogue`, and so are the four
+envelope codes and sentences intake can produce, so this module never redefines
+what "too large" or "not a readable image" means.
 
 **The crop rectangle is validated by executing it.** `shared_vision.crop_to_rect`
 is the one place a crop rectangle is checked and applied — see its own

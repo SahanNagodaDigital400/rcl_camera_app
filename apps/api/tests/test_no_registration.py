@@ -232,15 +232,18 @@ def test_the_route_table_is_the_nineteen_routes_the_product_serves() -> None:
     # keeps it a path in its own right rather than a Code that happens to look
     # like a UUID.
     #
-    # `/admin/tiles/bulk` (Story 2.4, FR-17) is the tenth admin path. It loads
-    # a whole range from a CSV of Codes and the images that CSV names, and it
-    # is the first route in the product whose response is a stream rather than
-    # one body — neither of which changes anything here, because this guard is
-    # about which paths exist. No field on it names a person, an address or a
-    # password: the manifest's columns are a file name, a Code, a Size and a
-    # Category, and the only rows it writes are catalogue rows. It is
-    # authenticated and Administrator-only through the same
-    # `require_administrator` every route under `/admin/` declares.
+    # `/admin/tiles/bulk/plan` and `/admin/tiles/bulk/row` (Story 2.4, FR-17)
+    # are the tenth and eleventh admin paths. Between them they load a whole
+    # range from a CSV of Codes and the images that CSV names: the first reads
+    # the sheet and pairs it against the file names the caller is holding, the
+    # second takes one image and adds one Tile, and the caller drives the batch
+    # one row at a time so a dropped connection costs a row rather than a
+    # range. Neither changes anything here, because this guard is about which
+    # paths exist. No field on either names a person, an address or a password:
+    # the manifest's columns are a file name, a Code, a Size and a Category,
+    # and the only rows they write are catalogue rows. Both are authenticated
+    # and Administrator-only through the same `require_administrator` every
+    # route under `/admin/` declares.
     #
     # `bulk` is a literal segment for `lookup`'s reason, and there is no
     # `POST /admin/tiles/{tile_id}` for it to be shadowed by.
@@ -296,7 +299,8 @@ def test_the_route_table_is_the_nineteen_routes_the_product_serves() -> None:
         "/admin/users/{user_id}/activate",
         "/admin/audit",
         "/admin/tiles",
-        "/admin/tiles/bulk",
+        "/admin/tiles/bulk/plan",
+        "/admin/tiles/bulk/row",
         "/admin/tiles/lookup",
         "/admin/tiles/{tile_id}",
         "/admin/tiles/{tile_id}/images/{image_id}",

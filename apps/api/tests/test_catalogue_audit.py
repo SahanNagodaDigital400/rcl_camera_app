@@ -24,7 +24,6 @@ entry beside the one that recorded the old Code.
 from __future__ import annotations
 
 import io
-import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -572,15 +571,48 @@ def test_an_audit_failure_leaves_the_tile_where_it_was(
 # that the bulk path records *something*: it is that it records exactly what the
 # single add records, once per created row and never for a refused one.
 
-BULK_UPLOAD = "/admin/tiles/bulk"
+BULK_PLAN = "/admin/tiles/bulk/plan"
+BULK_ROW = "/admin/tiles/bulk/row"
+
+
+def plan(client: TestClient, sheet: bytes, images: list[tuple[str, bytes]]) -> Any:
+    """`POST /admin/tiles/bulk/plan` — the sheet and the names, no bytes."""
+    return client.post(
+        BULK_PLAN,
+        files=[("manifest", ("codes.csv", sheet, "text/csv"))],
+        data={"names": [name for name, _ in images]},
+    )
 
 
 def bulk(client: TestClient, sheet: bytes, images: list[tuple[str, bytes]]) -> Any:
-    files: list[tuple[str, tuple[str, bytes, str]]] = [
-        ("manifest", ("codes.csv", sheet, "text/csv"))
-    ]
-    files.extend(("images", (name, data, "image/jpeg")) for name, data in images)
-    return client.post(BULK_UPLOAD, files=files)
+    """A whole batch, driven the way the screen drives it: plan, then one row.
+
+    Answers the *plan's* response when it was refused, and otherwise a list of
+    the report lines — which is all these tests read, since what they are about
+    is the entries the batch left behind rather than the shape of the report.
+    """
+    planned = plan(client, sheet, images)
+    if planned.status_code != 200:
+        return planned
+
+    bytes_for = dict(images)
+    report: list[dict[str, Any]] = []
+    for item in planned.json()["items"]:
+        if item["upload"] is None:
+            report.append({"status": "failed", "error": item["error"]})
+            continue
+        response = client.post(
+            BULK_ROW,
+            data={
+                "code": item["code"] or "",
+                "size": item["size"] or "",
+                "category": item["category"] or "",
+            },
+            files=[("image", (item["upload"], bytes_for[item["upload"]], "image/jpeg"))],
+        )
+        assert response.status_code == 200, response.text
+        report.append(response.json())
+    return report
 
 
 #: Five rows. Row 3's image is zero bytes — a defect the real source tree
@@ -607,11 +639,14 @@ _FIVE_IMAGES = [
 def test_a_batch_of_five_with_one_failure_writes_exactly_four_entries(
     client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
 ) -> None:
-    response = bulk(client, _FIVE_ROWS, _FIVE_IMAGES)
-    assert response.status_code == 200, response.text
-    report = [json.loads(line) for line in response.text.splitlines() if line.strip()]
-    statuses = [line["status"] for line in report if line["kind"] == "row"]
-    assert statuses == ["created", "created", "failed", "created", "created"]
+    report = bulk(client, _FIVE_ROWS, _FIVE_IMAGES)
+    assert [line["status"] for line in report] == [
+        "created",
+        "created",
+        "failed",
+        "created",
+        "created",
+    ]
 
     entries = catalogue_entries(conn, audit_rows)
 
@@ -658,7 +693,7 @@ def test_a_bulk_entry_has_the_same_details_shape_the_single_add_writes(
     by_hand = catalogue_entries(conn, audit_rows)[0]
 
     sheet = b"file,code,size,category\n1.jpg,RP.CMA.0099DJ.SM.0T,45X90,CREMA MARMOL\n"
-    assert bulk(client, sheet, [("1.jpg", an_image(1))]).status_code == 200
+    assert [line["status"] for line in bulk(client, sheet, [("1.jpg", an_image(1))])] == ["created"]
 
     in_bulk = next(
         entry
@@ -683,7 +718,9 @@ def test_the_vocabulary_gains_no_member_for_the_bulk_path(
     # Stated over what the log actually holds rather than over `AuditAction`,
     # which `test_audit.py` already pins at sixteen: a batch writes
     # `catalogue_tile_added` and nothing else at all — not a `batch_started`,
-    # not a `batch_finished`, and not one entry summarising the run.
+    # not a `batch_finished`, and not one entry summarising the run. The plan
+    # phase records nothing either: it reads a sheet and changes nothing, which
+    # is `lookup_tile`'s own argument for recording no read.
     bulk(client, _FIVE_ROWS, _FIVE_IMAGES)
 
     # The sign-in is the fixture's, not the batch's, and is excluded by name
@@ -695,12 +732,12 @@ def test_the_vocabulary_gains_no_member_for_the_bulk_path(
     }
 
 
-def test_a_pre_stream_refusal_records_nothing(
+def test_a_refused_plan_records_nothing(
     client: TestClient, conn: psycopg.Connection, administrator: Any, audit_rows: AuditRows
 ) -> None:
     # A manifest that cannot be read changed nothing, so there is nothing to
     # record — the add path's argument for a `409` or a `422`, one level up.
-    assert bulk(client, b"not,a,manifest\n", [("1.jpg", an_image(1))]).status_code == 422
+    assert plan(client, b"not,a,manifest\n", [("1.jpg", an_image(1))]).status_code == 422
 
     assert catalogue_entries(conn, audit_rows) == []
 
@@ -711,6 +748,6 @@ def test_a_refused_caller_writes_no_bulk_entry(
     account = make_user(role=Role.STAFF)
     client.post(LOGIN, json={"email": account.email, "password": account.password})
 
-    assert bulk(client, _FIVE_ROWS, _FIVE_IMAGES).status_code == 403
+    assert plan(client, _FIVE_ROWS, _FIVE_IMAGES).status_code == 403
 
     assert catalogue_entries(conn, audit_rows) == []

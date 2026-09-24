@@ -108,12 +108,15 @@ TILE_LOOKUP = "/admin/tiles/lookup"
 #: `/admin/tiles/search` would be a second path naming the same set of rows.
 #: It takes no path parameter, so it cannot shadow either literal segment below.
 
-#: Story 2.4's one (FR-17). A second literal segment under the collection, for
-#: `TILE_LOOKUP`'s reason and with one addition of its own: it is the first
-#: route in the product whose response is a *stream*, so every refusal it can
-#: make has to be made before the first byte — which is precisely what the
-#: guards below check by never reaching the handler at all.
-BULK_UPLOAD = "/admin/tiles/bulk"
+#: Story 2.4's two (FR-17). A second literal segment under the collection, for
+#: `TILE_LOOKUP`'s reason — and a *nested* one, because a batch is two phases:
+#: the plan reads the sheet and pairs it, and the row route takes one image.
+#: The row route matters most to the guards below, because it is reachable on
+#: its own and carries the whole of one add: a role check made inside it rather
+#: than as a dependency would be answered `200` with a report line, which is
+#: what its contract says a refused *row* looks like.
+BULK_PLAN = "/admin/tiles/bulk/plan"
+BULK_ROW = "/admin/tiles/bulk/row"
 
 LOGIN = "/auth/login"
 
@@ -548,7 +551,7 @@ def test_the_admin_route_table_is_not_empty() -> None:
     assert _admin_routes(create_app()) != []
 
 
-def test_the_admin_route_table_is_the_fourteen_routes_the_product_serves() -> None:
+def test_the_admin_route_table_is_the_fifteen_routes_the_product_serves() -> None:
     # The stricter half, separated from the vacuity guard above because it is a
     # different claim with a different lifetime: this one is *meant* to fail the
     # moment a story adds a route under `/admin/` — Story 1.9 added
@@ -558,15 +561,17 @@ def test_the_admin_route_table_is_the_fourteen_routes_the_product_serves() -> No
     # `GET /admin/tiles/{tile_id}/images/{image_id}`, and Story 2.2 added
     # `PATCH /admin/tiles/{tile_id}` and `GET /admin/tiles/lookup`, and Story
     # 2.3 added `DELETE /admin/tiles/{tile_id}`, and Story 2.4 added
-    # `POST /admin/tiles/bulk`, and Story 2.5 added `GET /admin/tiles` — and its
-    # failure means "update this list", not "the guards above stopped guarding".
+    # `POST /admin/tiles/bulk/plan` and `POST /admin/tiles/bulk/row`, and Story
+    # 2.5 added `GET /admin/tiles` — and its failure means "update this list",
+    # not "the guards above stopped guarding".
     #
     # The comparison is over `f"{method} {path}"`, so the removal is a *twelfth*
     # entry rather than a second method on a path already listed, the bulk
-    # upload a *thirteenth* rather than a second POST on `/admin/tiles`, and
-    # Story 2.5's catalogue search a *fourteenth* rather than a second entry for
-    # the path `POST /admin/tiles` already occupies — it is a `GET` on the
-    # collection, which is the only method that path had left.
+    # upload's two phases a *thirteenth* and a *fourteenth* rather than a second
+    # POST on `/admin/tiles`, and Story 2.5's catalogue search a *fifteenth*
+    # rather than a second entry for the path `POST /admin/tiles` already
+    # occupies — it is a `GET` on the collection, which is the only method that
+    # path had left.
     #
     # The count is in the name on purpose, the same way `test_audit.py` names
     # its vocabulary size: a story that adds a route has to change the name as
@@ -597,7 +602,8 @@ def test_the_admin_route_table_is_the_fourteen_routes_the_product_serves() -> No
             f"PATCH {EDIT_TILE}",
             f"DELETE {EDIT_TILE}",
             f"GET {TILE_LOOKUP}",
-            f"POST {BULK_UPLOAD}",
+            f"POST {BULK_PLAN}",
+            f"POST {BULK_ROW}",
             f"GET {ADD_TILE}",
         ]
     )
@@ -654,37 +660,50 @@ def test_the_lookup_segment_resolves_to_the_lookup_handler() -> None:
     assert edit.endpoint is catalogue.edit_tile
 
 
-def test_the_bulk_segment_resolves_to_the_bulk_handler() -> None:
+@pytest.mark.parametrize(
+    ("path", "handler"),
+    [
+        (BULK_PLAN, "plan_bulk_upload"),
+        (BULK_ROW, "upload_bulk_row"),
+    ],
+)
+def test_the_bulk_segment_resolves_to_the_bulk_handler(path: str, handler: str) -> None:
     # The same claim as the lookup's, for the second literal segment under the
     # collection, and made separately because the shadowing route is a
     # different one: the day anything adds `POST /admin/tiles/{tile_id}` above
-    # this, Starlette matches in registration order and `bulk` is read as a
+    # these, Starlette matches in registration order and `bulk` is read as a
     # tile id that fails to parse as a UUID. The path-set guard above compares
     # sets, so it would not notice.
     #
+    # Both phases, because both live under that segment and either could be
+    # shadowed on its own — a `POST /admin/tiles/{tile_id}` swallows them
+    # together, but a route table is edited one line at a time.
+    #
     # Stated over `POST` rather than over every method, because that is what
     # the shadowing would have to be: a `GET` or a `PATCH` taking a path
-    # parameter cannot swallow this route's requests at all.
-    ordered = [(method, path, route) for method, path, route in _api_routes(create_app())]
+    # parameter cannot swallow these routes' requests at all.
+    ordered = [
+        (method, route_path, route) for method, route_path, route in _api_routes(create_app())
+    ]
 
     bulk_at = next(
         index
-        for index, (method, path, _) in enumerate(ordered)
-        if (method, path) == ("POST", BULK_UPLOAD)
+        for index, (method, route_path, _) in enumerate(ordered)
+        if (method, route_path) == ("POST", path)
     )
-    assert ordered[bulk_at][2].endpoint is catalogue.bulk_upload
+    assert ordered[bulk_at][2].endpoint is getattr(catalogue, handler)
 
     shadowing = [
-        f"{method} {path}"
-        for index, (method, path, _) in enumerate(ordered)
+        f"{method} {route_path}"
+        for index, (method, route_path, _) in enumerate(ordered)
         if index < bulk_at
         and method == "POST"
-        and path.startswith("/admin/tiles/")
-        and "{" in path.removeprefix("/admin/tiles/")
+        and route_path.startswith("/admin/tiles/")
+        and "{" in route_path.removeprefix("/admin/tiles/")
     ]
     assert shadowing == [], (
         "A POST under /admin/tiles/ taking a path parameter is registered before "
-        f"{BULK_UPLOAD}, so Starlette matches it first and `bulk` is read as a tile "
+        f"{path}, so Starlette matches it first and `bulk` is read as a tile "
         f"id: {', '.join(shadowing)}. Register the literal segment above it."
     )
 

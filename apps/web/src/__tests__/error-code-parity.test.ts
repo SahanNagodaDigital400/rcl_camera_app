@@ -153,12 +153,13 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   //
   // Story 2.4's five are not all the same kind of thing, and the map
   // deliberately does not distinguish them: `invalid_manifest` and
-  // `too_many_rows` arrive as ordinary envelopes under a `422` before the
-  // stream opens, while `image_not_paired`, `image_unmatched` and `row_failed`
-  // arrive *inside* a report line's `error` object, under a `200`. What this
-  // file pins is the spelling, and a per-row code that drifted would be exactly
-  // as invisible as an envelope code that did — more so, since no status
-  // carries it.
+  // `too_many_rows` arrive as ordinary envelopes under a `422` from the plan,
+  // before an image has been sent, while `image_not_paired`, `image_unmatched`
+  // and `row_failed` arrive *inside* an `error` object under a `200` — the
+  // first two on a plan item, the third on a row's own answer. What this file
+  // pins is the spelling, and a per-row code that drifted would be exactly as
+  // invisible as an envelope code that did — more so, since no status carries
+  // it.
   invalid_code: { file: 'catalogue.py', name: 'INVALID_CODE' },
   invalid_size: { file: 'catalogue.py', name: 'INVALID_SIZE' },
   invalid_query: { file: 'catalogue.py', name: 'INVALID_QUERY' },
@@ -508,14 +509,14 @@ const BOUNDS: {
   // Both are here for the stronger of the two reasons the Add tile rows give:
   // the screen refuses past either bound *before* uploading, so a drift is not
   // a missing convenience — it is the screen refusing a batch the server would
-  // have taken, or letting gigabytes travel to be refused at the far end.
+  // have taken, or sending a file the far end was always going to reject.
   //
   // `MAX_BULK_ROWS` bounds a bulk upload on both counts — the manifest's rows
-  // and the uploaded images — and the server enforces it on both, which is
-  // what lets this screen refuse on the count it *can* see without stating a
-  // rule the product does not have. It never reads the manifest, so images is
-  // the number it has; the server checks that one too and refuses the same
-  // batch with `too_many_rows` whatever this says.
+  // and the file names sent with it — and the server enforces it on both,
+  // which is what lets this screen refuse on the count it *can* see without
+  // stating a rule the product does not have. It never reads the manifest, so
+  // images is the number it has; the plan checks that one too and refuses the
+  // same batch with `too_many_rows` whatever this says.
   {
     screen: BULK_UPLOAD_SCREEN,
     python: { file: 'tile.py', name: 'MAX_BULK_ROWS', root: SHARED_SCHEMA },

@@ -350,6 +350,24 @@
   flex: none;
 }
 
+/* Send the failed rows again — the recovery path one-request-per-image buys.
+ *
+ * `.follow`'s shape rather than a rule of its own: both are optional,
+ * self-centred, pill-shaped secondary controls that appear under the report
+ * and are gone at rest, and two rules that must look identical are one rule
+ * somebody will change on one side. Navy outline for `.follow`'s reason too —
+ * Upload is this screen's one orange action, and the report beneath is already
+ * spending orange on flagged rows.
+ *
+ * `composes` rather than a second class in the markup: the guard in
+ * `styling-wiring.test.ts` reads `styles.<name>` out of the screen's source,
+ * and a class that only ever appears alongside another is a class that reads
+ * there as a treatment of its own. */
+.retry {
+  composes: follow;
+  margin-block-start: var(--space-2);
+}
+
 /* The rows.
  *
  * **It scrolls with the page, not inside a box of its own.** EXPERIENCE.md:73
@@ -462,6 +480,18 @@
  * exactly the "failed" this system's one hard-contracted colour is for. */
 .failed {
   color: var(--color-destructive);
+}
+
+/* A row with no outcome yet — waiting to be sent, or in flight.
+ *
+ * **Deliberately not a fourth colour.** The plan puts every row on screen
+ * before any image is sent, so most of a fresh report is in this state, and
+ * giving it a brand colour would make four things look like statuses when
+ * DESIGN.md:144-149 contracts exactly three. Muted is the absence of an
+ * outcome, which is what this is; the word beside the icon is what says which
+ * of the two it is, for the reason every other row carries one. */
+.pending {
+  color: var(--color-muted-text);
 }
 
 /* The manifest row number. Muted and in the label role: it leads the line but

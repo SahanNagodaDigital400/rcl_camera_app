@@ -15,12 +15,12 @@ guard that ran a moment too late would answer a Staff caller with every row the
 product holds — which is the exfiltration AGENTS.md names as the primary
 commercial threat, in one request.
 
-The bulk route is worth a line of its own here, because it is the first in the
-product whose success is a **stream**. Its refusal therefore has to arrive as
-an envelope under a `403` or a `401` rather than as a `200` carrying rows that
-say "not allowed" — and both halves are asserted below, since a handler that
-opened the stream and reported the refusal inside it would answer `200` and
-look fine to a test reading only the body.
+The two bulk routes are worth a line of their own here, because a batch is
+driven from the client and the row route answers `200` for a row it *refused* —
+that is its contract. A refusal of the caller therefore has to arrive as an
+envelope under a `403` or a `401` and never as a `200` carrying a report line
+that says "not allowed", which a driver would paint as one bad tile and carry
+on past. Both halves are asserted below, for both routes.
 
 For the removal that claim is inverted and is the stronger half: there is a Tile
 in the catalogue when the refused call arrives, so "nothing was written" becomes
@@ -53,7 +53,8 @@ from shared_vision import pipeline
 MakeUser = Callable[..., Any]
 
 ADD_TILE = "/admin/tiles"
-BULK_UPLOAD = "/admin/tiles/bulk"
+BULK_PLAN = "/admin/tiles/bulk/plan"
+BULK_ROW = "/admin/tiles/bulk/row"
 LOGIN = "/auth/login"
 
 #: The removal's refusals need a Tile to fail to remove, and putting one in the
@@ -105,20 +106,33 @@ def patch_tile(client: TestClient) -> Any:
     )
 
 
-def post_bulk(client: TestClient) -> Any:
-    """Story 2.4's batch, with a real manifest and a real image part.
+def post_bulk_plan(client: TestClient) -> Any:
+    """Story 2.4's first phase, with a real manifest and a real file name.
 
     Driven with both, not an empty body: refusing `{}` would be refusing a
     malformed request and would show nothing about the authorization. The
-    manifest names one valid row, so a handler that ran at all would write a
+    manifest names one valid row, so a handler that ran at all would answer a
+    plan naming a Code — which is catalogue data a Staff caller must not see.
+    """
+    return client.post(
+        BULK_PLAN,
+        files=[("manifest", ("codes.csv", REFUSED_MANIFEST, "text/csv"))],
+        data={"names": ["a.jpg"]},
+    )
+
+
+def post_bulk_row(client: TestClient) -> Any:
+    """Story 2.4's second phase, with a real image part.
+
+    A batch is driven from the client, so this route is reachable on its own
+    and carries the whole of one add — which is why it needs its own refusal
+    rather than inheriting the plan's. A handler that ran at all would write a
     Tile.
     """
     return client.post(
-        BULK_UPLOAD,
-        files=[
-            ("manifest", ("codes.csv", REFUSED_MANIFEST, "text/csv")),
-            ("images", ("a.jpg", an_image(), "image/jpeg")),
-        ],
+        BULK_ROW,
+        data=REFUSED_FIELDS,
+        files=[("image", ("a.jpg", an_image(), "image/jpeg"))],
     )
 
 
@@ -258,24 +272,27 @@ def test_a_staff_caller_is_refused_the_edit_and_writes_nothing(
     assert [r for r in audit_rows(conn) if r["action"] == "catalogue_tile_edited"] == []
 
 
+@pytest.mark.parametrize("send", [post_bulk_plan, post_bulk_row])
 def test_a_staff_caller_is_refused_the_bulk_upload_and_writes_nothing(
     client: TestClient,
     conn: psycopg.Connection,
     storage_root: Path,
     make_user: MakeUser,
     audit_rows: Callable[[psycopg.Connection], list[dict[str, object]]],
+    send: Callable[[TestClient], Any],
 ) -> None:
     sign_in(client, make_user(role=Role.STAFF, name="Kasun Perera"))
 
-    response = post_bulk(client)
+    response = send(client)
 
-    # An envelope under a `403`, not a `200` carrying a report that says
-    # "refused". The stream's status is committed at its first byte, so a
-    # handler that opened it before checking the role would have nowhere left
-    # to put this.
+    # An envelope under a `403`, not a `200` carrying a plan or a report line
+    # that says "refused". The row route answers `200` for a row it refused —
+    # that is its contract — so a role check made inside it rather than as a
+    # dependency would be painted by a driver as one bad tile.
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "administrator_required"
-    assert "kind" not in response.text
+    assert "items" not in response.text
+    assert "status" not in response.text
     nothing_was_written(conn, storage_root)
     assert [r for r in audit_rows(conn) if r["action"] == "catalogue_tile_added"] == []
 
@@ -349,7 +366,7 @@ def test_a_staff_callers_image_is_never_decoded(
     monkeypatch.setattr(shared_vision, "intake_image", refuse)
     sign_in(client, make_user(role=Role.STAFF))
 
-    for send in (post_tile, patch_tile, post_bulk):
+    for send in (post_tile, patch_tile, post_bulk_plan, post_bulk_row):
         response = send(client)
 
         assert response.status_code == 403
@@ -400,14 +417,19 @@ def test_a_signed_out_caller_is_refused_the_edit_and_writes_nothing(
     nothing_was_written(conn, storage_root)
 
 
+@pytest.mark.parametrize("send", [post_bulk_plan, post_bulk_row])
 def test_a_signed_out_caller_is_refused_the_bulk_upload_and_writes_nothing(
-    client: TestClient, conn: psycopg.Connection, storage_root: Path
+    client: TestClient,
+    conn: psycopg.Connection,
+    storage_root: Path,
+    send: Callable[[TestClient], Any],
 ) -> None:
-    response = post_bulk(client)
+    response = send(client)
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
-    assert "kind" not in response.text
+    assert "items" not in response.text
+    assert "status" not in response.text
     nothing_was_written(conn, storage_root)
 
 
@@ -489,7 +511,16 @@ def test_an_administrator_demoted_mid_session_is_refused_on_the_next_request(
 
 @pytest.mark.parametrize(
     "send",
-    [post_tile, get_image, patch_tile, lookup_tile, delete_tile, post_bulk, search_tiles],
+    [
+        post_tile,
+        get_image,
+        patch_tile,
+        lookup_tile,
+        delete_tile,
+        post_bulk_plan,
+        post_bulk_row,
+        search_tiles,
+    ],
 )
 def test_every_refusal_is_uncacheable(
     client: TestClient, make_user: MakeUser, send: Callable[[TestClient], Any]

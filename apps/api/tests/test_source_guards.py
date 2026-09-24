@@ -587,21 +587,20 @@ def test_the_sql_patterns_leave_parameterized_queries_alone(line: str) -> None:
 #: If a helper is added to that path it belongs in this tuple, and the reader
 #: who adds it is the reader who is about to be told why.
 _BULK_FUNCTION_NAMES = (
-    "bulk_upload",
-    "_bulk_stream",
+    "plan_bulk_upload",
+    "upload_bulk_row",
     "_bulk_row",
     "_manifest_rows",
     "_read_manifest",
-    "_spool",
-    "_row_line",
+    "_plan_items",
 )
 
 #: The only `shared_vision` attribute the bulk path may name directly.
 #:
-#: A path, checked for existence before the stream opens so that a deployment
-#: with no model artifact refuses the whole batch with an envelope rather than
-#: failing a hundred rows identically. It is not a step in the pipeline and
-#: nothing about it turns bytes into pixels.
+#: A path, checked for existence in the plan so that a deployment with no model
+#: artifact refuses the whole batch with an envelope rather than failing a
+#: hundred rows identically. It is not a step in the pipeline and nothing about
+#: it turns bytes into pixels.
 _BULK_MAY_NAME = {"MODEL_PATH"}
 
 _SHARED_VISION_ATTRIBUTE = re.compile(r"\bshared_vision\.([A-Za-z_][A-Za-z0-9_]*)")
@@ -618,8 +617,8 @@ def test_the_bulk_path_reaches_the_pixel_pipeline_only_through_the_add_s_helpers
     # pipeline's vectors alongside the first. Nothing raises. This does.
     #
     # Read off the functions' own source rather than the whole module, because
-    # `_accept_bytes` and `_prepare` — the two halves the bulk path is *meant*
-    # to reach the pipeline through — legitimately name it on every line.
+    # `_accept` and `_prepare` — the two halves the bulk path is *meant* to
+    # reach the pipeline through — legitimately name it on every line.
     import inspect
 
     from api import catalogue
@@ -640,7 +639,7 @@ def test_the_bulk_path_reaches_the_pixel_pipeline_only_through_the_add_s_helpers
 
     assert offenders == [], (
         "The bulk path reaches shared_vision on its own. Every image it takes must "
-        "go through _accept_bytes and _prepare — the same intake, colour management, "
+        "go through _accept and _prepare — the same intake, colour management, "
         "16 views and derivative the single add uses (AD-1, AD-7). A second path is "
         "an asymmetry that destroys accuracy with nothing raised: " + ", ".join(offenders)
     )

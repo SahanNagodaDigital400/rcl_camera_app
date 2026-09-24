@@ -1,20 +1,32 @@
-import { ArrowDown, CheckCircle, Warning, XCircle } from '@phosphor-icons/react';
+import {
+  ArrowDown,
+  ArrowsClockwise,
+  CheckCircle,
+  CircleDashed,
+  UploadSimple,
+  Warning,
+  XCircle,
+} from '@phosphor-icons/react';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, JSX, UIEvent } from 'react';
 
 import {
+  ADMINISTRATOR_REQUIRED,
   ApiRequestError,
   INVALID_MANIFEST,
   MALFORMED_RESPONSE,
-  ROW_FAILED,
+  MATCHING_UNAVAILABLE,
+  PIPELINE_STAMP_MISMATCH,
   TOO_MANY_ROWS,
-  apiStream,
+  UNAUTHORIZED,
+  UPLOAD_TIMEOUT_MS,
+  apiRequest,
 } from '../api/client';
 import { shrinkImage } from '../upload/shrinkImage';
 import styles from './BulkUploadScreen.module.css';
 
 /**
- * Bulk upload — a whole range in one pass, reported row by row (FR-17).
+ * Bulk upload — a whole range, sent one image at a time and reported row by row (FR-17).
  *
  * Rendered *inside* the shell, in place of the home panel, so it carries no
  * `<main>` of its own: `AppShell` already provides the one main landmark and
@@ -24,84 +36,68 @@ import styles from './BulkUploadScreen.module.css';
  * moving between the two catalogue upload surfaces should not read them as two
  * different applications.
  *
- * **The report is the deliverable, not the spinner.** EXPERIENCE.md:73 asks for
- * a scrollable per-row list and explicitly not a single pass/fail summary, and
- * EXPERIENCE.md:94 asks for the rows to arrive *as they complete*. That is why
- * this screen calls `apiStream` rather than `apiRequest`: a body read with
- * `await response.json()` does not return until the batch ends, and a report
- * that appears all at once when the batch ends is the single spinner both those
- * lines exist to forbid.
+ * **One request per image, and this screen is what drives them.** A hundred
+ * reference images in one multipart body is gigabytes on one connection: a
+ * proxy's idle bound, a dropped Wi-Fi hop or a reloaded tab loses the whole
+ * range, and there is no way to send back only the part that did not land. So
+ * a batch is two phases against `apps/api`, and the loop between them lives
+ * here:
+ *
+ * 1. `POST /admin/tiles/bulk/plan` takes the sheet and the *names* this device
+ *    is holding — names only, no bytes — and answers one item per line the
+ *    report will carry, in the order it will carry them.
+ * 2. `POST /admin/tiles/bulk/row` takes one item and its one image, and
+ *    answers that row's outcome. Once per item the plan paired, in order.
+ *
+ * **The manifest is still read on the server and nowhere else.** That is what
+ * the plan buys: this screen sends file names and takes the pairing back, so
+ * no CSV is parsed in a browser and the rule that `45X90\POLISH\a.JPG` names
+ * `a.jpg` has exactly one implementation. A screen that paired for itself
+ * would be a second reader of the sheet, and the two would disagree on the
+ * first real export.
+ *
+ * **The report is the deliverable, not the spinner.** EXPERIENCE.md:73 asks
+ * for a scrollable per-row list and explicitly not a single pass/fail summary,
+ * and EXPERIENCE.md:94 asks for the rows to arrive *as they complete*. The
+ * plan is what lets this screen do better than either: the whole list is on
+ * screen — every row, its file and its Code — before a single image is sent,
+ * and each line resolves in place as its own request answers. There is no
+ * indeterminate phase and no invented denominator.
  *
  * **Three outcomes, three colours, and a word beside each** (DESIGN.md:144-149
- * and :221 — the one screen in the product where all three brand colours appear
- * as status indicators together). Navy for created, orange for flagged, red for
- * failed. The word is not decoration: EXPERIENCE.md's accessibility floor says
- * a state is never signalled by colour alone, and a colour-blind Administrator
- * reading a hundred-row report is precisely who that rule is for.
+ * and :221 — the one screen in the product where all three brand colours
+ * appear as status indicators together). Navy for created, orange for flagged,
+ * red for failed. A row that has not been sent yet, or is in flight, is
+ * **neither an outcome nor a colour**: it is painted in the muted text colour
+ * with its own word, because giving "waiting" a brand colour would make four
+ * things look like statuses when the product has three. The word is not
+ * decoration either: EXPERIENCE.md's accessibility floor says a state is never
+ * signalled by colour alone, and a colour-blind Administrator reading a
+ * hundred rows needs the word.
  *
- * **A flagged row is a success.** It was created, it has a tile id, and it is in
- * the index; the flag is follow-up (AD-18) — a Category nothing could recover,
- * a Code with no trailing number, a reference image with very little texture.
- * Painting it as a failure would tell an Administrator to re-upload a tile that
- * is already in the catalogue.
+ * **The rows that did not land can be sent again, and nothing else can.** That
+ * is the whole point of splitting the transfer: a dropped connection, a file
+ * that needed re-exporting, a Code that was in the way until the clashing tile
+ * was removed — each of those is one request, and re-sending it costs one image
+ * rather than the range. The rows that landed are never re-sent, because they
+ * are in the catalogue and would answer `code_already_exists`; rows the *plan*
+ * refused are not offered either, because nothing paired them, so the same
+ * sheet and the same files would produce the same answer and the fix is a
+ * different sheet or a different selection.
  *
- * **The progress bar's denominator is the server's, or there is no
- * denominator.** The stream opens with a line carrying the number of row lines
- * the report will hold, and that is the only honest total: the rows live in a
- * sheet only the server reads, and a total guessed from the number of images
- * chosen is wrong for exactly the batch a report is most needed for — the one
- * whose rows and uploads do not line up. Until that line arrives the bar is
- * indeterminate, which is the true shape of "the images are still going up and
- * nothing has been counted yet".
- *
- * **The log scrolls inside itself only on a wide viewport.** A hundred rows in
- * a fixed box on a phone is a region a thumb cannot leave, so below the
- * breakpoint the report grows and the page owns the scroll, as it always has.
- * At desktop width — where an Administrator actually runs a batch — the console
- * keeps the form, the bar and the newest rows on one screen, follows the tail,
- * and stops following the moment the reader scrolls up to read something.
- *
- * **An oversized image is shrunk here rather than refused.** See `shrink`.
- *
- * **Every rule belongs to the server.** This screen does not parse the
- * manifest, does not derive a trailing number from a Code, and does not decide
- * what makes a row a failure rather than a flag. It renders what the stream
- * says. A second implementation of any of those rules here is the asymmetry
- * AD-1 is about, one level up from the pixels — and the manifest parser is the
- * one the real catalogue's five naming conventions would break first.
- *
- * **The role-conditional door that opens this screen is a convenience, never
- * the control.** `App` renders it only for an Administrator, but the cached
- * `User` is a render cache and never an authorization decision (AGENTS.md
- * Policy): the server refuses a Staff caller at `POST /admin/tiles/bulk`
- * through `require_administrator`, which re-reads the role from Postgres on
- * every request (AD-3).
- *
- * Deliberately absent:
- *
- * - **No dry run, no resume, no retry-failed-rows.** A failed row is a row to
- *   fix and send again, and a second verb that re-sent a subset would be a
- *   second way into the same endpoint with its own rules about what a batch is.
- * - **No per-row progress percentage.** A row is either reported or it is not,
- *   and a percentage inside one would be an invented number (AD-20). The bar
- *   across the *batch* counts whole rows against a total the server sent, so
- *   it is neither per-row nor invented — see `asStart`.
- * - **No ZIP or folder upload.** The images are a file list, which is what a
- *   file input gives and what a multipart body carries.
- * - **No similarity value, in any form** (AD-20). There is nothing to show one
- *   for on this screen and there never will be.
+ * Nothing here parses a manifest, decides a Category, derives a trailing
+ * number from a Code or judges an image. Every one of those is a rule, the
+ * rules live on the server, and a screen that restated one would be a second
+ * place for it to drift — which is what AD-1 is about, one level up from the
+ * pixels.
  */
 
-/** Shown for a failure that arrives as something other than an `ApiRequestError`. */
-const UNEXPECTED = 'The batch could not be uploaded. Try again.';
-
 /**
- * Refuse an empty picker here rather than letting the API answer for it.
+ * What a blank picker is told, before anything is sent.
  *
  * The form is `noValidate` — the browser's own bubble is unstyled, untestable
  * and disappears on the next keystroke — so these are what `required` would
- * otherwise have done. Without them a blank submit opens a stream that can only
- * report that nothing was sent.
+ * otherwise have done.
  */
 const NO_MANIFEST = 'Choose the sheet of codes.';
 const NO_FILES = 'Choose the reference images.';
@@ -110,11 +106,9 @@ const NO_FILES = 'Choose the reference images.';
  * The server's own bounds, mirrored onto this screen.
  *
  * **The server's copy is the authority** — `shared_schema.tile` bounds both and
- * the endpoint answers with a named refusal past them, whatever this file says.
- * These exist to keep a transfer that was never going to be accepted off the
- * wire: a hundred reference images is comfortably gigabytes, and an
- * Administrator who watched that upload finish only to be told the row cap was
- * never going to be honoured has lost the transfer, not a rule check.
+ * the plan answers with a named refusal past them, whatever this file says.
+ * These exist to keep a batch that was never going to be accepted out of the
+ * loop below.
  *
  * Written down here rather than imported because nothing crosses that boundary
  * at build time; `error-code-parity.test.ts` pins each against its Python twin,
@@ -127,12 +121,12 @@ const MAX_IMAGE_BYTES = 134217728;
  * The count refusal.
  *
  * One ceiling bounds a bulk upload on both counts — the manifest's rows and
- * the uploaded images — and the server enforces it on both. This screen never
- * reads the manifest, so images is the count it has; refusing on that one is
- * therefore stating the server's own rule rather than a second one, and the
- * server refuses the same batch with `too_many_rows` whatever this says.
- * Worded about the images, because that is what the Administrator is holding
- * when this fires.
+ * the file names sent with them — and the server enforces it on both. This
+ * screen never reads the manifest, so images is the count it has; refusing on
+ * that one is therefore stating the server's own rule rather than a second
+ * one, and the plan refuses the same batch with `too_many_rows` whatever this
+ * says. Worded about the images, because that is what the Administrator is
+ * holding when this fires.
  */
 const TOO_MANY_FILES =
   `Upload at most ${MAX_BULK_ROWS} reference images at a time. ` +
@@ -224,7 +218,7 @@ const TEMPLATE_HREF = `data:text/csv;charset=utf-8,${encodeURIComponent(TEMPLATE
 
 /** The spoken states of the progress line. See `progress` below. */
 const SHRINKING = 'Making oversized images smaller…';
-const UPLOADING = 'Uploading…';
+const PLANNING = 'Reading the sheet…';
 const FINISHED = 'Finished.';
 
 /**
@@ -242,32 +236,55 @@ const FINISHED = 'Finished.';
 const AT_FOOT_SLACK = 24;
 
 /**
- * The report did not run to the end of the batch.
+ * The batch stopped on something that was not about one row.
  *
- * Two ways in. The connection itself went — a proxy timing out, the process
- * going away mid-report — and the closing line never arrived. Or the server
- * said it stopped: it writes a summary even when a batch stops part-way, so a
- * summary alone is not proof of a clean finish and the line it sent saying so
- * is. The rows already on screen are real and stay; what
- * this says is that the ones after them never ran. Blanking the progress line
- * instead would read exactly like a batch that finished cleanly.
+ * A model artifact that went away, an index a generation ahead, a session that
+ * ended. Each of those refuses every row that is left in exactly the same way,
+ * so the loop stops on the first one rather than spending a hundred requests
+ * collecting the same sentence — and the rows already reported are real and
+ * stay. The message the server sent is rendered beside the pickers; this is
+ * what the progress line says instead of "Finished.", which above a list with
+ * unsent rows in it would be the screen contradicting its own report.
  */
-const CUT_SHORT = 'The report stopped early. The rows below were finished; send the rest again.';
+const CUT_SHORT = 'The upload stopped. The rows below were finished; send the rest again.';
+
+/**
+ * The refusals that end a batch rather than failing one row.
+ *
+ * `apps/api` answers `200` with a report line for anything that is about the
+ * tile in front of it, and a real status only for the things that would refuse
+ * every remaining row identically — so in principle this list is the server's
+ * to decide and the screen could stop on any non-`200`. It is written out
+ * anyway, because the opposite case is the one that matters: a request that
+ * *failed to reach* the server is a dropped connection, and a dropped
+ * connection is the single most likely thing to happen during a batch that
+ * runs for minutes. That has to be one failed, retryable row and not the end
+ * of the range, which is exactly what sending one image per request is for.
+ */
+const STOPS_THE_BATCH = new Set<string>([
+  MATCHING_UNAVAILABLE,
+  PIPELINE_STAMP_MISMATCH,
+  ADMINISTRATOR_REQUIRED,
+  UNAUTHORIZED,
+]);
+
+/** What a failure with no message of its own is called. */
+const UNEXPECTED = 'Something went wrong. Try again.';
 
 /**
  * The clock beside each line of the log.
  *
- * **The time the line *arrived here*, not a duration and not an estimate.** A
- * batch runs for minutes and the rows do not arrive evenly — a 96 MB press
+ * **The time the line *resolved*, not a duration and not an estimate.** A
+ * batch runs for minutes and the rows do not finish evenly — a 96 MB press
  * file takes tens of seconds to embed and a small one takes two — so the gap
  * between two stamps is the one piece of evidence an Administrator has for
  * where a slow batch is actually spending its time. Nothing derives anything
  * from it: there is no rate here and no projection of when the batch will end,
  * which would be an invented number (AD-20).
  *
- * Built once at module scope rather than per row: a hundred rows arriving over
- * minutes would otherwise construct a hundred formatters. `h23` so a log read
- * at a glance never has to be scanned for am/pm.
+ * Built once at module scope rather than per row: a hundred rows resolving
+ * over minutes would otherwise construct a hundred formatters. `h23` so a log
+ * read at a glance never has to be scanned for am/pm.
  */
 const CLOCK = new Intl.DateTimeFormat(undefined, {
   hour: '2-digit',
@@ -292,22 +309,42 @@ interface FormError {
 }
 
 /**
- * The three outcomes the stream reports, and the three DESIGN.md paints.
+ * The three outcomes the server reports, and the two states a row is in before
+ * it has one.
  *
- * Exactly these: a `status` this screen does not recognise is a server speaking
- * a protocol this build does not know, which `asRow` refuses loudly rather than
- * painting in a fourth, undefined treatment.
+ * `created`, `flagged` and `failed` are exactly the server's own words and are
+ * the only three DESIGN.md paints; a `status` this screen does not recognise
+ * is a server speaking a protocol this build does not know, which `asResult`
+ * refuses loudly rather than painting in a fourth, undefined treatment.
+ *
+ * `waiting` and `sending` are this screen's, because the row exists here
+ * before it exists anywhere else — that is what the plan is for — and neither
+ * is an outcome. Neither carries a brand colour.
  */
 type Outcome = 'created' | 'flagged' | 'failed';
+type RowState = Outcome | 'waiting' | 'sending';
 
-/** One line of the report, as the screen holds it. */
+/** The `{code, message}` of a refusal, in the envelope's own shape. */
+interface Refusal {
+  code: string;
+  message: string;
+}
+
+/**
+ * One line of the report: a plan item, plus whatever became of it.
+ *
+ * The two halves are deliberately one object. The plan states the row number,
+ * the file and the Code before anything is sent, and the outcome fills in
+ * later — a screen holding them apart would have to join them to render a line
+ * and would have somewhere for the join to go wrong.
+ */
 interface ReportRow {
   /**
-   * The position this line arrived at, assigned on arrival. React's list key,
+   * The item's position in the plan, assigned on arrival. React's list key,
    * and it is carried on the row rather than taken from the render index
-   * because none of the fields the server sends can serve: two lines may
-   * legitimately name one file — that is the `image_not_paired` case — and a
-   * trailing line for an unmatched upload has no manifest row number at all.
+   * because none of the fields the server sends can serve: two items may
+   * legitimately name one file — that is the "two Codes, one image" case — and
+   * a trailing item for an unmatched upload has no manifest row number at all.
    */
   seq: number;
   /**
@@ -315,33 +352,40 @@ interface ReportRow {
    *
    * Rendered on the row, because it is what an Administrator uses to find the
    * offending line in the sheet in front of them — a file name alone means
-   * scrolling a hundred-row spreadsheet looking for it. `null` on the lines
-   * that have no manifest row at all: an upload no row named, and the line
-   * that reports the batch stopping.
+   * scrolling a hundred-row spreadsheet looking for it. `null` on the items
+   * that have no manifest row at all: a file no row named, and a name that was
+   * blank.
    */
   row: number | null;
-  /** The file name, which is the one field every line carries. */
+  /** The file name as the *sheet* spells it, which is the one field every item carries. */
   file: string;
-  /** The Code, or `null` on a line that never reached one. */
+  /** The Code, or `null` on an item that has none. */
   code: string | null;
-  status: Outcome;
+  size: string | null;
+  category: string | null;
+  /**
+   * The name of the file this device is to send for this row, or `null` when
+   * the plan already decided it.
+   *
+   * **The server's answer, not this screen's guess.** The sheet may spell a
+   * file `45X90/POLISH/a.JPG` where the picker gave `a.jpg`; the plan pairs
+   * them and hands back the name to send, which is what keeps the pairing
+   * rules in one place. Exactly one of this and `error` is set on arrival.
+   */
+  upload: string | null;
+  state: RowState;
   /** Follow-up markers on a row that *was* created (AD-18). */
   flags: string[];
-  /** The `{code, message}` of a refusal, in the envelope's own shape. */
-  error: { code: string; message: string } | null;
-  /** When this line reached the screen, already formatted. See `CLOCK`. */
-  at: string;
-}
-
-/** The closing line: how the batch came out. */
-interface Summary {
-  created: number;
-  flagged: number;
-  failed: number;
+  /** Why this row is refused, or `null`. */
+  error: Refusal | null;
+  /** When this line resolved, already formatted — or `null` while it has not. */
+  at: string | null;
 }
 
 /** The word beside each indicator. Never the colour alone — see the docstring. */
-const WORD: Record<Outcome, string> = {
+const WORD: Record<RowState, string> = {
+  waiting: 'Waiting',
+  sending: 'Uploading',
   created: 'Added',
   flagged: 'Flagged',
   failed: 'Failed',
@@ -372,17 +416,22 @@ function flagSentence(flag: string): string {
 /**
  * The row's colour class, named one branch at a time.
  *
- * `styles[row.status]` would be shorter and would read the same three classes,
- * and it is deliberately not used: `styling-wiring.test.ts` finds a stylesheet's
+ * `styles[row.state]` would be shorter and would read the same classes, and it
+ * is deliberately not used: `styling-wiring.test.ts` finds a stylesheet's
  * consumers by matching `styles.<name>` in the source, so a class reached only
  * through a computed key is a class that test reports as declared and
  * unreferenced. Naming them is what keeps the stylesheet and this file held
  * together.
+ *
+ * `waiting` and `sending` share `.pending`: neither is an outcome, so neither
+ * gets a brand colour, and one muted treatment for "no answer yet" is what
+ * keeps the three colours meaning exactly three things.
  */
-function outcomeClass(status: Outcome): string | undefined {
-  if (status === 'created') return styles.created;
-  if (status === 'flagged') return styles.flagged;
-  return styles.failed;
+function outcomeClass(state: RowState): string | undefined {
+  if (state === 'created') return styles.created;
+  if (state === 'flagged') return styles.flagged;
+  if (state === 'failed') return styles.failed;
+  return styles.pending;
 }
 
 /**
@@ -391,19 +440,21 @@ function outcomeClass(status: Outcome): string | undefined {
  * `no-raw-values.test.ts` fails the build if one ever is (UX-DR3).
  *
  * `aria-hidden`, because the word beside it carries the state. Announced as
- * well, it would read every row's outcome twice.
+ * well, it would read every row's state twice.
  */
-function outcomeIcon(status: Outcome): JSX.Element {
-  if (status === 'created') return <CheckCircle className={styles.icon} aria-hidden="true" />;
-  if (status === 'flagged') return <Warning className={styles.icon} aria-hidden="true" />;
-  return <XCircle className={styles.icon} aria-hidden="true" />;
+function outcomeIcon(state: RowState): JSX.Element {
+  if (state === 'created') return <CheckCircle className={styles.icon} aria-hidden="true" />;
+  if (state === 'flagged') return <Warning className={styles.icon} aria-hidden="true" />;
+  if (state === 'failed') return <XCircle className={styles.icon} aria-hidden="true" />;
+  if (state === 'sending') return <UploadSimple className={styles.icon} aria-hidden="true" />;
+  return <CircleDashed className={styles.icon} aria-hidden="true" />;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** The rejection thrown when the stream stops speaking the protocol mid-report. */
+/** The rejection thrown when a response is not the contract. */
 function malformed(): ApiRequestError {
   return new ApiRequestError(
     MALFORMED_RESPONSE,
@@ -412,8 +463,19 @@ function malformed(): ApiRequestError {
   );
 }
 
+/** One `{code, message}`, or `null`. Used for both a plan item and a row result. */
+function asRefusal(value: unknown): Refusal | null {
+  if (!isObject(value)) return null;
+  if (typeof value['code'] !== 'string' || typeof value['message'] !== 'string') return null;
+  return { code: value['code'], message: value['message'] };
+}
+
+function asText(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
 /**
- * Narrow one `kind: "row"` line, or fail loudly.
+ * Narrow one plan item into the report row it becomes, or fail loudly.
  *
  * **Deliberately not closed the way `isTile` is.** That contract rejects any
  * extra key, because an extra key there is how a storage reference (AD-9) or a
@@ -421,73 +483,100 @@ function malformed(): ApiRequestError {
  * strictness is different in kind: an added server field would make the screen
  * refuse *every* batch, including the hundred rows that were about to be
  * created, and a field this screen does not read is a field it cannot render.
- * So the fields that are painted are checked and the rest is ignored — with the
- * one thing that decides a row's treatment, `status`, checked hardest.
+ * So the fields that are painted are checked and the rest is ignored — with
+ * the one thing that decides what happens next, the `upload`/`error` pair,
+ * checked hardest.
+ *
+ * `file` and the exclusive-or between `upload` and `error` are the contract:
+ * an item with both would leave this screen deciding whether to send a row the
+ * server had already refused, and an item with neither would be a line of the
+ * report nothing can finish.
  */
-function asRow(line: Record<string, unknown>, seq: number): ReportRow {
-  const status = line['status'];
-  const file = line['file'];
-  if (
-    typeof file !== 'string' ||
-    (status !== 'created' && status !== 'flagged' && status !== 'failed')
-  ) {
-    throw malformed();
-  }
+function asPlanRow(item: unknown, seq: number): ReportRow {
+  if (!isObject(item)) throw malformed();
 
-  const code = line['code'];
-  const row = line['row'];
-  const flags = line['flags'];
-  const failure = line['error'];
+  const file = item['file'];
+  if (typeof file !== 'string') throw malformed();
 
+  const upload = asText(item['upload']);
+  const error = asRefusal(item['error']);
+  if ((upload === null) === (error === null)) throw malformed();
+
+  const row = item['row'];
   return {
     seq,
     row: typeof row === 'number' ? row : null,
     file,
-    code: typeof code === 'string' ? code : null,
-    status,
+    code: asText(item['code']),
+    size: asText(item['size']),
+    category: asText(item['category']),
+    upload,
+    state: error === null ? 'waiting' : 'failed',
+    flags: [],
+    error,
+    // The plan's own refusals are decided before anything is sent, so they
+    // carry the moment the plan arrived — which is the moment they became
+    // true.
+    at: error === null ? null : CLOCK.format(new Date()),
+  };
+}
+
+/** Narrow the plan, or fail loudly. */
+function asPlan(body: unknown): ReportRow[] {
+  if (!isObject(body) || !Array.isArray(body['items'])) throw malformed();
+  return body['items'].map((item, index) => asPlanRow(item, index));
+}
+
+/** What one row request answered: the outcome, its flags and its refusal. */
+interface RowResult {
+  state: Outcome;
+  flags: string[];
+  error: Refusal | null;
+}
+
+/**
+ * Narrow one row response, or fail loudly.
+ *
+ * `status` is checked hardest, for `asPlanRow`'s reason inverted: it is the
+ * one field that decides a row's treatment, and a fourth value would be
+ * painted in no treatment at all.
+ */
+function asResult(body: unknown): RowResult {
+  if (!isObject(body)) throw malformed();
+  const status = body['status'];
+  if (status !== 'created' && status !== 'flagged' && status !== 'failed') throw malformed();
+  const flags = body['flags'];
+  return {
+    state: status,
     flags: Array.isArray(flags)
       ? flags.filter((flag): flag is string => typeof flag === 'string')
       : [],
-    error:
-      isObject(failure) &&
-      typeof failure['code'] === 'string' &&
-      typeof failure['message'] === 'string'
-        ? { code: failure['code'], message: failure['message'] }
-        : null,
-    at: CLOCK.format(new Date()),
+    error: asRefusal(body['error']),
   };
 }
 
 /**
- * Narrow the opening `kind: "start"` line, or fail loudly.
+ * Whether this row could still be landed by another attempt.
  *
- * **This is the whole reason the progress bar is allowed to exist.** The
- * server writes this line before it processes anything, and `total` is the
- * number of `row` lines the report will carry: one per manifest row, one per
- * upload no row named, one per part that declared no file name. It is the only
- * honest denominator available to this screen — the rows live in a sheet only
- * the server reads, and the number of images chosen here is a different number
- * for exactly the batch a report is most needed for.
- *
- * Checked as hard as `status` is, and for the same reason: a total that is not
- * a number would paint a bar that means nothing, and a bar that means nothing
- * is worse than none — it is read as a promise about how far the batch has
- * got.
- *
- * A server that sends no opening line at all is not an error here. Nothing
- * requires one to arrive: `running` with no total is the indeterminate bar,
- * which is exactly what "the images are still going up" looks like.
+ * One predicate, read by the control's count and by the control's handler, so
+ * the button can never offer a number it then does not send. A row the plan
+ * refused has no `upload` and is excluded: nothing paired it, so the same
+ * sheet and the same files would answer the same way.
  */
-function asStart(line: Record<string, unknown>): number {
-  const total = line['total'];
-  if (typeof total !== 'number' || !Number.isFinite(total) || total < 0) throw malformed();
-  return total;
+function unfinished(row: ReportRow): boolean {
+  return row.upload !== null && row.state !== 'created' && row.state !== 'flagged';
 }
 
-/** How many rows of each outcome are in the report so far. */
-function tally(rows: ReportRow[]): Record<Outcome, number> {
-  const counts: Record<Outcome, number> = { created: 0, flagged: 0, failed: 0 };
-  for (const row of rows) counts[row.status] += 1;
+/** How many rows of each state are in the report so far. */
+function tally(rows: ReportRow[]): Record<RowState, number> {
+  const counts: Record<RowState, number> = {
+    waiting: 0,
+    sending: 0,
+    created: 0,
+    flagged: 0,
+    failed: 0,
+  };
+  for (const row of rows) counts[row.state] += 1;
   return counts;
 }
 
@@ -509,17 +598,6 @@ function fieldFor(failure: unknown): Field | null {
   return null;
 }
 
-/** Narrow one `kind: "summary"` line, or fail loudly. */
-function asSummary(line: Record<string, unknown>): Summary {
-  const created = line['created'];
-  const flagged = line['flagged'];
-  const failed = line['failed'];
-  if (typeof created !== 'number' || typeof flagged !== 'number' || typeof failed !== 'number') {
-    throw malformed();
-  }
-  return { created, flagged, failed };
-}
-
 export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Element {
   const manifestId = useId();
   const imagesId = useId();
@@ -531,20 +609,14 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
   const [manifest, setManifest] = useState<File | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [rows, setRows] = useState<ReportRow[]>([]);
-  const [summary, setSummary] = useState<Summary | null>(null);
-  /**
-   * How many row lines the report will carry, straight from the server's
-   * opening line — or `null` before it arrives, and on a server that sends
-   * none. The progress bar is determinate only while this is a number; see
-   * `asStart`.
-   */
-  const [total, setTotal] = useState<number | null>(null);
   /** What this device did to the oversized images before sending them. */
   const [notes, setNotes] = useState<string[]>([]);
-  /** The redraw pass runs before the request opens. See `prepare`. */
+  /** The redraw pass runs before the plan is asked for. See `prepare`. */
   const [shrinking, setShrinking] = useState(false);
-  /** The stream ended with no closing line. See `CUT_SHORT`. */
+  /** The loop stopped on something that was not about one row. See `CUT_SHORT`. */
   const [cutShort, setCutShort] = useState(false);
+  /** A pass has run to the end, so the report is a finished report. */
+  const [settled, setSettled] = useState(false);
   const [error, setError] = useState<FormError | null>(null);
   const [running, setRunning] = useState(false);
   /**
@@ -568,12 +640,12 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
    *
    * A batch runs for minutes, and in that time the screen can go: a session
    * expiring drops the shell to the login screen, a sign-out unmounts
-   * everything. Without these, `onLine` would go on calling `setRows` on a
+   * everything. Without these, the loop would go on calling `setRows` on a
    * component that no longer exists, and — worse — the server would go on
-   * processing a hundred rows into a stream nobody is reading. The guard stops
-   * the first and the abort stops the second.
+   * embedding a row into a request nobody is reading. The guard stops the
+   * first and the abort stops the second.
    *
-   * A ref, not state: it is read inside a callback that closes over its own
+   * A ref, not state: it is read inside a loop that closes over its own
    * render, and a state value there would be the value at the time the batch
    * started rather than the value now.
    */
@@ -583,13 +655,26 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
   /**
    * Whether a submit is in flight, readable from inside one.
    *
-   * The mirror of `running` that a callback can trust. `running` closes over
-   * the render that started the batch, where it is `false` however long the
-   * batch has been going since — and there is now a phase *before* the request
-   * exists (the redraw pass), so the abort handle is no longer a stand-in for
-   * "busy" either.
+   * The mirror of `running` that the loop can trust. `running` closes over the
+   * render that started the batch, where it is `false` however long the batch
+   * has been going since — and there are phases *before* any request exists
+   * (the redraw pass), so the abort handle is no longer a stand-in for "busy"
+   * either.
    */
   const busy = useRef(false);
+
+  /**
+   * The files as they will actually be *sent*, which is not always the files
+   * that were chosen.
+   *
+   * `prepare` redraws anything over the byte ceiling and the redrawn copy is
+   * what goes up; a retry that reached back to `files` would re-send the 96 MB
+   * original and be told `image_too_large` for a row that had been shrunk
+   * successfully minutes earlier. A ref rather than state because it is read
+   * inside a loop that closes over its own render, and because nothing renders
+   * from it.
+   */
+  const sendable = useRef<File[]>([]);
 
   useEffect(() => {
     alive.current = true;
@@ -606,7 +691,7 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
   /**
    * A control to focus once the form is interactive again.
    *
-   * Both pickers are `disabled` while a batch streams, and `focus()` on a
+   * Both pickers are `disabled` while a batch runs, and `focus()` on a
    * disabled control does nothing at all — so a server refusal, which arrives
    * while the run is still ending, would mark the sheet and leave focus on the
    * Upload button. Recorded here and spent by the effect below, once the
@@ -638,23 +723,23 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
   }
 
   /**
-   * Keep the newest line in view while the log is following.
+   * Keep the newest resolved line in view while the log is following.
    *
    * `scrollTop` rather than `scrollTo`: the assignment is a no-op on an
    * element that does not scroll — which is every viewport below the
    * breakpoint, where the console has no height cap and the page owns the
    * axis — so nothing here has to know which layout is in force.
    *
-   * Depends on the row *count* rather than on the array: the rows already
-   * painted never change, so a new identity with the same length would be a
-   * scroll for nothing.
+   * Depends on how many rows have *resolved* rather than on the array: the
+   * whole list is on screen from the moment the plan arrives, so a row count
+   * would not change once and the log would never follow anything.
    */
-  const logged = rows.length;
+  const resolved = rows.filter((row) => row.at !== null).length;
   useEffect(() => {
     const log = consoleRef.current;
-    if (!follow || logged === 0 || log === null) return;
+    if (!follow || resolved === 0 || log === null) return;
     log.scrollTop = log.scrollHeight;
-  }, [logged, follow]);
+  }, [resolved, follow]);
 
   /** Stop following when the reader scrolls up; resume when they come back. */
   function watchScroll(event: UIEvent<HTMLDivElement>): void {
@@ -678,10 +763,9 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
   function retireReport(): void {
     setError(null);
     setRows([]);
-    setSummary(null);
-    setTotal(null);
     setNotes([]);
     setCutShort(false);
+    setSettled(false);
     setFollow(true);
   }
 
@@ -708,10 +792,9 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
    * reference image is the tile and a tile with its edge cut off is a
    * different reference image.
    *
-   * **Sequentially, not `Promise.all`.** Each decode holds a frame of up to
-   * 186 megapixels; a hundred of those in flight at once is a tab that dies
-   * rather than a batch that goes faster, and the work is the browser's single
-   * decode thread either way.
+   * **The redrawn file keeps its name**, which is not incidental: the name is
+   * what the plan pairs on, so a shrink that renamed anything would unpair the
+   * row it was trying to help.
    *
    * **One refusal for all of them, at the end.** A batch with two bad files in
    * a hundred should be told about both at once, rather than refusing on the
@@ -780,11 +863,20 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
     setRunning(true);
     retireReport();
 
+    const batch = new AbortController();
+    runningBatch.current = batch;
     try {
       const sending = await prepare(files);
-      if (sending !== null) await send(manifest, sending);
+      if (sending === null) return;
+      sendable.current = sending;
+
+      const planned = await plan(manifest, sending, batch.signal);
+      if (planned === null) return;
+
+      await drive(planned, sending, batch.signal);
     } finally {
       busy.current = false;
+      if (runningBatch.current === batch) runningBatch.current = null;
       if (alive.current) {
         setRunning(false);
         setShrinking(false);
@@ -792,144 +884,278 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
     }
   }
 
-  /** Open the stream and paint it, a line at a time. */
-  async function send(sheet: File, sending: File[]): Promise<void> {
-    const batch = new AbortController();
-    runningBatch.current = batch;
-    /** Whether the closing line arrived. See the check after the stream ends. */
-    let closed = false;
-    /**
-     * The server said it stopped before every row was processed.
-     *
-     * It says so on a line and then still writes a summary, because the status
-     * was committed at the first byte and a summary that never came would be
-     * indistinguishable from a dropped connection. So the summary arriving is
-     * not proof the batch finished, and the progress line may not read it that
-     * way — "Finished." above a row saying the upload stopped is the screen
-     * contradicting its own report.
-     */
-    let stoppedEarly = false;
-    /**
-     * How many lines have been painted, counted here rather than inside the
-     * `setRows` updater below.
-     *
-     * A local, so a second batch — which clears the list — numbers from zero
-     * again with nothing to reset. Counted out here because `asRow` throws on
-     * a line this build cannot paint, and a throw inside a state updater
-     * surfaces during React's render rather than at this call site: past the
-     * `catch` below, past `apiStream`'s cancellation of the body, and into the
-     * app as an unhandled render failure. Narrowing before the dispatch is
-     * what keeps that refusal on the path written for it.
-     */
-    let arrived = 0;
-
-    // Multipart, because the request carries files. The part names are the
-    // endpoint's parameter names; `images` repeats once per file, which is how
-    // a multipart body expresses a list.
+  /**
+   * Ask for the plan and paint it as the whole report, before anything is sent.
+   *
+   * Answers the rows, or `null` when the batch was refused — which is every
+   * batch-wide condition there is: a sheet the server cannot read, a range
+   * over the cap, a missing model artifact, a stale stamp, a role. All of them
+   * cost the Administrator the sheet and no image bytes at all, which is what
+   * this phase is for.
+   */
+  async function plan(
+    sheet: File,
+    sending: File[],
+    signal: AbortSignal,
+  ): Promise<ReportRow[] | null> {
+    // Multipart, because the request carries a file. `names` repeats once per
+    // image, which is how a multipart body expresses a list — and it carries
+    // the *names* alone: the bytes stay here until the plan says which row
+    // wants them.
     const body = new FormData();
     body.append('manifest', sheet);
-    for (const file of sending) body.append('images', file);
+    for (const file of sending) body.append('names', file.name);
 
     try {
-      await apiStream(
-        '/admin/tiles/bulk',
-        { method: 'POST', body, signal: batch.signal },
-        (line) => {
-          if (!isObject(line)) throw malformed();
-          // Nothing is painted after the screen has gone. The abort above has
-          // already asked the server to stop; this is what keeps the lines
-          // still in flight from reaching a component that is not there.
-          if (!alive.current) return;
-          // `kind` discriminates the two shapes. A line that is neither is the
-          // same protocol failure a malformed line is: this screen paints rows
-          // and one summary, and there is no third thing it could do with one.
-          if (line['kind'] === 'row') {
-            const painted = asRow(line, arrived);
-            arrived += 1;
-            // The batch stopping is reported as a failed row with no manifest
-            // row number, because by then there is no status left to carry it.
-            // Read here rather than rendered specially: the line is a real
-            // report row and belongs in the list like any other — what it
-            // changes is only what the progress line is allowed to say.
-            if (painted.error?.code === ROW_FAILED && painted.row === null) stoppedEarly = true;
-            // Appended, never sorted or grouped. The order rows arrive in is
-            // the order they were processed in, and that is the order an
-            // Administrator watched them appear in.
-            setRows((already) => [...already, painted]);
-            return;
-          }
-          if (line['kind'] === 'summary') {
-            setSummary(asSummary(line));
-            closed = true;
-            return;
-          }
-          // The opening line, and the only thing on this stream that is known
-          // before any work happens. It turns the bar from indeterminate into
-          // a count against a real denominator — see `asStart`.
-          if (line['kind'] === 'start') {
-            setTotal(asStart(line));
-            return;
-          }
-          throw malformed();
-        },
+      const planned = asPlan(
+        await apiRequest('/admin/tiles/bulk/plan', {
+          method: 'POST',
+          body,
+          signal,
+        }),
       );
-      // The body ended. If the closing line never came the connection went
-      // rather than the batch finishing, and if the server said it stopped
-      // then it stopped — either way, say so instead of letting the progress
-      // line report a clean finish (see `CUT_SHORT`). Tracked on locals rather
-      // than read off `summary` and `rows`, which are this render's values and
-      // are still empty here however many lines arrived.
-      if (alive.current && (!closed || stoppedEarly)) setCutShort(true);
+      if (!alive.current) return null;
+      setRows(planned);
+      return planned;
     } catch (failure) {
       // The API's own message, so the screen cannot state a rule the server
-      // does not enforce. Whatever rows arrived before the failure stay on
-      // screen: they were created, and clearing them would report a tile that
-      // is in the catalogue as one that is not.
-      //
-      // A pre-stream refusal — no manifest, too many rows, no model artifact, a
-      // stale stamp — lands here with no rows behind it, which is what leaves
-      // the report list absent entirely.
+      // does not enforce.
       if (alive.current) {
         refuse(
           failure instanceof ApiRequestError ? failure.message : UNEXPECTED,
           fieldFor(failure),
         );
       }
-    } finally {
-      // `running` is reset by `handleSubmit`'s own `finally`, which owns the
-      // whole submit — the redraw pass included — rather than just the part of
-      // it that had a request open.
-      if (runningBatch.current === batch) runningBatch.current = null;
+      return null;
     }
   }
 
-  // One expression rather than a nested ternary in the markup. The live region
-  // is in the document at rest so the change of text is what gets announced,
-  // rather than the arrival of a whole new node.
-  //
-  // There is no "row 4 of 30" here because this screen does not know the
-  // denominator: the manifest is the server's to read, and inventing a total
-  // from the number of images chosen would be wrong for every batch whose rows
-  // and files do not line up — which is exactly the batch this report is for.
+  /**
+   * Send every row the plan paired, one request at a time, and paint each
+   * answer as it lands.
+   *
+   * **Sequentially, and `Promise.all` would be wrong.** Each row is sixteen
+   * forward passes on the server's CPU (AD-13, AD-16): four in flight at once
+   * oversubscribe the same cores, so the batch finishes no sooner and every
+   * individual row takes longer to report — which is the one thing this screen
+   * exists to show. It would also multiply the peak transfer by four, undoing
+   * the reason the batch is split at all.
+   *
+   * **A failure is one row's, until the server says otherwise.** A dropped
+   * connection or a timeout is the single most likely thing to happen during a
+   * run of minutes, and it must cost the row in flight rather than the range —
+   * so it is painted as a failed, retryable line and the loop goes on. Only
+   * `STOPS_THE_BATCH` ends it, because those refuse every remaining row
+   * identically.
+   */
+  async function drive(planned: ReportRow[], sending: File[], signal: AbortSignal): Promise<void> {
+    const bytesFor = new Map(sending.map((file) => [file.name, file]));
+
+    for (const row of planned) {
+      if (!alive.current || signal.aborted) return;
+      if (row.upload === null) continue;
+      const file = bytesFor.get(row.upload);
+      // The plan named a file this device is not holding. Unreachable through
+      // the form — the names came from these very files — and reported rather
+      // than skipped, because a row silently absent from the report is a tile
+      // the Administrator believes is in the catalogue.
+      if (file === undefined) {
+        mark(row.seq, { state: 'failed', flags: [], error: null });
+        continue;
+      }
+
+      setRows((already) =>
+        already.map((line) => (line.seq === row.seq ? { ...line, state: 'sending' } : line)),
+      );
+
+      // oxlint-disable-next-line no-await-in-loop
+      const stopped = await send(row, file, signal);
+      if (stopped) {
+        if (alive.current) setCutShort(true);
+        return;
+      }
+    }
+
+    if (alive.current) setSettled(true);
+  }
+
+  /**
+   * Send one row. Answers whether the whole batch has to stop.
+   *
+   * Lifted out of the loop so the `await` has one statement to own and the
+   * two failure shapes — this row's, and the batch's — are decided in one
+   * place rather than inside a loop body.
+   */
+  async function send(row: ReportRow, file: File, signal: AbortSignal): Promise<boolean> {
+    const body = new FormData();
+    body.append('code', row.code ?? '');
+    body.append('size', row.size ?? '');
+    body.append('category', row.category ?? '');
+    if (row.row !== null) body.append('row', String(row.row));
+    body.append('image', file);
+
+    try {
+      const result = asResult(
+        await apiRequest('/admin/tiles/bulk/row', {
+          method: 'POST',
+          body,
+          signal,
+          // One row is one image decoded, colour-managed and embedded sixteen
+          // times: the default 15 seconds is wrong for it by an order of
+          // magnitude, and an abort fired while the server is still working
+          // would report a tile that is about to exist as one that failed.
+          timeoutMs: UPLOAD_TIMEOUT_MS,
+        }),
+      );
+      mark(row.seq, result);
+      return false;
+    } catch (failure) {
+      const refusal = failure instanceof ApiRequestError ? failure : null;
+      if (refusal !== null && STOPS_THE_BATCH.has(refusal.code)) {
+        // **The row in flight is marked too, and not only the form.** It was
+        // not added, so a line left reading "Uploading" for the rest of the
+        // session would be the report's one outright false statement — and it
+        // is a row the Administrator will want re-sent once the deployment is
+        // fixed, which the control below can only offer for a row that is not
+        // still pretending to be in flight. The alert beside the pickers is
+        // the same sentence, said about the batch.
+        mark(row.seq, {
+          state: 'failed',
+          flags: [],
+          error: { code: refusal.code, message: refusal.message },
+        });
+        if (alive.current) refuse(refusal.message, fieldFor(refusal));
+        return true;
+      }
+      // This row's own failure, and the thing the whole split exists for: a
+      // dropped connection costs one image, the line says so, and the control
+      // below offers to send it again. The API's own code and sentence, so the
+      // line cannot state a rule the server does not enforce.
+      mark(row.seq, {
+        state: 'failed',
+        flags: [],
+        error: refusal === null ? null : { code: refusal.code, message: refusal.message },
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Write one row's outcome into the report.
+   *
+   * **A failed row always ends up with a sentence.** The server sends one on
+   * every refusal it makes, and a transport failure carries the API client's
+   * own — but a `failed` with nothing behind it would be a line saying
+   * something went wrong and not what, which on a hundred-row report is a row
+   * an Administrator can only stare at. `UNEXPECTED` is the last resort here,
+   * never the ordinary case.
+   */
+  function mark(seq: number, result: RowResult): void {
+    if (!alive.current) return;
+    // Named `refusal` rather than `error`: the form's own `error` state is in
+    // scope here, and two things called the same word one line apart is how a
+    // row's sentence ends up beside the pickers.
+    const refusal =
+      result.error ??
+      (result.state === 'failed' ? { code: MALFORMED_RESPONSE, message: UNEXPECTED } : null);
+    setRows((already) =>
+      already.map((line) =>
+        line.seq === seq
+          ? {
+              ...line,
+              state: result.state,
+              flags: result.flags,
+              error: refusal,
+              at: CLOCK.format(new Date()),
+            }
+          : line,
+      ),
+    );
+  }
+
+  /**
+   * Send the rows that have not landed. Nothing else.
+   *
+   * **This is what one request per image buys.** A file that needed
+   * re-exporting, a Code that was in the way until the clashing tile was
+   * removed, a connection that dropped on row 40 of 100 — each is one request,
+   * and this re-sends exactly those rather than the range. The rows that
+   * already landed are untouched: they are in the catalogue, and sending them
+   * again would answer `code_already_exists` for every one of them.
+   *
+   * **`waiting` as well as `failed`**, because a batch that stopped leaves
+   * both: the row that met the refusal is failed and the rows after it were
+   * never sent. "The remaining rows" is one thing to an Administrator looking
+   * at that report, and a control that offered only the failed one would leave
+   * the rest of the range needing a whole second upload.
+   *
+   * Only rows the plan *paired* are offered: a row nothing could be found for
+   * would be refused by the same plan on the same files, so the fix is a
+   * different sheet or a different selection rather than a second attempt.
+   */
+  async function retry(): Promise<void> {
+    if (busy.current) return;
+    const again = rows.filter(unfinished);
+    if (again.length === 0) return;
+
+    busy.current = true;
+    setRunning(true);
+    setError(null);
+    setCutShort(false);
+    setSettled(false);
+    // Back to `waiting` before anything is sent, so the failure that is about
+    // to be re-attempted is not still on screen as a settled answer.
+    setRows((already) =>
+      already.map((line) =>
+        again.some((row) => row.seq === line.seq)
+          ? { ...line, state: 'waiting', flags: [], error: null, at: null }
+          : line,
+      ),
+    );
+
+    const batch = new AbortController();
+    runningBatch.current = batch;
+    try {
+      // The prepared files, not the chosen ones. See `sendable`.
+      await drive(again, sendable.current, batch.signal);
+    } finally {
+      busy.current = false;
+      if (runningBatch.current === batch) runningBatch.current = null;
+      if (alive.current) setRunning(false);
+    }
+  }
+
   const counts = tally(rows);
   /**
-   * The bar's denominator, or `null` while there is none.
+   * The denominator, and it is exact from the moment the plan lands.
    *
-   * `Math.max` against the rows already in hand, because the server's total is
-   * a count of the lines a *clean* run writes and a batch that stops part-way
-   * adds one more on top of it (the line that says so). Without this the bar
-   * would overrun its own track on the one batch where its reader is looking
-   * hardest.
+   * The plan states one item per line the report will carry — one per manifest
+   * row, one per file no row names, one per name that was blank — so this is
+   * the server's own count rather than a guess from the number of files
+   * chosen, which is a different number for exactly the batch a report is most
+   * needed for.
    */
-  const scale = total === null ? null : Math.max(total, rows.length);
+  const scale = rows.length;
+  const answered = counts.created + counts.flagged + counts.failed;
+  /** The rows a second attempt could still land. See `retry` and `unfinished`. */
+  const remaining = rows.filter(unfinished).length;
 
+  // One expression rather than a nested ternary in the markup. The live region
+  // is in the document at rest so the change of text is what gets announced,
+  // rather than the arrival of a whole new node — and it is a *sentence* with
+  // its subject in it rather than a bare number, because "40" announced on its
+  // own tells a screen-reader user nothing about what forty is.
   let progress = '';
   if (shrinking) progress = SHRINKING;
-  else if (running && rows.length === 0) progress = UPLOADING;
-  else if (running)
-    progress = scale === null ? `${rows.length} reported.` : `${rows.length} of ${scale} reported.`;
+  // **`scale === 0` and not `planning`**, because there is a gap between the
+  // submit and the plan request going out — the redraw pass is async whether
+  // or not it has anything to redraw — and "0 of 0 rows reported." is what a
+  // reader would have been told during it. No plan is no plan, however the
+  // screen got there.
+  else if (running && scale === 0) progress = PLANNING;
+  else if (running) progress = `${answered} of ${scale} rows reported.`;
   else if (cutShort) progress = CUT_SHORT;
-  else if (summary !== null) progress = FINISHED;
+  else if (settled) progress = FINISHED;
 
   // One node, rendered directly below whichever picker is at fault — and after
   // both when the failure belongs to neither. A form with two controls and one
@@ -976,10 +1202,10 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
             onChange={chooseManifest}
           />
           <p className={styles.hint} id={manifestHintId}>
-            One CSV, with a header row and a column for the file name, the code and the size.
-            Up to {MAX_BULK_ROWS} rows — the sheet is read on the server, so a longer one is
-            refused only after it has been sent. Category is optional — a row without one is filed
-            under UNKNOWN and flagged. Export a spreadsheet as CSV and upload that.
+            One CSV, with a header row and a column for the file name, the code and the size. Up to{' '}
+            {MAX_BULK_ROWS} rows — the sheet is read on the server before any image is sent, so a
+            sheet it cannot use costs nothing but the sheet. Category is optional — a row without
+            one is filed under UNKNOWN and flagged. Export a spreadsheet as CSV and upload that.
           </p>
           {/* The template. An anchor and not a button: there is nothing to
               fetch and nothing to generate, and saving a file is what a browser
@@ -1019,16 +1245,17 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
           <p className={styles.hint} id={imagesHintId}>
             One image per row, named as the sheet names it. Up to {MAX_BULK_ROWS} at a time, each
             under {MAX_IMAGE_BYTES / (1024 * 1024)} MB. A batch can take several minutes — each
-            image is indexed before it is stored, and rows are reported as they finish.
+            image is sent on its own and indexed before the next one goes, so a row that fails can
+            be sent again without the rest.
           </p>
           {error?.fieldAtFault === 'images' && alert}
         </div>
 
         {/* A failure that belongs to neither picker — the request never reached
-            the API, the server has no image pipeline installed, or the stream
-            was refused before it opened. Inserted rather than emptied and
-            refilled: a `role="alert"` node appearing in the document is what
-            announces it. */}
+            the API, the server has no image pipeline installed, or the batch
+            was stopped by something that is not about one row. Inserted rather
+            than emptied and refilled: a `role="alert"` node appearing in the
+            document is what announces it. */}
         {error !== null && error.fieldAtFault === null && alert}
 
         <div className={styles.actions}>
@@ -1040,11 +1267,12 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
           {/* Disabled in flight, exactly as the submit is: a click that
               unmounted this screen mid-batch would leave the Administrator
               unsure which rows had landed — and the rows already created stay
-              created, because each one is its own transaction. */}
+              created, because each one is its own request and its own
+              transaction. */}
           <button className={styles.back} type="button" onClick={onBack} disabled={running}>
             Back
           </button>
-          <span className={styles.indicator} role="status">
+          <span className={styles.indicator} role="status" aria-atomic="true">
             {progress}
           </span>
         </div>
@@ -1052,43 +1280,46 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
 
       {(running || rows.length > 0) && (
         // A labelled region, deliberately **not** a second live region. The
-        // progress line above already announces that rows are arriving;
+        // progress line above already announces that rows are resolving;
         // marking the list `role="status"` as well would read every row out in
-        // full as it appeared, which on a hundred-row batch is the report
+        // full as it changed, which on a hundred-row batch is the report
         // narrated twice over. A screen reader reaches it by its heading,
         // which is what a region is for.
         //
         // Opened as soon as the batch starts rather than when the first row
         // lands, because the bar is the thing that has something to say during
-        // the minutes before there is a row to show.
+        // the seconds before the plan arrives.
         <section className={styles.report} aria-labelledby={reportId}>
           <h2 className={styles.subtitle} id={reportId}>
             Report
           </h2>
 
-          {/* The bar. **Determinate only once the server has said how many
-              rows there are** — `aria-valuenow` and `aria-valuemax` are
-              omitted while `scale` is null, which is precisely what ARIA
-              defines an indeterminate progressbar to be, and is the honest
-              shape for "the images are going up and nothing is counted yet".
+          {/* The bar. **Determinate the moment the plan lands**, which is
+              before a single image has been sent —`aria-valuenow` and
+              `aria-valuemax` are omitted only while there is no plan at all,
+              which is precisely what ARIA defines an indeterminate progressbar
+              to be and is the honest shape for "the sheet is still being
+              read".
 
               The fill is three segments in the three outcome colours rather
               than one bar in one colour: the same report, at a glance, in the
               same navy/orange/red this screen already uses row by row. The
               colours come from the row classes themselves — `.segment` paints
               with `currentColor` — so there is exactly one place that decides
-              what "flagged" looks like here. */}
+              what "flagged" looks like here. The rows still waiting are the
+              unpainted remainder of the track, which is what a progress bar's
+              empty part already means. */}
           <div className={styles.progress}>
             <div
               className={styles.track}
               role="progressbar"
               aria-label="Rows reported"
-              aria-valuetext={progress === '' ? UPLOADING : progress}
+              aria-valuetext={progress === '' ? PLANNING : progress}
               aria-valuemin={0}
-              aria-valuemax={scale ?? undefined}
-              aria-valuenow={scale === null ? undefined : rows.length}
+              aria-valuemax={scale === 0 ? undefined : scale}
+              aria-valuenow={scale === 0 ? undefined : answered}
             >
-              {scale === null ? (
+              {scale === 0 ? (
                 <span className={styles.waiting} />
               ) : (
                 <>
@@ -1115,9 +1346,9 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
               <span className={styles.created}>{counts.created} added</span>
               <span className={styles.flagged}>{counts.flagged} flagged</span>
               <span className={styles.failed}>{counts.failed} failed</span>
-              {scale !== null && (
+              {scale > 0 && (
                 <span className={styles.ofTotal}>
-                  {rows.length} of {scale} rows
+                  {answered} of {scale} rows
                 </span>
               )}
             </p>
@@ -1146,31 +1377,34 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
             <div className={styles.console} ref={consoleRef} onScroll={watchScroll}>
               <ol className={styles.rows} role="list">
                 {rows.map((row) => (
-                  <li key={row.seq} className={`${styles.row} ${outcomeClass(row.status)}`}>
+                  <li key={row.seq} className={`${styles.row} ${outcomeClass(row.state)}`}>
                     {/* The line's own head: everything that identifies it, on
                         one wrapping line, so a hundred of them read as a log
                         and not as a hundred paragraphs. The sentences beneath
                         are what only some rows have. */}
                     <span className={styles.head}>
-                      {/* When this line landed. See `CLOCK`: the gap between
+                      {/* When this line resolved. See `CLOCK`: the gap between
                           two stamps is the only evidence of where a slow batch
-                          is spending its minutes. */}
-                      <span className={styles.time}>{row.at}</span>
+                          is spending its minutes. Empty while the row is still
+                          waiting — a stamp there would be the time the plan
+                          arrived, dressed up as the time this row finished. */}
+                      <span className={styles.time}>{row.at ?? ''}</span>
                       <span className={styles.outcome}>
-                        {outcomeIcon(row.status)}
-                        <span className={styles.word}>{WORD[row.status]}</span>
+                        {outcomeIcon(row.state)}
+                        <span className={styles.word}>{WORD[row.state]}</span>
                       </span>
                       {/* The manifest row, where there is one. This is what an
                           Administrator looks up in the sheet in front of them.
-                          Absent on the lines that have no row — an upload
-                          nothing named, and the one that reports the batch
-                          stopping. */}
+                          Absent on the lines that have no row — a file nothing
+                          named, and a name that was blank. */}
                       {row.row !== null && <span className={styles.rowNumber}>Row {row.row}</span>}
-                      {/* Empty on a line that reports a part which declared no
-                          file name at all; its message says so, and an empty
+                      {/* Empty on a line that reports a file which declared no
+                          name at all; its message says so, and an empty
                           element here would be a gap with nothing in it. */}
                       {row.file !== '' && <span className={styles.fileName}>{row.file}</span>}
-                      {row.code !== null && <span className={styles.codeValue}>{row.code}</span>}
+                      {row.code !== null && row.code !== '' && (
+                        <span className={styles.codeValue}>{row.code}</span>
+                      )}
                     </span>
                     {row.error !== null && (
                       <span className={styles.detail}>{row.error.message}</span>
@@ -1188,7 +1422,7 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
 
           {/* The way back to the tail, and only when there is one to offer: the
               console has scrolled away from its foot while rows are still
-              arriving. Absent at rest, which is what keeps this screen's
+              resolving. Absent at rest, which is what keeps this screen's
               control count what it says it is — and absent entirely below the
               breakpoint, where the console does not scroll and the page's own
               scroll is the reader's. */}
@@ -1198,12 +1432,30 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
               Jump to latest
             </button>
           )}
-          {summary !== null && (
+
+          {/* The recovery path, and the reason the transfer is split at all
+              (UX: an error without a next step is an error the reader can only
+              re-read). Offered once the pass has stopped and only while there
+              is a row a second attempt could still land — a row the plan could
+              not pair is refused by the same plan on the same files, so it is
+              not counted here and not re-sent.
+
+              Navy-outlined like Back rather than accent: Upload is still this
+              screen's one orange control, and the report below it is already
+              spending orange on flagged rows. */}
+          {!running && remaining > 0 && (
+            <button className={styles.retry} type="button" onClick={() => void retry()}>
+              <ArrowsClockwise className={styles.followIcon} aria-hidden="true" />
+              Send the remaining {remaining} {remaining === 1 ? 'row' : 'rows'}
+            </button>
+          )}
+
+          {(settled || cutShort) && (
             // The closing line, and a summary *of* the list rather than
             // instead of it (EXPERIENCE.md:73). It states three counts and
             // nothing derived from them — no rate, no percentage, no verdict.
             <p className={styles.summary}>
-              {summary.created} added, {summary.flagged} flagged, {summary.failed} failed.
+              {counts.created} added, {counts.flagged} flagged, {counts.failed} failed.
             </p>
           )}
         </section>

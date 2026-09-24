@@ -348,14 +348,14 @@ export const TILE_NOT_FOUND = 'tile_not_found';
 export const LAST_REFERENCE_IMAGE = 'last_reference_image';
 
 /**
- * The envelope code for a manifest `POST /admin/tiles/bulk` cannot read.
+ * The envelope code for a manifest `POST /admin/tiles/bulk/plan` cannot read.
  *
  * Missing, empty, not a CSV, without a header row, without a data row, or
  * missing a required column. Marks the **sheet** control, and it is one of the
- * refusals that arrive *before* the stream opens — so it is a real envelope
- * under a `422`, and the screen renders the server's own sentence, which names
- * the fix ("Export the sheet as CSV and upload that.") rather than describing
- * the problem.
+ * refusals the *plan* makes — so it is a real envelope under a `422`, it costs
+ * the Administrator the sheet and no image bytes at all, and the screen renders
+ * the server's own sentence, which names the fix ("Export the sheet as CSV and
+ * upload that.") rather than describing the problem.
  *
  * The client never parses the manifest to pre-empt this. The server owns every
  * rule about what a row is, and a second parser here would be a second set of
@@ -366,37 +366,36 @@ export const INVALID_MANIFEST = 'invalid_manifest';
 /**
  * The envelope code for a manifest carrying more rows than the endpoint takes.
  *
- * A `422`, marking the **sheet** control, and pre-stream like the one above:
- * the rows are counted before a single image is read, so nothing is written and
- * no row is reported. The screen refuses an over-long batch before uploading
- * it as well (see `MAX_BULK_ROWS`), which is about not sending gigabytes — this
- * is the server's own bound and the one that decides.
+ * A `422`, marking the **sheet** control, and answered by the plan like the one
+ * above: the rows and the file names are counted before a single image is sent,
+ * so nothing is written and no row is reported. The screen refuses an over-long
+ * batch before it even asks for a plan (see `MAX_BULK_ROWS`), which saves that
+ * round trip — this is the server's own bound and the one that decides.
  */
 export const TOO_MANY_ROWS = 'too_many_rows';
 
 /**
- * The per-row code for a manifest row whose image was not uploaded.
+ * The per-row code for a manifest row no chosen file could be paired with.
  *
- * **Never an envelope.** This and the three below arrive inside a report line's
- * `error` object, which reuses the envelope's `{code, message}` shape so a
- * per-row failure reads the same as any other refusal. The status is already
- * `200` by the time a row is reported, which is why they are codes and not
- * statuses.
+ * **Never an envelope.** This and the two below arrive inside an `error`
+ * object, which reuses the envelope's `{code, message}` shape so a per-row
+ * failure reads the same as any other refusal — this one on a *plan item*,
+ * decided from the sheet and the file names before anything is sent.
  *
- * Also the answer when two uploads share the file name a row names — the
+ * Also the answer when two chosen files share the name a row names — the
  * message says which, because the Administrator's fix is different in each
- * case: send the missing file, or rename one of the two.
+ * case: choose the missing file, or rename one of the two.
  */
 export const IMAGE_NOT_PAIRED = 'image_not_paired';
 
 /**
- * The per-row code for an uploaded image no manifest row names.
+ * The per-row code for a chosen image no manifest row names.
  *
- * Reported on a trailing line keyed by the file name rather than by a row
+ * Reported on a trailing plan item keyed by the file name rather than by a row
  * number, because there is no row — which is the whole point of reporting it.
- * An upload silently ignored is an image the Administrator believes is in the
+ * A file silently ignored is an image the Administrator believes is in the
  * catalogue and is not, and that is a defect nobody finds until a Scan fails
- * to return it.
+ * to return it. Decided in the plan, so the file never travels.
  */
 export const IMAGE_UNMATCHED = 'image_unmatched';
 
@@ -404,10 +403,11 @@ export const IMAGE_UNMATCHED = 'image_unmatched';
  * The per-row code for a row that failed in a way nothing anticipated.
  *
  * The catch-all, carrying a fixed sentence that leaks nothing: the exception is
- * logged server-side and the batch continues. It exists so that one unexpected
- * row cannot tear the stream down and take every later row's outcome with it —
- * the report is the deliverable, and a report that stops halfway tells an
- * Administrator nothing about the rows it never reached.
+ * logged server-side and the row route still answers `200` so the caller can
+ * report it and carry on. It exists so that one unexpected row cannot end the
+ * batch and take every later row's outcome with it — the report is the
+ * deliverable, and a report that stops halfway tells an Administrator nothing
+ * about the rows it never reached.
  */
 export const ROW_FAILED = 'row_failed';
 
@@ -446,6 +446,14 @@ export const REQUEST_TIMEOUT_MS = 15000;
  * for a slower machine than this one. A bound this long is only tolerable
  * because the screen shows `Saving…` throughout and disables both its
  * controls: nothing here is a silent wait.
+ *
+ * **One bulk row takes it too**, and for the same reason at a smaller scale:
+ * `POST /admin/tiles/bulk/row` is one image through that same intake and those
+ * same sixteen passes, and an abort fired while the server is still working
+ * would paint a row as failed and then offer to send it again — which answers
+ * `code_already_exists` for a tile that really was added. A *batch* is bounded
+ * by nothing here, deliberately: it is one request per image, so the bound
+ * belongs on the row and the number of rows is the Administrator's.
  */
 export const UPLOAD_TIMEOUT_MS = 600000;
 
@@ -491,6 +499,22 @@ interface RequestOptions {
    * not a diagnosis.
    */
   timeoutMs?: number;
+  /**
+   * A caller's own abort, linked to this request's.
+   *
+   * For the one case the timeout cannot cover: the screen that asked going
+   * away — unmounted by a sign-out, a session loss, or a swap to another
+   * surface — while the request is still in flight. The bulk upload is what
+   * needs it: a batch is one request per image over minutes, and without this
+   * a screen that has gone would leave the server embedding rows into a
+   * connection nobody is reading.
+   *
+   * The rejection a caller's abort produces is worded as a timeout, because
+   * from inside this function an aborted signal is an aborted signal. That is
+   * fine for the case it exists for: whoever aborted is, by definition, no
+   * longer rendering the result.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -579,11 +603,9 @@ function notifyUnauthorized(): void {
 /**
  * The rejection a non-`ok` response becomes — told the observer on the way.
  *
- * Extracted so that `apiRequest` and `apiStream` cannot disagree about what a
- * refusal is. They differ in everything about the *success* path and in nothing
- * about this one: the same statuses, the same envelope, the same 401 hook, and
- * a stream that is refused before its first byte is refused exactly as an
- * ordinary request is.
+ * Extracted so that every refusal in the product is the same thing: the same
+ * statuses, the same envelope and the same 401 hook, whatever the caller does
+ * with the success it did not get.
  *
  * `body` is whatever the caller managed to parse, which may be `null` when the
  * response was not JSON at all — a proxy or a gateway answering in the API's
@@ -635,11 +657,28 @@ export async function apiRequest(path: string, options: RequestOptions = {}): Pr
   const controller = new AbortController();
   const expiry = setTimeout(() => controller.abort(), options.timeoutMs ?? REQUEST_TIMEOUT_MS);
 
+  // The caller's abort, forwarded to this request's. Checked first as well as
+  // subscribed to: a signal that was already aborted fires no event, and a
+  // request started after the caller gave up must not run at all.
+  const caller = options.signal;
+  const forward = (): void => controller.abort();
+  if (caller !== undefined) {
+    if (caller.aborted) controller.abort();
+    else caller.addEventListener('abort', forward, { once: true });
+  }
+
   // The timer is cleared once the *body* has been read, not once the headers
   // have arrived. A response that opens and then stalls mid-stream is exactly
   // the hung-proxy case this timeout exists for, and a timer cleared at the
   // `fetch` boundary leaves that half of the request unguarded.
   try {
+    // **Before the request is built, not only before it is awaited.** A
+    // platform `fetch` rejects an already-aborted signal, so leaving this to
+    // the runtime would usually work — but "usually" is the wrong guarantee
+    // for a caller that gave up: on the bulk path the request that slipped
+    // through is a Tile added after the screen that asked for it has gone.
+    if (controller.signal.aborted) throw failed(controller);
+
     let response: Response;
     try {
       response = await fetch(`${API_PREFIX}${path}`, {
@@ -689,15 +728,17 @@ export async function apiRequest(path: string, options: RequestOptions = {}): Pr
       body = null;
     }
 
-    // See `refusal`: the observer, the envelope and the proxy case, in the one
-    // copy `apiStream` shares.
+    // See `refusal`: the observer, the envelope and the proxy case.
     if (!response.ok) throw refusal(response, body);
 
     return body;
   } finally {
     // Cleared whatever happened: a pending timer holding an AbortController
-    // keeps both alive, and in a test it keeps the event loop alive too.
+    // keeps both alive, and in a test it keeps the event loop alive too. The
+    // listener goes with it — a screen that drives a hundred requests through
+    // one signal would otherwise leave a hundred listeners on it.
     clearTimeout(expiry);
+    caller?.removeEventListener('abort', forward);
   }
 }
 
@@ -792,289 +833,4 @@ export async function fetchScanSizes(): Promise<string[]> {
     return body as string[];
   }
   throw new ApiRequestError(MALFORMED_RESPONSE, 'The server returned an unexpected response.', 200);
-}
-
-/**
- * How long a stream may go without a byte before it is abandoned.
- *
- * **Idle, not total, and that distinction is the whole reason this constant is
- * not `UPLOAD_TIMEOUT_MS`.** A bulk batch is N rows of 16 forward passes each
- * (AD-13), processed one at a time — a hundred rows is comfortably an hour, and
- * any total bound generous enough for the largest batch is no bound at all for
- * a hung one. What a stalled stream actually looks like is silence: the rows
- * stop arriving. So the clock measures the gap between chunks and is restarted
- * by every one of them, which makes a batch that is *working* unbounded and a
- * batch that has stopped answering bounded by the time one row takes.
- *
- * Sized for the worst single row — a 96 MB CMYK press file, colour-managed,
- * embedded sixteen times — with room for a slower machine than this one.
- */
-export const STREAM_IDLE_TIMEOUT_MS = 180000;
-
-interface StreamOptions {
-  method?: string;
-  /** As `RequestOptions.body`: a `FormData` is sent as it is, anything else JSON. */
-  body?: unknown;
-  /**
-   * How long to wait **between chunks** before aborting, in milliseconds.
-   *
-   * Defaults to `STREAM_IDLE_TIMEOUT_MS`. Not a bound on the whole request —
-   * see that constant for why a streamed report cannot have one.
-   */
-  idleTimeoutMs?: number;
-  /**
-   * A caller's own abort, linked to this request's.
-   *
-   * For the one case the idle clock cannot cover: the screen reading the
-   * report going away — unmounted by a sign-out, a session loss, or a swap to
-   * another surface — while the batch is still running. Nothing is reading the
-   * stream after that, and without this the server would go on producing rows
-   * into a connection held open by a component that no longer exists.
-   *
-   * The rejection a caller's abort produces is worded as a timeout, because
-   * from inside this function an aborted signal is an aborted signal. That is
-   * fine for the case it exists for: whoever aborted is, by definition, no
-   * longer rendering the result.
-   */
-  signal?: AbortSignal;
-}
-
-/**
- * Send one request and hand each NDJSON line to `onLine` as it arrives.
- *
- * The sibling of `apiRequest`, and the difference is one line of it:
- * `apiRequest` does `await response.json()`, which does not return until the
- * whole body has arrived. A per-row report delivered that way is a report that
- * appears all at once when the batch ends, which is the single spinner
- * EXPERIENCE.md:94 exists to forbid — so this reads the body incrementally and
- * calls back per complete line.
- *
- * Everything else is shared on purpose: the same `ApiRequestError`, the same
- * `failed()` wording for a timeout or an unreachable server, the same
- * `notifyUnauthorized()` 401 hook, and the same envelope parse for a non-`ok`
- * response (`refusal`). A bulk request refused before its stream opens — no
- * manifest, too many rows, no model artifact, a stale stamp — is refused
- * exactly as any other request is, because until the first byte a real envelope
- * under a real status is still possible.
- *
- * **Nothing is interpreted here.** A line is parsed as JSON and passed on as
- * `unknown`; what a row means, which outcomes exist and which flags are
- * possible are the caller's and ultimately the server's. This function knows
- * about newlines and nothing else.
- *
- * Resolves when the body ends. It does not resolve early on a `summary` line —
- * this layer cannot see one — so a caller that wants to know the batch is over
- * reads that from the line, or from this promise, or both.
- */
-export async function apiStream(
-  path: string,
-  options: StreamOptions,
-  onLine: (line: unknown) => void,
-): Promise<void> {
-  const method = options.method ?? 'GET';
-  const hasBody = options.body !== undefined;
-  // `typeof` guarded for `apiRequest`'s reason: this module is also read in a
-  // node test environment where `FormData` may not be defined at all.
-  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
-  const idle = options.idleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS;
-
-  const controller = new AbortController();
-  let expiry = setTimeout(() => controller.abort(), idle);
-
-  // The caller's abort, forwarded to this request's. Checked first as well as
-  // subscribed to: a signal that was already aborted fires no event, and a
-  // request started after the caller gave up must not run.
-  if (options.signal !== undefined) {
-    if (options.signal.aborted) controller.abort();
-    else options.signal.addEventListener('abort', () => controller.abort(), { once: true });
-  }
-
-  /** Restart the idle clock. Called by every chunk — see `STREAM_IDLE_TIMEOUT_MS`. */
-  function stillAlive(): void {
-    clearTimeout(expiry);
-    expiry = setTimeout(() => controller.abort(), idle);
-  }
-
-  /**
-   * Parse one complete line and hand it over. Blank lines are skipped.
-   *
-   * A line that is not JSON is the server having stopped speaking the protocol
-   * mid-stream — a truncated body, or a proxy that injected something. Reported
-   * as `malformed_response` rather than skipped, because a report quietly
-   * missing a row is a row an Administrator believes landed.
-   */
-  function deliver(line: string): void {
-    const text = line.trim();
-    if (text === '') return;
-
-    // **The `try` covers the parse and nothing else.** Wrapped around the
-    // callback as well, any rejection the caller raises — its own narrowing of
-    // a line it does not recognise, a render that threw — would be caught here
-    // and relabelled `malformed_response` with this module's own sentence. The
-    // caller's rejection is the more specific one and is the one it wrote, so
-    // it propagates untouched.
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new ApiRequestError(
-        MALFORMED_RESPONSE,
-        'The server returned an unexpected response.',
-        200,
-      );
-    }
-    onLine(parsed);
-  }
-
-  try {
-    let response: Response;
-    try {
-      response = await fetch(`${API_PREFIX}${path}`, {
-        method,
-        credentials: 'same-origin',
-        // Deliberately absent for a `FormData`: only the runtime that built the
-        // body knows the boundary token that delimits its parts.
-        headers: hasBody && !isFormData ? { 'content-type': 'application/json' } : undefined,
-        body: hasBody
-          ? isFormData
-            ? (options.body as FormData)
-            : JSON.stringify(options.body)
-          : undefined,
-        signal: controller.signal,
-      });
-    } catch {
-      throw failed(controller);
-    }
-
-    // **The headers restart the clock, and that matters most for an upload.**
-    // The timer is armed before `fetch` because nothing else can bound a
-    // connection that never opens — but everything between arming it and this
-    // line is the *request* going out, which for a bulk batch is a hundred
-    // reference images and no chunks coming back to keep the clock alive. Left
-    // unrestarted, a large upload is aborted mid-transfer and reported as an
-    // unreachable server. This is the first moment there is evidence the far
-    // end is answering, so it is where the idle window properly begins.
-    stillAlive();
-
-    if (!response.ok) {
-      // The refusal path reads the whole body, which is right: a refusal is one
-      // envelope and is never streamed. Once the status is `200` every outcome
-      // is a row, so this branch is the only place a status other than `200`
-      // can be answered at all.
-      let body: unknown = null;
-      try {
-        body = await response.json();
-      } catch {
-        // An abort here is the same timeout as an abort on the request itself.
-        if (controller.signal.aborted) throw failed(controller);
-        // Anything else is a body that is not the envelope. `refusal` says so.
-      }
-      throw refusal(response, body);
-    }
-
-    let buffered = '';
-
-    // `response.body` is a `ReadableStream` in a browser and is absent under
-    // jsdom, whose `fetch` is a stub that has no streams at all. The fallback
-    // reads the whole body and splits it, which paints every row at once — a
-    // worse experience and an identical outcome, which is exactly the right
-    // trade for a test environment and for any runtime old enough to lack the
-    // API. The streaming path is the one that ships.
-    const body: unknown = response.body;
-    const readable =
-      body !== null &&
-      body !== undefined &&
-      typeof (body as ReadableStream).getReader === 'function'
-        ? (body as ReadableStream<Uint8Array>)
-        : null;
-
-    if (readable === null) {
-      // **Disarmed before the await, not after it.** `response.text()` does
-      // not return until the whole batch has finished, so a clock left running
-      // across it is a *total* bound wearing an idle bound's name — and it
-      // would abort the very batches this function exists for. There are no
-      // chunks to restart it on this path, so there is nothing for it to
-      // measure: the fallback trades the timeout away along with the
-      // row-by-row report, and says so.
-      clearTimeout(expiry);
-      let whole: string;
-      try {
-        whole = await response.text();
-      } catch {
-        throw failed(controller);
-      }
-      for (const line of whole.split('\n')) deliver(line);
-      return;
-    }
-
-    const reader = readable.getReader();
-    const decoder = new TextDecoder();
-    /** Whether the loop reached the end of the body rather than leaving early. */
-    let finished = false;
-
-    try {
-      for (;;) {
-        let chunk: ReadableStreamReadResult<Uint8Array>;
-        try {
-          // The rule's advice — collect the promises and `Promise.all` them —
-          // is exactly what a stream cannot do: the next chunk does not exist
-          // until this one has been consumed, and a report that arrives row by
-          // row is the entire point of reading it this way (EXPERIENCE.md:94).
-          // oxlint-disable-next-line no-await-in-loop
-          chunk = await reader.read();
-        } catch {
-          // A stream that dies mid-flight is the same two cases as a request
-          // that never arrived: aborted by the idle clock, or the connection
-          // dropped. `failed` tells them apart by the signal.
-          throw failed(controller);
-        }
-        if (chunk.done) break;
-
-        // Every chunk restarts the clock. A batch that is still producing rows
-        // is a batch that is working, however long it has been running.
-        stillAlive();
-
-        // `{ stream: true }` so a multi-byte character split across two chunks
-        // is held until its remaining bytes arrive rather than decoded into a
-        // replacement character.
-        buffered += decoder.decode(chunk.value, { stream: true });
-
-        // Only *complete* lines. The last element is whatever follows the final
-        // newline — a partial line, or an empty string — and is kept for the
-        // next chunk, which is the whole reason this function buffers at all.
-        const lines = buffered.split('\n');
-        buffered = lines.pop() ?? '';
-        for (const line of lines) deliver(line);
-      }
-      finished = true;
-    } finally {
-      // **An early exit has to stop the server, not just stop reading it.** A
-      // malformed line, or a rejection out of `onLine`, leaves a batch that may
-      // still have ninety rows to process — and releasing the lock alone leaves
-      // it producing them into a connection nobody is draining, with the idle
-      // clock cleared below so nothing will ever end it. Cancelling the body
-      // and aborting the controller is what closes the connection and lets the
-      // server notice.
-      if (!finished) {
-        // Best effort, and deliberately not awaited: this runs while an
-        // exception is on its way out, and a rejection from the cancel would
-        // replace the failure the caller is about to be told about.
-        void reader.cancel().catch(() => undefined);
-        controller.abort();
-      }
-      // Releases the lock whether the loop ended, threw, or was abandoned by
-      // the caller. A stream left locked cannot be cancelled by anything else.
-      reader.releaseLock();
-    }
-
-    // The tail. A well-formed NDJSON body ends with a newline and this is
-    // empty; one that does not still has a last line to report, and losing it
-    // would lose the summary.
-    buffered += decoder.decode();
-    deliver(buffered);
-  } finally {
-    // Cleared whatever happened: a pending timer holding an AbortController
-    // keeps both alive, and in a test it keeps the event loop alive too.
-    clearTimeout(expiry);
-  }
 }

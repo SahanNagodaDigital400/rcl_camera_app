@@ -1,33 +1,40 @@
 /**
- * Bulk upload — the screen, the stream it paints, and the route the app takes
- * to reach it.
+ * Bulk upload — the screen, the batch it drives, and the route the app takes to reach it.
  *
  * Two halves, driven through two different roots, the way `add-tile.test.tsx`
  * splits them. The screen's own behaviour runs against a stubbed `fetch` with
- * the screen rendered directly, because it calls `apiStream` itself rather than
- * going through `SessionProvider`; whether the app *reaches* the screen at all
- * runs through `App`, because the role condition and the section state live in
- * the gate.
+ * the screen rendered directly, because it calls `apiRequest` itself rather
+ * than going through `SessionProvider`; whether the app *reaches* the screen at
+ * all runs through `App`, because the role condition and the section state live
+ * in the gate.
  *
- * The assertions here that nothing else in the suite can make:
+ * **The stub answers nothing until a test says so**, and that is the whole
+ * apparatus here. A batch is a plan request followed by one request per image,
+ * driven by this screen — so a stub that resolved on its own could only ever
+ * show the finished report. Holding every request open and answering them one
+ * at a time is what makes the claims below assertable at all:
  *
- * * **Rows paint as they arrive, not when the batch ends.** The stub hands the
- *   response body out one chunk at a time and this file asserts *between*
- *   chunks — which is the only way to tell a streamed report from one that was
- *   buffered and rendered in a single frame. Every other check in the suite
- *   would pass just as happily against `await response.json()`, which is
- *   exactly the single spinner EXPERIENCE.md:94 forbids. The API suite cannot
- *   make this one: `TestClient` may produce the whole body before the first
- *   read returns, so it holds the stream's *shape* and this file holds its
- *   timing.
- * * **Each outcome carries a word, not only a colour.** `vite.config.ts` sets
+ * * **Every row is on screen before its image is sent.** The plan pairs the
+ *   sheet against the file names and this screen paints the whole list from it,
+ *   waiting; each line resolves in place as its own request answers. A screen
+ *   that rendered rows only as they completed would pass a report test and fail
+ *   this one.
+ * * **One request at a time, and one image in each.** Sixteen forward passes
+ *   per row on the server's CPU (AD-13, AD-16) means concurrency buys nothing
+ *   and costs the peak transfer it was split to avoid. Observable only by
+ *   counting requests while one is unanswered.
+ * * **A dropped connection costs one row, not the range.** This is the reason
+ *   the transfer is split at all, and it is the one failure the previous
+ *   single-request shape could not survive. The stub rejects one row's request
+ *   the way the platform does and the batch has to carry on.
+ * * **Each state carries a word, not only a colour.** `vite.config.ts` sets
  *   `css: false`, so jsdom applies no stylesheet: the colours are held by
  *   `styling-wiring.test.ts` and the words are held here, and neither file can
  *   see the other half. A report that signalled by colour alone would be
  *   invisible to both unless this file reads the text.
- * * **A pre-stream refusal renders the server's sentence and no report.** Once
- *   the stream opens the status is `200` and every outcome is a row, so this is
- *   the only shape of failure that can leave the list absent entirely.
+ * * **A batch-wide refusal renders the server's sentence and no report.**
+ *   Everything that is about the batch rather than one row is refused by the
+ *   plan, before an image has been sent.
  * * **The client-side refusals ask the server nothing.**
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -64,7 +71,8 @@ const STAFF: User = {
   role: 'staff',
 };
 
-const BULK = '/api/admin/tiles/bulk';
+const PLAN = '/api/admin/tiles/bulk/plan';
+const ROW = '/api/admin/tiles/bulk/row';
 
 /**
  * The server's own bounds and sentences, restated character for character.
@@ -78,87 +86,143 @@ const MAX_BULK_ROWS = 100;
 const MAX_IMAGE_BYTES = 134217728;
 const NO_MANIFEST_SENTENCE = 'Export the sheet as CSV and upload that.';
 
-/** One NDJSON line, in the shape the endpoint streams. */
-function rowLine(
-  row: number,
-  file: string,
-  status: 'created' | 'flagged' | 'failed',
-  extra: Record<string, unknown> = {},
-): string {
-  return JSON.stringify({
-    kind: 'row',
-    row,
+/** One item of the plan, in the shape the endpoint answers. */
+interface PlanItem {
+  row: number | null;
+  file: string;
+  code: string | null;
+  size: string | null;
+  category: string | null;
+  upload: string | null;
+  error: { code: string; message: string } | null;
+}
+
+/** A plan item for `file`, paired with the upload of the same name. */
+function paired(file: string, overrides: Partial<PlanItem> = {}): PlanItem {
+  return {
+    row: 1,
     file,
     code: file.replace(/\.[a-z]+$/i, ''),
+    size: '45X90',
+    category: 'CREMA MARMOL',
+    upload: file,
+    error: null,
+    ...overrides,
+  };
+}
+
+/** A plan item the server already decided, so nothing is sent for it. */
+function decided(file: string, code: string, message: string, row: number | null = null): PlanItem {
+  return {
+    row,
+    file,
+    code: null,
+    size: null,
+    category: null,
+    upload: null,
+    error: { code, message },
+  };
+}
+
+/** One row response, in the shape the endpoint answers. */
+function outcome(
+  status: 'created' | 'flagged' | 'failed',
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
     status,
     tile_id: status === 'failed' ? null : 'b41d8e06-5a72-4f39-9c88-0d3e1f7a2b65',
     flags: [],
     error: null,
     ...extra,
-  });
-}
-
-function summaryLine(created: number, flagged: number, failed: number): string {
-  return JSON.stringify({ kind: 'summary', created, flagged, failed });
-}
-
-/** The opening line: how many row lines this report will carry. */
-function startLine(total: number): string {
-  return JSON.stringify({ kind: 'start', total });
-}
-
-/**
- * Replace `fetch` with one that answers a `200` whose body this test drives.
- *
- * A real `ReadableStream`, fed a chunk at a time by the returned `push`, is
- * what makes "rows appear as they complete" assertable: a stub that resolved
- * the whole body at once could not tell a streamed report from a buffered one.
- *
- * `json` and `text` reject deliberately. Both are paths `apiStream` must not
- * take on a `200` with a body — `json` would be the whole-body read this
- * function exists to avoid, and `text` is the no-streams fallback, which is a
- * different test below. Rejecting rather than returning makes a regression into
- * either one a failure here rather than a report that still happens to pass.
- */
-function stubStreamingFetch(): {
-  calls: [string, RequestInit][];
-  push: (line: string) => void;
-  close: () => void;
-} {
-  const calls: [string, RequestInit][] = [];
-  const encoder = new TextEncoder();
-  let feed: ReadableStreamDefaultController<Uint8Array> | null = null;
-
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      feed = controller;
-    },
-  });
-
-  vi.stubGlobal('fetch', (input: string, init: RequestInit = {}) => {
-    calls.push([input, init]);
-    return Promise.resolve({
-      ok: true,
-      status: 200,
-      body,
-      json: () => Promise.reject(new Error('a streamed body is never read as JSON')),
-      text: () => Promise.reject(new Error('a streamed body is never read whole')),
-    } as unknown as Response);
-  });
-
-  return {
-    calls,
-    push: (line: string) => feed?.enqueue(encoder.encode(`${line}\n`)),
-    close: () => feed?.close(),
   };
 }
 
-/** Replace `fetch` with one that answers a refusal envelope, or a whole body. */
-function stubFetch(reply: {
-  status: number;
-  body?: unknown;
-  text?: string;
-}): { calls: [string, RequestInit][] } {
+/** One request the screen made, held open until a test answers it. */
+interface Sent {
+  path: string;
+  init: RequestInit;
+  /** Answer it, the way the API does. */
+  answer: (status: number, body: unknown) => void;
+  /** Drop the connection, the way a lost Wi-Fi hop does. */
+  drop: () => void;
+}
+
+/**
+ * Replace `fetch` with one that records every request and answers none.
+ *
+ * **Nothing resolves on its own**, which is the point: a batch is a plan
+ * followed by one request per row, and holding each one open is what lets a
+ * test look at the screen *between* two of them. A stub that answered
+ * immediately could only ever show the finished report, which is precisely the
+ * state every one of these assertions has to be able to distinguish from.
+ */
+function stubBatch(): Sent[] {
+  const sent: Sent[] = [];
+
+  vi.stubGlobal(
+    'fetch',
+    (path: string, init: RequestInit = {}) =>
+      new Promise<Response>((resolve, reject) => {
+        sent.push({
+          path,
+          init,
+          answer: (status, body) =>
+            resolve({
+              ok: status >= 200 && status < 300,
+              status,
+              json: () => Promise.resolve(body),
+            } as Response),
+          // A `TypeError`, which is what the platform throws for a request that
+          // never reached the server — and what `apiRequest` turns into
+          // `network_error`.
+          drop: () => reject(new TypeError('Failed to fetch')),
+        });
+        init.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      }),
+  );
+
+  return sent;
+}
+
+/** The request at `index`, once the screen has made it. */
+async function request(sent: Sent[], index: number): Promise<Sent> {
+  await waitFor(() => {
+    expect(sent.length).toBeGreaterThan(index);
+  });
+  return sent[index] as Sent;
+}
+
+/** Answer the plan request with `items`. */
+async function answerPlan(sent: Sent[], items: PlanItem[]): Promise<void> {
+  (await request(sent, 0)).answer(200, { items });
+}
+
+/**
+ * Answer the plan and then every row, in order.
+ *
+ * For the tests whose subject is the finished report rather than the sequence
+ * that produced it. `results` is one entry per item the plan paired.
+ */
+async function runBatch(
+  sent: Sent[],
+  items: PlanItem[],
+  results: Record<string, unknown>[],
+): Promise<void> {
+  await answerPlan(sent, items);
+  for (const [index, result] of results.entries()) {
+    // Sequential on purpose: the screen sends the next row only once this one
+    // has answered, so a parallel loop here would wait on requests that do not
+    // exist yet.
+    // eslint-disable-next-line no-await-in-loop
+    (await request(sent, index + 1)).answer(200, result);
+  }
+}
+
+/** Replace `fetch` with one that answers every request the same way. */
+function stubFetch(reply: { status: number; body?: unknown }): { calls: [string, RequestInit][] } {
   const calls: [string, RequestInit][] = [];
 
   vi.stubGlobal('fetch', (input: string, init: RequestInit = {}) => {
@@ -166,11 +230,7 @@ function stubFetch(reply: {
     return Promise.resolve({
       ok: reply.status >= 200 && reply.status < 300,
       status: reply.status,
-      // Absent, which is what jsdom's own `fetch` looks like and what sends
-      // `apiStream` down its `response.text()` fallback.
-      body: undefined,
       json: () => Promise.resolve(reply.body ?? null),
-      text: () => Promise.resolve(reply.text ?? ''),
     } as unknown as Response);
   });
 
@@ -311,452 +371,134 @@ function reportedRows(): HTMLElement[] {
   return screen.queryAllByRole('listitem');
 }
 
-describe('the report streams', () => {
-  it('sends a multipart body with exactly the parts the endpoint names', async () => {
-    const stream = stubStreamingFetch();
+/** The state word each row carries, in document order. */
+function reportedStates(): string[] {
+  return reportedRows().map((row) => {
+    for (const word of ['Waiting', 'Uploading', 'Added', 'Flagged', 'Failed']) {
+      if (within(row).queryByText(word) !== null) return word;
+    }
+    return '(none)';
+  });
+}
+
+describe('the plan', () => {
+  it('sends the sheet and the file names, and not one image byte', async () => {
+    // **The whole reason this phase exists.** The pairing is the server's — it
+    // is the only reader of the manifest — so this screen asks for it with the
+    // names alone, and a sheet the server cannot use costs the Administrator
+    // the sheet rather than a gigabyte of reference images.
+    const sent = stubBatch();
     renderScreen();
 
     chooseSheet();
     chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg')]);
     submit();
 
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
-    await screen.findByText('row-1.jpg');
-
-    const [path, init] = stream.calls[0] ?? ['', {}];
-    expect(path).toBe(BULK);
-    expect(init.method).toBe('POST');
+    const plan = await request(sent, 0);
+    expect(plan.path).toBe(PLAN);
+    expect(plan.init.method).toBe('POST');
     // A `FormData`, not JSON. `JSON.stringify(formData)` is `'{}'` — not an
     // error, just an empty object — so a body of files would arrive as nothing
     // at all with every type check in the app satisfied.
-    expect(init.body).toBeInstanceOf(FormData);
+    expect(plan.init.body).toBeInstanceOf(FormData);
 
-    const body = init.body as FormData;
+    const body = plan.init.body as FormData;
     // As a set, so the assertion is about which parts were sent and not about
     // the order `FormData` happened to keep them in.
-    expect(new Set(body.keys())).toEqual(new Set(['manifest', 'images']));
+    expect(new Set(body.keys())).toEqual(new Set(['manifest', 'names']));
     expect((body.get('manifest') as File).name).toBe('codes.csv');
-    expect(body.getAll('images')).toHaveLength(2);
-
-    stream.close();
+    // Strings, not files. A `File` here would be the whole batch travelling to
+    // be told which row wants it.
+    expect(body.getAll('names')).toEqual(['row-1.jpg', 'row-2.jpg']);
+    expect(body.getAll('names').every((name) => typeof name === 'string')).toBe(true);
   });
 
-  it('paints each row as it completes, not when the batch ends', async () => {
-    // **The assertion this whole file exists for.** Each chunk is pushed and
-    // the report is read *before the next one is pushed*, so a screen that
-    // buffered the body and painted once at the end fails here and nowhere
-    // else — every other check in this suite would pass against a report
-    // rendered in a single frame after the stream closed.
-    const stream = stubStreamingFetch();
+  it('paints every row of the report before their images are sent', async () => {
+    // **The assertion this whole split buys.** The plan names one item per line
+    // the report will carry, so the Administrator sees the pairing — every row,
+    // its number, its file and its Code — while the images are still on their
+    // own machine. A screen that rendered rows only as they completed would
+    // show an empty list here.
+    const sent = stubBatch();
     renderScreen();
 
     chooseSheet();
     chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg'), anImage('row-3.jpg')]);
     submit();
 
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
-    await screen.findByText('row-1.jpg');
-    expect(reportedRows()).toHaveLength(1);
-    // The batch is plainly not over: two of its three rows have not been
-    // reported, and the screen is already showing the one that has.
-    expect(screen.queryByText('row-2.jpg')).toBeNull();
-
-    stream.push(rowLine(2, 'row-2.jpg', 'flagged', { flags: ['unknown_category'] }));
-    await screen.findByText('row-2.jpg');
-    expect(reportedRows()).toHaveLength(2);
-    expect(screen.queryByText('row-3.jpg')).toBeNull();
-
-    stream.push(rowLine(3, 'row-3.jpg', 'failed', {
-      error: { code: 'unreadable_image', message: 'That file is not a readable image.' },
-    }));
-    await screen.findByText('row-3.jpg');
-    expect(reportedRows()).toHaveLength(3);
-
-    // Only now does the batch end, and only now does the report close — which
-    // is the other half of the same claim: nothing above waited for this.
-    stream.push(summaryLine(1, 1, 1));
-    stream.close();
-    await screen.findByText(/finished/i);
-  });
-
-  it('keeps the rows in the order they arrived', async () => {
-    // Never sorted, never grouped and never collapsed by outcome. The order
-    // rows arrive in is the order the server processed them in, and an
-    // Administrator who watched a row appear must be able to find it where they
-    // saw it.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages([anImage(), anImage('b.jpg'), anImage('c.jpg')]);
-    submit();
-
-    stream.push(rowLine(1, 'c.jpg', 'failed', {
-      error: { code: 'unreadable_image', message: 'That file is not a readable image.' },
-    }));
-    stream.push(rowLine(2, 'a.jpg', 'created'));
-    stream.push(rowLine(3, 'b.jpg', 'flagged', { flags: ['low_quality_image'] }));
-    await screen.findByText('b.jpg');
-
-    expect(reportedRows().map((row) => row.textContent)).toEqual([
-      expect.stringContaining('c.jpg'),
-      expect.stringContaining('a.jpg'),
-      expect.stringContaining('b.jpg'),
+    await answerPlan(sent, [
+      paired('row-1.jpg', { row: 1 }),
+      paired('row-2.jpg', { row: 2 }),
+      paired('row-3.jpg', { row: 3 }),
     ]);
 
-    stream.close();
-  });
-
-  it.each([
-    ['created', 'Added'],
-    ['flagged', 'Flagged'],
-    ['failed', 'Failed'],
-  ] as const)('gives a %s row the word "%s", never colour alone', async (status, word) => {
-    // EXPERIENCE.md's accessibility floor: a state is never signalled by colour
-    // alone. `vite.config.ts` sets `css: false` so jsdom paints nothing, which
-    // means a report relying on its three colours would read here as three
-    // identical rows — and to a colour-blind Administrator reading a hundred of
-    // them, as very nearly that.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(rowLine(1, 'row-1.jpg', status));
-    await screen.findByText('row-1.jpg');
-
-    const [only] = reportedRows();
-    expect(only).toBeTruthy();
-    expect(within(only!).getByText(word)).toBeTruthy();
-
-    stream.close();
-  });
-
-  it('reports a flagged row as added and says what the flag means', async () => {
-    // A flagged row *was* created (AD-18): it has a tile id and it is in the
-    // index. Reporting it as a failure would send an Administrator to re-upload
-    // a tile that is already in the catalogue.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(
-      rowLine(1, 'plain.jpg', 'flagged', {
-        code: 'RC-001-OHA-156-MA-J2',
-        flags: ['unknown_category', 'unknown_face_number'],
-      }),
-    );
-    await screen.findByText('plain.jpg');
-
-    const [only] = reportedRows();
-    expect(within(only!).getByText('Flagged')).toBeTruthy();
-    expect(within(only!).queryByText('Failed')).toBeNull();
-    // Both flags, in the order the server sent them, each as a sentence rather
-    // than as the slug it arrived as.
-    expect(only!.textContent).toMatch(/UNKNOWN/);
-    expect(only!.textContent).toMatch(/no trailing number/i);
-    // The Code is on the row: it is the tile's identity and the value an
-    // Administrator compares against the sheet in front of them.
-    expect(within(only!).getByText('RC-001-OHA-156-MA-J2')).toBeTruthy();
-
-    stream.close();
-  });
-
-  it('carries the server’s own sentence on a failed row', async () => {
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(
-      rowLine(1, 'broken.jpg', 'failed', {
-        error: { code: 'unreadable_image', message: 'That file is not a readable image.' },
-      }),
-    );
-    await screen.findByText('That file is not a readable image.');
-
-    stream.close();
-  });
-
-  it('reports an upload no row named, rather than ignoring it', async () => {
-    // A trailing line keyed by the file name, with no manifest row behind it.
-    // An upload silently dropped is an image an Administrator believes is in
-    // the catalogue and is not — a defect nobody finds until a scan fails to
-    // return it.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages([anImage(), anImage('stray.jpg')]);
-    submit();
-
-    stream.push(
-      JSON.stringify({
-        kind: 'row',
-        row: null,
-        file: 'stray.jpg',
-        code: null,
-        status: 'failed',
-        tile_id: null,
-        flags: [],
-        error: { code: 'image_unmatched', message: 'No row in the sheet names this image.' },
-      }),
-    );
-    await screen.findByText('stray.jpg');
-
-    const [only] = reportedRows();
-    expect(within(only!).getByText('Failed')).toBeTruthy();
-    expect(only!.textContent).toMatch(/No row in the sheet names this image\./);
-
-    stream.close();
-  });
-
-  it('announces progress while the batch runs and when it is over', async () => {
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    // In the document at rest, so what gets announced is the change of text
-    // rather than the arrival of a whole new node.
-    const progress = screen.getByRole('status');
-    expect(progress.textContent).toBe('');
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    await waitFor(() => expect(progress.textContent).toMatch(/uploading/i));
-
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
-    await waitFor(() => expect(progress.textContent).toMatch(/1 reported/i));
-
-    stream.push(summaryLine(1, 0, 0));
-    stream.close();
-    await waitFor(() => expect(progress.textContent).toMatch(/finished/i));
-  });
-
-  it('shows an indeterminate bar until the server says how many rows there are', async () => {
-    // **The bar has no denominator of its own and must not invent one**
-    // (AD-20). The rows live in a sheet only the server reads, so the number
-    // of images chosen here is the wrong number for exactly the batch this
-    // report exists for — the one whose rows and uploads do not line up. ARIA
-    // defines a progressbar with no `aria-valuenow` as indeterminate, which is
-    // the true shape of "the images are still going up".
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages([anImage('a.jpg'), anImage('b.jpg')]);
-    submit();
-
-    const bar = await screen.findByRole('progressbar');
-    expect(bar.getAttribute('aria-valuenow')).toBeNull();
-    expect(bar.getAttribute('aria-valuemax')).toBeNull();
-
-    // Two images were chosen and the sheet has three rows. A screen that had
-    // guessed would now be showing a denominator of two.
-    stream.push(startLine(3));
-    await waitFor(() => expect(bar.getAttribute('aria-valuemax')).toBe('3'));
-    expect(bar.getAttribute('aria-valuenow')).toBe('0');
-
-    stream.close();
-  });
-
-  it('counts whole rows against the server’s total as they arrive', async () => {
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(startLine(3));
-    const bar = await screen.findByRole('progressbar');
-
-    stream.push(rowLine(1, 'a.jpg', 'created'));
-    await waitFor(() => expect(bar.getAttribute('aria-valuenow')).toBe('1'));
-    stream.push(rowLine(2, 'b.jpg', 'flagged', { flags: ['low_quality_image'] }));
-    stream.push(rowLine(3, 'c.jpg', 'failed'));
-    await waitFor(() => expect(bar.getAttribute('aria-valuenow')).toBe('3'));
-
-    // The three counts beside it, each with its word — the colours are held by
-    // `styling-wiring.test.ts` and jsdom paints none of them, so a bar that
-    // signalled by colour alone would be invisible to the whole suite.
-    expect(screen.getByText('1 added')).toBeTruthy();
-    expect(screen.getByText('1 flagged')).toBeTruthy();
-    expect(screen.getByText('1 failed')).toBeTruthy();
-    expect(screen.getByText(/3 of 3 rows/)).toBeTruthy();
-
-    stream.close();
-  });
-
-  it('never lets the bar overrun its own total when the batch stops', async () => {
-    // A batch that stops part-way writes one failed line *past* the total the
-    // opening line promised, because the total counts a clean run. Without the
-    // guard the bar would read 3 of 2 on the one batch whose reader is looking
-    // hardest at it.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(startLine(1));
-    stream.push(rowLine(1, 'a.jpg', 'created'));
-    stream.push(
-      JSON.stringify({
-        kind: 'row',
-        row: null,
-        file: '',
-        code: null,
-        status: 'failed',
-        tile_id: null,
-        flags: [],
-        error: { code: 'row_failed', message: 'The upload stopped before every row ran.' },
-      }),
-    );
-    const bar = await screen.findByRole('progressbar');
-    await waitFor(() => expect(bar.getAttribute('aria-valuenow')).toBe('2'));
-
-    expect(bar.getAttribute('aria-valuemax')).toBe('2');
-
-    stream.close();
-  });
-
-  it('opens the report as soon as the batch starts, before any row', async () => {
-    // The minutes before the first row are exactly when there is nothing else
-    // on screen to say the batch is alive.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    expect(screen.queryByRole('progressbar')).toBeNull();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    expect(await screen.findByRole('progressbar')).toBeTruthy();
-    expect(reportedRows()).toEqual([]);
-
-    stream.close();
-  });
-
-  it('stamps each line with the time it arrived', async () => {
-    // A batch runs for minutes and the rows do not arrive evenly — a 96 MB
-    // press file takes tens of seconds to embed. The gap between two stamps is
-    // the only evidence an Administrator has of where the time went. Nothing
-    // is derived from it: there is no rate here and no projected finish, which
-    // would be invented numbers (AD-20).
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
-    await screen.findByText('row-1.jpg');
-
-    const [only] = reportedRows();
-    expect(only!.textContent).toMatch(/\d{2}:\d{2}:\d{2}/);
-
-    stream.close();
-  });
-
-  it('closes the report with the summary', async () => {
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages([anImage(), anImage('b.jpg'), anImage('c.jpg')]);
-    submit();
-
-    stream.push(rowLine(1, 'a.jpg', 'created'));
-    stream.push(rowLine(2, 'b.jpg', 'flagged', { flags: ['low_quality_image'] }));
-    stream.push(rowLine(3, 'c.jpg', 'failed', {
-      error: { code: 'unreadable_image', message: 'That file is not a readable image.' },
-    }));
-    stream.push(summaryLine(1, 1, 1));
-    stream.close();
-
-    expect(await screen.findByText(/1 added, 1 flagged, 1 failed\./i)).toBeTruthy();
-    // The summary is *in addition to* the rows, never instead of them
-    // (EXPERIENCE.md:73 — a per-row list, not a single pass/fail summary).
-    expect(reportedRows()).toHaveLength(3);
-  });
-
-  it('re-enables its controls once the batch is over', async () => {
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /^upload$/i })).toHaveProperty('disabled', true),
-    );
-    // Back too: a click that unmounted this screen mid-batch would leave the
-    // Administrator unsure which rows had landed.
-    expect(screen.getByRole('button', { name: /^back$/i })).toHaveProperty('disabled', true);
-    // And both pickers. Choosing a different sheet mid-run clears the report
-    // and then refills it from the batch that is still going, so the list
-    // would describe one upload under the heading of another.
-    expect(screen.getByLabelText(/sheet of codes/i)).toHaveProperty('disabled', true);
-    expect(screen.getByLabelText(/reference images/i)).toHaveProperty('disabled', true);
-
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
-    stream.push(summaryLine(1, 0, 0));
-    stream.close();
-
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /^upload$/i })).toHaveProperty('disabled', false),
-    );
-    expect(screen.getByRole('button', { name: /^back$/i })).toHaveProperty('disabled', false);
-    expect(screen.getByLabelText(/sheet of codes/i)).toHaveProperty('disabled', false);
-    expect(screen.getByLabelText(/reference images/i)).toHaveProperty('disabled', false);
-  });
-
-  it('paints the report where the runtime has no streams at all', async () => {
-    // `apiStream`'s `response.text()` fallback. jsdom's own `fetch` is a stub
-    // with no `body`, and a screen that only worked against a real
-    // `ReadableStream` would be a screen no test in this suite could drive —
-    // so the fallback is not test scaffolding, it is what keeps the report
-    // renderable wherever the streams API is missing.
-    stubFetch({
-      status: 200,
-      text: [
-        rowLine(1, 'a.jpg', 'created'),
-        rowLine(2, 'b.jpg', 'failed', {
-          error: { code: 'row_failed', message: 'That row could not be processed.' },
-        }),
-        summaryLine(1, 0, 1),
-        '',
-      ].join('\n'),
+    await waitFor(() => {
+      expect(reportedRows()).toHaveLength(3);
     });
+    expect(screen.getByText('row-2.jpg')).toBeTruthy();
+    expect(screen.getByText('row-3.jpg')).toBeTruthy();
+    // One row in flight and two still waiting — so two of the three are on
+    // screen with nothing of theirs yet sent, which is the claim.
+    await waitFor(() => {
+      expect(reportedStates()).toEqual(['Uploading', 'Waiting', 'Waiting']);
+    });
+    expect(sent).toHaveLength(2);
+  });
+
+  it('gives the bar a real denominator from the moment the plan lands', async () => {
+    // The plan's length is the server's own count of report lines — one per
+    // manifest row, one per file no row names — rather than a guess from the
+    // number of files chosen, which is a different number for exactly the batch
+    // a report is most needed for: one file, two rows naming it.
+    const sent = stubBatch();
     renderScreen();
 
     chooseSheet();
-    chooseImages([anImage(), anImage('b.jpg')]);
+    chooseImages([anImage('row-1.jpg')]);
     submit();
 
-    await screen.findByText(/1 added, 0 flagged, 1 failed\./i);
-    expect(reportedRows()).toHaveLength(2);
-  });
-});
+    await answerPlan(sent, [
+      paired('row-1.jpg', { row: 1 }),
+      paired('row-1.jpg', { row: 2, code: 'RP.CMA.0002DJ.SM.0T' }),
+    ]);
 
-describe('a refusal before the stream opens', () => {
-  it('renders the server’s own sentence and no report at all', async () => {
-    // Everything refusable is refused before the first byte, which is the only
-    // window in which a real envelope under a real status is still possible.
-    // Once the stream opens the status is `200` and every outcome is a row.
+    const bar = await screen.findByRole('progressbar');
+    await waitFor(() => {
+      expect(bar.getAttribute('aria-valuemax')).toBe('2');
+    });
+    expect(bar.getAttribute('aria-valuenow')).toBe('0');
+    expect(screen.getByText('0 of 2 rows')).toBeTruthy();
+  });
+
+  it('never sends an image for an item the plan already decided', async () => {
+    // A row nothing could be paired with, and a file no row names. Both are
+    // report lines the server settled from the sheet alone, so sending either
+    // would be spending a transfer on an answer already in hand.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('stray.jpg')]);
+    submit();
+
+    await answerPlan(sent, [
+      decided('absent.jpg', 'image_not_paired', 'No image in this upload is named absent.jpg.', 1),
+      decided('stray.jpg', 'image_unmatched', 'No row of the sheet names this image.'),
+    ]);
+
+    await waitFor(() => {
+      expect(reportedStates()).toEqual(['Failed', 'Failed']);
+    });
+    // The plan, and nothing after it: neither line had anything to send.
+    expect(sent).toHaveLength(1);
+    expect(screen.getByText('No image in this upload is named absent.jpg.')).toBeTruthy();
+    expect(screen.getByText('No row of the sheet names this image.')).toBeTruthy();
+  });
+
+  it('renders the server’s own sentence and no report when the batch is refused', async () => {
+    // Everything that is about the batch rather than one row is refused here,
+    // which is the only window in which a real envelope under a real status is
+    // possible *and* nothing has been transferred.
     stubFetch({
       status: 422,
       body: {
@@ -781,9 +523,11 @@ describe('a refusal before the stream opens', () => {
     const sheet = screen.getByLabelText(/sheet of codes/i);
     expect(sheet.getAttribute('aria-invalid')).toBe('true');
     expect(sheet.getAttribute('aria-describedby')).toContain(alert.id);
-    expect(document.activeElement).toBe(sheet);
-    // No list, no summary, no partial report: nothing was processed, so there
-    // is nothing to report per row.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(sheet);
+    });
+    // No list, no summary, no partial report: nothing was planned, so there is
+    // nothing to report per row.
     expect(reportedRows()).toEqual([]);
     expect(screen.queryByRole('heading', { name: /^report$/i })).toBeNull();
   });
@@ -807,45 +551,616 @@ describe('a refusal before the stream opens', () => {
       'The catalogue index was built by a different version of the image pipeline.',
       'marks nothing',
     ],
-    [
-      'administrator_required',
-      403,
-      'You need to be an administrator to do that.',
-      'marks nothing',
-    ],
-  ])(
-    'renders the %s sentence unchanged and %s',
-    async (code, status, message, treatment) => {
-      // The screen never restates a rule the server owns (EXPERIENCE.md:87).
-      // Driven at the status each refusal really carries, so a screen that had
-      // come to depend on `422` is a failure here rather than in a browser.
-      //
-      // Only the row cap marks a control: it is an answer about the sheet in
-      // that picker. Nothing the Administrator chose is at fault for a missing
-      // model artifact, a stale stamp or a role, and marking one of those tells
-      // a screen-reader user their choice was wrong when it was not.
-      stubFetch({ status, body: { error: { code, message } } });
-      renderScreen();
+    ['administrator_required', 403, 'You need to be an administrator to do that.', 'marks nothing'],
+  ])('renders the %s sentence unchanged and %s', async (code, status, message, treatment) => {
+    // The screen never restates a rule the server owns (EXPERIENCE.md:87).
+    // Driven at the status each refusal really carries, so a screen that had
+    // come to depend on `422` is a failure here rather than in a browser.
+    //
+    // Only the row cap marks a control: it is an answer about the sheet in
+    // that picker. Nothing the Administrator chose is at fault for a missing
+    // model artifact, a stale stamp or a role, and marking one of those tells
+    // a screen-reader user their choice was wrong when it was not.
+    stubFetch({ status, body: { error: { code, message } } });
+    renderScreen();
 
-      chooseSheet();
-      chooseImages();
-      submit();
+    chooseSheet();
+    chooseImages();
+    submit();
 
-      expect((await screen.findByRole('alert')).textContent).toBe(message);
-      expect(screen.getByLabelText(/sheet of codes/i).getAttribute('aria-invalid')).toBe(
-        treatment === 'marks the sheet' ? 'true' : 'false',
-      );
-      expect(screen.getByLabelText(/reference images/i).getAttribute('aria-invalid')).toBe(
-        'false',
-      );
-      expect(reportedRows()).toEqual([]);
-    },
-  );
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
+    expect(screen.getByLabelText(/sheet of codes/i).getAttribute('aria-invalid')).toBe(
+      treatment === 'marks the sheet' ? 'true' : 'false',
+    );
+    expect(screen.getByLabelText(/reference images/i).getAttribute('aria-invalid')).toBe('false');
+    expect(reportedRows()).toEqual([]);
+  });
+});
+
+describe('the rows', () => {
+  it('sends one image per request, and one request at a time', async () => {
+    // **Sequential, and this is where that is observable.** Each row is sixteen
+    // forward passes on the server's CPU (AD-13, AD-16): four in flight at once
+    // oversubscribe the same cores, so the batch finishes no sooner and every
+    // individual row takes longer to report — and the peak transfer is four
+    // times what splitting it was meant to avoid.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg')]);
+    submit();
+
+    await answerPlan(sent, [paired('row-1.jpg', { row: 1 }), paired('row-2.jpg', { row: 2 })]);
+
+    const first = await request(sent, 1);
+    expect(first.path).toBe(ROW);
+    expect(first.init.method).toBe('POST');
+
+    const body = first.init.body as FormData;
+    // The item's own fields, straight back from the plan, and exactly one
+    // image. The screen decides none of these: the Code, the Size and the
+    // Category are the sheet's, read by the server.
+    expect(new Set(body.keys())).toEqual(new Set(['code', 'size', 'category', 'row', 'image']));
+    expect(body.get('code')).toBe('row-1');
+    expect(body.get('size')).toBe('45X90');
+    expect(body.get('category')).toBe('CREMA MARMOL');
+    expect(body.get('row')).toBe('1');
+    expect((body.get('image') as File).name).toBe('row-1.jpg');
+
+    // The second row has not been sent, and will not be until this one
+    // answers. Given a chance to, so this is not merely a claim about
+    // synchronous ordering.
+    await waitFor(() => {
+      expect(reportedStates()[0]).toBe('Uploading');
+    });
+    expect(sent).toHaveLength(2);
+
+    first.answer(200, outcome('created'));
+    expect((await request(sent, 2)).path).toBe(ROW);
+  });
+
+  it('resolves each row as its own request answers, not when the batch ends', async () => {
+    // EXPERIENCE.md:94 — per-row status updates as they complete, not a single
+    // spinner until the batch finishes. Asserted *between* two answers, which
+    // is the only way to tell that from a report composed at the end.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg'), anImage('row-3.jpg')]);
+    submit();
+
+    await answerPlan(sent, [
+      paired('row-1.jpg', { row: 1 }),
+      paired('row-2.jpg', { row: 2 }),
+      paired('row-3.jpg', { row: 3 }),
+    ]);
+
+    (await request(sent, 1)).answer(200, outcome('created'));
+    await waitFor(() => {
+      expect(reportedStates()).toEqual(['Added', 'Uploading', 'Waiting']);
+    });
+
+    (await request(sent, 2)).answer(200, outcome('flagged', { flags: ['unknown_category'] }));
+    await waitFor(() => {
+      expect(reportedStates()).toEqual(['Added', 'Flagged', 'Uploading']);
+    });
+
+    (await request(sent, 3)).answer(200, outcome('created'));
+    await waitFor(() => {
+      expect(reportedStates()).toEqual(['Added', 'Flagged', 'Added']);
+    });
+  });
+
+  it('keeps the rows in the plan’s order, whatever order they resolve in', async () => {
+    // The plan states the order the report is read in — it is the sheet's own
+    // order, which is the order the Administrator is holding. A list that
+    // re-sorted as rows landed would move a line out from under a reader
+    // mid-batch.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg'), anImage('row-3.jpg')]);
+    submit();
+
+    await runBatch(
+      sent,
+      [
+        paired('row-1.jpg', { row: 1 }),
+        paired('row-2.jpg', { row: 2 }),
+        paired('row-3.jpg', { row: 3 }),
+      ],
+      [
+        outcome('failed', {
+          error: { code: 'unreadable_image', message: 'Not a readable image.' },
+        }),
+        outcome('created'),
+        outcome('flagged', { flags: ['unknown_category'] }),
+      ],
+    );
+
+    await waitFor(() => {
+      expect(reportedStates()).toEqual(['Failed', 'Added', 'Flagged']);
+    });
+    expect(reportedRows().map((row) => within(row).getByText(/row-\d\.jpg/).textContent)).toEqual([
+      'row-1.jpg',
+      'row-2.jpg',
+      'row-3.jpg',
+    ]);
+  });
+
+  it('reports a flagged row as added and says what the flag means', async () => {
+    // AD-18: a flag is follow-up on a Tile that *was* created, never a softer
+    // word for a refusal. The server sends a slug and no sentence, because
+    // there is nothing to refuse — wording it is labelling, not deciding.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages();
+    submit();
+
+    await runBatch(
+      sent,
+      [paired('row-1.jpg', { row: 1 })],
+      [outcome('flagged', { flags: ['unknown_category', 'unknown_face_number'] })],
+    );
+
+    const row = (await waitFor(() => reportedRows()))[0] as HTMLElement;
+    expect(within(row).getByText('Flagged')).toBeTruthy();
+    expect(within(row).getByText(/filed under UNKNOWN/i)).toBeTruthy();
+    expect(within(row).getByText(/no trailing number/i)).toBeTruthy();
+  });
+
+  it('carries the server’s own sentence on a failed row', async () => {
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages();
+    submit();
+
+    await runBatch(
+      sent,
+      [paired('row-1.jpg', { row: 1 })],
+      [
+        outcome('failed', {
+          error: { code: 'code_already_exists', message: 'A tile with that code already exists.' },
+        }),
+      ],
+    );
+
+    expect(await screen.findByText('A tile with that code already exists.')).toBeTruthy();
+  });
+
+  it('renders a flag this build has no sentence for rather than dropping it', async () => {
+    // A flag with no wording here is still a flag an Administrator has to see;
+    // a row silently missing one reads as a clean success.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages();
+    submit();
+
+    await runBatch(
+      sent,
+      [paired('row-1.jpg', { row: 1 })],
+      [outcome('flagged', { flags: ['some_new_marker'] })],
+    );
+
+    expect(await screen.findByText('some_new_marker')).toBeTruthy();
+  });
+
+  it('names the manifest row on every line that has one', async () => {
+    // The row number is what an Administrator uses to find the offending line
+    // in the sheet in front of them — a file name alone means scrolling a
+    // hundred-row spreadsheet looking for it.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg')]);
+    submit();
+
+    await runBatch(
+      sent,
+      [paired('row-1.jpg', { row: 1 }), paired('row-2.jpg', { row: 2 })],
+      [outcome('created'), outcome('created')],
+    );
+
+    await waitFor(() => {
+      expect(reportedRows()).toHaveLength(2);
+    });
+    const [first, second] = reportedRows() as [HTMLElement, HTMLElement];
+    expect(within(first).getByText('Row 1')).toBeTruthy();
+    expect(within(second).getByText('Row 2')).toBeTruthy();
+  });
+
+  it('gives a file no row named no row number at all', async () => {
+    // `row` is a position in the *sheet*. Counting on past the manifest's end
+    // would send an Administrator to row 2 of a sheet that has one.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('stray.jpg')]);
+    submit();
+
+    await runBatch(
+      sent,
+      [
+        paired('row-1.jpg', { row: 1 }),
+        decided('stray.jpg', 'image_unmatched', 'No row of the sheet names this image.'),
+      ],
+      [outcome('created')],
+    );
+
+    await waitFor(() => {
+      expect(reportedRows()).toHaveLength(2);
+    });
+    const [, orphan] = reportedRows() as [HTMLElement, HTMLElement];
+    expect(within(orphan).getByText('stray.jpg')).toBeTruthy();
+    expect(within(orphan).queryByText(/^Row \d+$/)).toBeNull();
+  });
+
+  it('announces progress while the batch runs and when it is over', async () => {
+    // A contextual sentence, not a bare number: "40" announced on its own tells
+    // a screen-reader user nothing about what forty is.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg')]);
+    submit();
+
+    const live = screen.getByRole('status');
+    expect(live.textContent).toBe('Reading the sheet…');
+
+    await answerPlan(sent, [paired('row-1.jpg', { row: 1 }), paired('row-2.jpg', { row: 2 })]);
+    await waitFor(() => {
+      expect(live.textContent).toBe('0 of 2 rows reported.');
+    });
+
+    (await request(sent, 1)).answer(200, outcome('created'));
+    await waitFor(() => {
+      expect(live.textContent).toBe('1 of 2 rows reported.');
+    });
+
+    (await request(sent, 2)).answer(200, outcome('created'));
+    await waitFor(() => {
+      expect(live.textContent).toBe('Finished.');
+    });
+  });
+
+  it('counts whole rows against the plan’s total as they resolve', async () => {
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg')]);
+    submit();
+
+    await answerPlan(sent, [paired('row-1.jpg', { row: 1 }), paired('row-2.jpg', { row: 2 })]);
+    (await request(sent, 1)).answer(200, outcome('created'));
+
+    const bar = await screen.findByRole('progressbar');
+    await waitFor(() => {
+      expect(bar.getAttribute('aria-valuenow')).toBe('1');
+    });
+    expect(bar.getAttribute('aria-valuemax')).toBe('2');
+    expect(bar.getAttribute('aria-valuetext')).toBe('1 of 2 rows reported.');
+    expect(screen.getByText('1 added')).toBeTruthy();
+  });
+
+  it('opens the report as soon as the batch starts, before any row', async () => {
+    // The bar is the thing that has something to say during the seconds before
+    // the plan arrives.
+    stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages();
+    submit();
+
+    expect(await screen.findByRole('heading', { name: /^report$/i })).toBeTruthy();
+    const bar = screen.getByRole('progressbar');
+    // Indeterminate while there is no plan at all, which is exactly what ARIA
+    // defines that to be — and the honest shape for "the sheet is still being
+    // read".
+    expect(bar.getAttribute('aria-valuenow')).toBeNull();
+    expect(bar.getAttribute('aria-valuemax')).toBeNull();
+    expect(reportedRows()).toEqual([]);
+  });
+
+  it('stamps each line with the time it resolved, and not before', async () => {
+    // The gap between two stamps is the only evidence an Administrator has of
+    // where a slow batch is spending its minutes. A stamp on a waiting row
+    // would be the time the plan arrived dressed up as the time that row
+    // finished.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg')]);
+    submit();
+
+    await answerPlan(sent, [paired('row-1.jpg', { row: 1 }), paired('row-2.jpg', { row: 2 })]);
+    (await request(sent, 1)).answer(200, outcome('created'));
+
+    await waitFor(() => {
+      expect(reportedStates()[0]).toBe('Added');
+    });
+    const [first, second] = reportedRows() as [HTMLElement, HTMLElement];
+    expect(within(first).getByText(/^\d{2}:\d{2}:\d{2}$/)).toBeTruthy();
+    expect(within(second).queryByText(/^\d{2}:\d{2}:\d{2}$/)).toBeNull();
+  });
+
+  it('closes the report with the counts it actually reported', async () => {
+    // A summary *of* the list rather than instead of it (EXPERIENCE.md:73). It
+    // states three counts and nothing derived from them — no rate, no
+    // percentage, no verdict.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg')]);
+    submit();
+
+    await runBatch(
+      sent,
+      [paired('row-1.jpg', { row: 1 }), paired('row-2.jpg', { row: 2 })],
+      [outcome('created'), outcome('flagged', { flags: ['unknown_category'] })],
+    );
+
+    expect(await screen.findByText('1 added, 1 flagged, 0 failed.')).toBeTruthy();
+  });
+
+  it('re-enables its controls once the batch is over', async () => {
+    // Both pickers and both buttons are disabled in flight: choosing a
+    // different sheet mid-run would clear the report and then refill it from
+    // the batch that is still going.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages();
+    submit();
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^upload$/i })).toHaveProperty('disabled', true);
+    });
+    expect(screen.getByLabelText(/sheet of codes/i)).toHaveProperty('disabled', true);
+
+    await runBatch(sent, [paired('row-1.jpg', { row: 1 })], [outcome('created')]);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^upload$/i })).toHaveProperty('disabled', false);
+    });
+    expect(screen.getByLabelText(/reference images/i)).toHaveProperty('disabled', false);
+    expect(screen.getByRole('button', { name: /^back$/i })).toHaveProperty('disabled', false);
+  });
+
+  it('carries list semantics even with no markers', async () => {
+    // Safari and VoiceOver drop list semantics from an `<ol>` whose
+    // `list-style` is `none`, and "row 4 of 30" goes with them — which on a
+    // report this long is the one piece of orientation a screen-reader user
+    // has.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages();
+    submit();
+
+    await answerPlan(sent, [paired('row-1.jpg', { row: 1 })]);
+    await screen.findByText('row-1.jpg');
+
+    const list = screen.getByRole('list');
+    expect(list.tagName).toBe('OL');
+    expect(list.getAttribute('role')).toBe('list');
+  });
+});
+
+describe('a row that failed', () => {
+  it('costs one row rather than the range when the connection drops', async () => {
+    // **The failure the single-request shape could not survive**, and the whole
+    // reason the transfer is split. A dropped Wi-Fi hop during a run of minutes
+    // used to lose every row; here it loses the one image in flight and the
+    // batch carries on.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg'), anImage('row-3.jpg')]);
+    submit();
+
+    await answerPlan(sent, [
+      paired('row-1.jpg', { row: 1 }),
+      paired('row-2.jpg', { row: 2 }),
+      paired('row-3.jpg', { row: 3 }),
+    ]);
+
+    (await request(sent, 1)).answer(200, outcome('created'));
+    (await request(sent, 2)).drop();
+    (await request(sent, 3)).answer(200, outcome('created'));
+
+    await waitFor(() => {
+      expect(reportedStates()).toEqual(['Added', 'Failed', 'Added']);
+    });
+    // The API client's own sentence, and a real one: a failed row with nothing
+    // under it is a line that says something went wrong and not what.
+    expect(screen.getByText(/could not reach the server/i)).toBeTruthy();
+    expect(screen.getByText('2 added, 0 flagged, 1 failed.')).toBeTruthy();
+  });
+
+  it('offers to send exactly the rows that did not land', async () => {
+    // Error recovery with a next step, not an error to re-read. The rows that
+    // landed are untouched — they are in the catalogue, and sending them again
+    // would answer `code_already_exists` for every one of them.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg')]);
+    submit();
+
+    await answerPlan(sent, [paired('row-1.jpg', { row: 1 }), paired('row-2.jpg', { row: 2 })]);
+    (await request(sent, 1)).answer(200, outcome('created'));
+    (await request(sent, 2)).drop();
+
+    const again = await screen.findByRole('button', { name: /send the remaining 1 row/i });
+    fireEvent.click(again);
+
+    // One further request, for the one row that failed, carrying that row's
+    // own image.
+    const retried = await request(sent, 3);
+    expect(retried.path).toBe(ROW);
+    expect(((retried.init.body as FormData).get('image') as File).name).toBe('row-2.jpg');
+
+    retried.answer(200, outcome('created'));
+    await waitFor(() => {
+      expect(reportedStates()).toEqual(['Added', 'Added']);
+    });
+    // Two rows, two requests each way round — nothing was sent twice and no
+    // row was duplicated in the report.
+    expect(sent).toHaveLength(4);
+    expect(screen.queryByRole('button', { name: /send the remaining/i })).toBeNull();
+  });
+
+  it('re-sends the shrunk file, not the oversized original', async () => {
+    // **The retry has to reach the files as they were *sent*, not as they were
+    // chosen.** A 96 MB press file is redrawn before it goes up; a second
+    // attempt that read back from the picker would send the original and be
+    // told `image_too_large` for a row that had been shrunk successfully
+    // minutes earlier — a retry that can only ever fail.
+    const encoded = stubRedraw();
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([aPlainJpeg('huge.jpg', MAX_IMAGE_BYTES + 1)]);
+    submit();
+
+    await answerPlan(sent, [paired('huge.jpg', { row: 1 })]);
+    const first = await request(sent, 1);
+    expect(((first.init.body as FormData).get('image') as File).size).toBe(encoded);
+    first.drop();
+
+    fireEvent.click(await screen.findByRole('button', { name: /send the remaining 1 row/i }));
+
+    const retried = await request(sent, 2);
+    const image = (retried.init.body as FormData).get('image') as File;
+    expect(image.name).toBe('huge.jpg');
+    expect(image.size).toBe(encoded);
+  });
+
+  it('does not offer to send a row the plan itself refused', async () => {
+    // A row nothing could be paired with is refused by the same plan on the
+    // same files, so a second attempt cannot change it — the fix is a
+    // different sheet or a different selection. Offering it would be a control
+    // that is guaranteed to do nothing.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg')]);
+    submit();
+
+    await runBatch(
+      sent,
+      [
+        paired('row-1.jpg', { row: 1 }),
+        decided(
+          'absent.jpg',
+          'image_not_paired',
+          'No image in this upload is named absent.jpg.',
+          2,
+        ),
+      ],
+      [outcome('created')],
+    );
+
+    await waitFor(() => {
+      expect(reportedStates()).toEqual(['Added', 'Failed']);
+    });
+    expect(screen.queryByRole('button', { name: /send the remaining/i })).toBeNull();
+  });
+
+  it('counts the plural of the offer', async () => {
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg')]);
+    submit();
+
+    await answerPlan(sent, [paired('row-1.jpg', { row: 1 }), paired('row-2.jpg', { row: 2 })]);
+    (await request(sent, 1)).drop();
+    (await request(sent, 2)).drop();
+
+    expect(await screen.findByRole('button', { name: /send the remaining 2 rows/i })).toBeTruthy();
+  });
+
+  it('stops the whole batch on a refusal that is not about one row', async () => {
+    // A model artifact that went away, an index a generation ahead, a session
+    // that ended: each refuses every remaining row identically, so the loop
+    // stops rather than spending a hundred requests collecting the same
+    // sentence. The rows already reported are real and stay.
+    const sent = stubBatch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg'), anImage('row-3.jpg')]);
+    submit();
+
+    await answerPlan(sent, [
+      paired('row-1.jpg', { row: 1 }),
+      paired('row-2.jpg', { row: 2 }),
+      paired('row-3.jpg', { row: 3 }),
+    ]);
+    (await request(sent, 1)).answer(200, outcome('created'));
+    (await request(sent, 2)).answer(503, {
+      error: {
+        code: 'pipeline_stamp_mismatch',
+        message: 'The catalogue index was built by a different version of the image pipeline.',
+      },
+    });
+
+    // Twice, and on purpose: once beside the pickers as the batch's own
+    // refusal, and once on the row it happened to — a report whose failed line
+    // said nothing would leave the Administrator matching an alert at the top
+    // of the screen to a row in the middle of a hundred.
+    expect(
+      await screen.findAllByText(
+        'The catalogue index was built by a different version of the image pipeline.',
+      ),
+    ).toHaveLength(2);
+    expect(screen.getByRole('alert').textContent).toBe(
+      'The catalogue index was built by a different version of the image pipeline.',
+    );
+    // Row 3 was never sent: the plan, two rows, and nothing after.
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toMatch(/the upload stopped/i);
+    });
+    expect(sent).toHaveLength(3);
+    // The row that landed is still reported as itself; the row that met the
+    // refusal says so rather than reading "Uploading" for ever; and the row
+    // that was never sent is still waiting rather than being painted as a
+    // failure it did not have.
+    expect(reportedStates()).toEqual(['Added', 'Failed', 'Waiting']);
+    // And both of the two that did not land are offered together: a control
+    // that re-sent only the failed one would leave the rest of the range
+    // needing a whole second upload.
+    expect(await screen.findByRole('button', { name: /send the remaining 2 rows/i })).toBeTruthy();
+  });
 });
 
 describe('the refusals it makes itself', () => {
   it('refuses a submit with no sheet chosen, and focuses the picker', async () => {
-    const { calls } = stubFetch({ status: 200, text: '' });
+    const { calls } = stubFetch({ status: 200 });
     renderScreen();
 
     chooseImages();
@@ -855,14 +1170,16 @@ describe('the refusals it makes itself', () => {
       'textContent',
       'Choose the sheet of codes.',
     );
-    expect(document.activeElement).toBe(screen.getByLabelText(/sheet of codes/i));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByLabelText(/sheet of codes/i));
+    });
     // Nothing was uploaded: a missing sheet must not cost a file transfer to be
     // told a picker is empty.
     expect(calls).toHaveLength(0);
   });
 
   it('refuses a submit with no images chosen', async () => {
-    const { calls } = stubFetch({ status: 200, text: '' });
+    const { calls } = stubFetch({ status: 200 });
     renderScreen();
 
     chooseSheet();
@@ -872,15 +1189,16 @@ describe('the refusals it makes itself', () => {
       'textContent',
       'Choose the reference images.',
     );
-    expect(document.activeElement).toBe(screen.getByLabelText(/reference images/i));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByLabelText(/reference images/i));
+    });
     expect(calls).toHaveLength(0);
   });
 
-  it('refuses more images than the endpoint takes without uploading them', async () => {
-    // A hundred reference images is comfortably gigabytes. Refusing after the
-    // upload would make the Administrator watch it finish and then be told the
-    // batch was never going to be accepted.
-    const { calls } = stubFetch({ status: 200, text: '' });
+  it('refuses more images than the endpoint takes without planning them', async () => {
+    // A hundred reference images is comfortably gigabytes. The plan would
+    // refuse this batch too, and refusing here saves even that round trip.
+    const { calls } = stubFetch({ status: 200 });
     renderScreen();
 
     chooseSheet();
@@ -902,7 +1220,7 @@ describe('the refusals it makes itself', () => {
     // are not a JPEG the sniffer can vouch for, so re-encoding it might change
     // its colour, and a changed colour is a corrupted embedding nobody would
     // ever see (CLAUDE.md, AD-15).
-    const { calls } = stubFetch({ status: 200, text: '' });
+    const { calls } = stubFetch({ status: 200 });
     renderScreen();
 
     chooseSheet();
@@ -926,28 +1244,30 @@ describe('the refusals it makes itself', () => {
     // the server decodes to, so the whole frame is redrawn smaller and sent
     // rather than refused.
     const encoded = stubRedraw();
-    const stream = stubStreamingFetch();
+    const sent = stubBatch();
     renderScreen();
 
     chooseSheet();
     chooseImages([anImage('small.jpg'), aPlainJpeg('huge.jpg', MAX_IMAGE_BYTES + 1)]);
     submit();
 
-    stream.push(rowLine(1, 'small.jpg', 'created'));
-    await screen.findByText('small.jpg');
+    // The names are untouched, because the plan pairs on them — a shrink that
+    // renamed anything would unpair the very row it was trying to help.
+    const plan = await request(sent, 0);
+    expect((plan.init.body as FormData).getAll('names')).toEqual(['small.jpg', 'huge.jpg']);
 
-    const body = (stream.calls[0]?.[1].body ?? new FormData()) as FormData;
-    const sent = body.getAll('images') as File[];
-    expect(sent).toHaveLength(2);
-    // The name is untouched, because the manifest pairs on it.
-    expect(sent.map((file) => file.name)).toEqual(['small.jpg', 'huge.jpg']);
-    // The oversized one shrank; the one that already fitted travelled as
-    // chosen, byte for byte — re-encoding it would spend a generation of JPEG
-    // artefacts on a problem it does not have.
-    expect(sent[1]?.size).toBe(encoded);
-    expect(sent[0]?.size).toBe(4);
+    await answerPlan(sent, [paired('small.jpg', { row: 1 }), paired('huge.jpg', { row: 2 })]);
 
-    stream.close();
+    // The one that already fitted travels as chosen, byte for byte —
+    // re-encoding it would spend a generation of JPEG artefacts on a problem it
+    // does not have.
+    const first = await request(sent, 1);
+    expect(((first.init.body as FormData).get('image') as File).size).toBe(4);
+    first.answer(200, outcome('created'));
+
+    const second = await request(sent, 2);
+    expect(((second.init.body as FormData).get('image') as File).size).toBe(encoded);
+    expect(((second.init.body as FormData).get('image') as File).name).toBe('huge.jpg');
   });
 
   it('says what it did to the oversized images rather than doing it quietly', async () => {
@@ -955,37 +1275,34 @@ describe('the refusals it makes itself', () => {
     // stored reference image against the file on their disk deserves to know
     // why the two differ.
     stubRedraw();
-    const stream = stubStreamingFetch();
+    stubBatch();
     renderScreen();
 
     chooseSheet();
     chooseImages([aPlainJpeg('huge.jpg', MAX_IMAGE_BYTES + 1)]);
     submit();
 
-    const note = await screen.findByText(/huge\.jpg.*MB sent as.*MB/);
-    expect(note).toBeTruthy();
-
-    stream.close();
+    expect(await screen.findByText(/huge\.jpg.*MB sent as.*MB/)).toBeTruthy();
   });
 
   it('retires the report when a different batch is chosen', async () => {
     // The report describes a batch that has already run; the moment a different
     // sheet is chosen it is describing something that is no longer on screen.
-    const stream = stubStreamingFetch();
+    const sent = stubBatch();
     renderScreen();
 
     chooseSheet();
     chooseImages();
     submit();
 
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
-    stream.push(summaryLine(1, 0, 0));
-    stream.close();
+    await runBatch(sent, [paired('row-1.jpg', { row: 1 })], [outcome('created')]);
     await screen.findByText('row-1.jpg');
 
     chooseSheet(aSheet('other.csv'));
 
-    await waitFor(() => expect(reportedRows()).toEqual([]));
+    await waitFor(() => {
+      expect(reportedRows()).toEqual([]);
+    });
   });
 });
 
@@ -1009,6 +1326,10 @@ describe('the screen’s controls', () => {
     // on a screen limited to one accent fill it is how a second primary
     // arrives — which is why the template is a link and is counted as one: it
     // saves a file, it sends nothing, and it is not an action of this form.
+    //
+    // The two conditional controls — "Jump to latest" and the retry — are
+    // absent at rest by construction, and each of them has a test above that
+    // says when it appears.
     expect(found).toHaveLength(3);
     expect(screen.getByRole('button', { name: /^upload$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^back$/i })).toBeTruthy();
@@ -1040,7 +1361,7 @@ describe('the screen’s controls', () => {
     // else. Unbound, a screen-reader user meets both as a refusal after
     // choosing the files — and when the refusal arrives it must be added to the
     // description, not put in the hint's place.
-    stubFetch({ status: 200, text: '' });
+    stubFetch({ status: 200 });
     renderScreen();
 
     const input = screen.getByLabelText(/reference images/i);
@@ -1127,7 +1448,7 @@ describe('the template sheet', () => {
     // one — it logs "Not implemented" for both and no request is made in
     // either case. The scheme is the thing that decides, and `templateCsv`
     // pins it on every check below.
-    const stub = stubFetch({ status: 200, text: '' });
+    const stub = stubFetch({ status: 200 });
     renderScreen();
 
     expect(templateCsv()).toBeTruthy();
@@ -1247,197 +1568,37 @@ describe('the route from the Catalogue', () => {
   });
 });
 
-describe('what the report says when things go wrong around it', () => {
-  it('names the manifest row on every line that has one', async () => {
-    // The row number is what an Administrator uses to find the offending line
-    // in the sheet in front of them — a file name alone means scrolling a
-    // hundred-row spreadsheet looking for it. The server sends it and the
-    // screen parsed it long before it rendered it, which is the shape of gap
-    // this asserts away.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(rowLine(7, 'row-7.jpg', 'created'));
-    await screen.findByText('row-7.jpg');
-
-    const [only] = reportedRows();
-    expect(within(only!).getByText(/^Row 7$/)).toBeTruthy();
-
-    stream.close();
-  });
-
-  it('gives an unmatched upload no row number at all', async () => {
-    // `row` is a position in the *sheet*. A number here would send somebody to
-    // a line that does not exist.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(
-      JSON.stringify({
-        kind: 'row',
-        row: null,
-        file: 'stray.jpg',
-        code: null,
-        status: 'failed',
-        tile_id: null,
-        flags: [],
-        error: { code: 'image_unmatched', message: 'No row in the sheet names this image.' },
-      }),
-    );
-    await screen.findByText('stray.jpg');
-
-    const [only] = reportedRows();
-    expect(within(only!).queryByText(/^Row \d+$/)).toBeNull();
-
-    stream.close();
-  });
-
-  it('says the report stopped early when the stream ends with no summary', async () => {
-    // The server writes a summary even when a batch stops part-way, so
-    // reaching this means the connection itself went. The rows on screen are
-    // real and stay; what has to be said is that the ones after them never
-    // ran. Blanking the progress line instead reads exactly like a batch that
-    // finished cleanly.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
-    await screen.findByText('row-1.jpg');
-    stream.close();
-
-    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/stopped early/i));
-    // The row that did land is still there. Clearing it would report a tile
-    // that is in the catalogue as one that is not.
-    expect(reportedRows()).toHaveLength(1);
-  });
-
-  it('says the report stopped early when the server says the batch stopped', async () => {
-    // The other way a report ends short, and the one the server can still
-    // speak on: the status was committed at the first byte, so a failure
-    // outside any row arrives as a failed line with no manifest row number and
-    // the summary is written anyway. A summary is therefore not proof of a
-    // clean finish, and "Finished." above a row saying the upload stopped is
-    // the screen contradicting its own report.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
-    await screen.findByText('row-1.jpg');
-    stream.push(
-      JSON.stringify({
-        kind: 'row',
-        row: null,
-        file: '',
-        code: null,
-        status: 'failed',
-        tile_id: null,
-        flags: [],
-        error: {
-          code: 'row_failed',
-          message:
-            'The upload stopped before every row was processed. ' +
-            'The rows above were finished; send the rest again.',
-        },
-      }),
-    );
-    stream.push(summaryLine(1, 0, 1));
-    stream.close();
-
-    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/stopped early/i));
-    // Both lines are on screen: the batch-stopped line is an ordinary report
-    // row and belongs in the list like any other.
-    expect(reportedRows()).toHaveLength(2);
-  });
-
-  it('renders a flag this build has no sentence for rather than dropping it', async () => {
-    // A flag the screen cannot word is still a flag an Administrator has to
-    // see. Dropped, the row would paint orange, say "Flagged" and give no
-    // reason — which reads as a clean success with a stray colour on it.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(rowLine(1, 'row-1.jpg', 'flagged', { flags: ['something_the_server_added'] }));
-    await screen.findByText('row-1.jpg');
-
-    const [only] = reportedRows();
-    expect(within(only!).getByText('Flagged')).toBeTruthy();
-    expect(only!.textContent).toMatch(/something_the_server_added/);
-
-    stream.close();
-  });
-
-  it('carries list semantics even with no markers', async () => {
-    // Safari with VoiceOver strips list semantics from a list whose
-    // `list-style` is `none` — the rows stop being announced as a list at all
-    // and "row 4 of 30" goes with them, which on a report this long is the one
-    // piece of orientation a screen-reader user has.
-    const stream = stubStreamingFetch();
-    renderScreen();
-
-    chooseSheet();
-    chooseImages();
-    submit();
-
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
-    await screen.findByText('row-1.jpg');
-
-    const list = screen.getByRole('list');
-    expect(list.tagName).toBe('OL');
-    expect(list.getAttribute('role')).toBe('list');
-
-    stream.close();
-  });
-
+describe('when the screen goes mid-batch', () => {
   it('paints nothing more after the screen has gone', async () => {
     // A batch runs for minutes and the screen can go inside that: a session
     // expiring drops the shell to the login screen, a sign-out unmounts
-    // everything. Without the guard this asserts, every line still in flight
+    // everything. Without the guard this asserts, every answer still in flight
     // is a `setState` on a component that does not exist.
-    const stream = stubStreamingFetch();
+    const sent = stubBatch();
     const { unmount } = render(<BulkUploadScreen onBack={(): void => undefined} />);
 
     chooseSheet();
-    chooseImages();
+    chooseImages([anImage('row-1.jpg'), anImage('row-2.jpg')]);
     submit();
 
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
+    await answerPlan(sent, [paired('row-1.jpg', { row: 1 }), paired('row-2.jpg', { row: 2 })]);
+    (await request(sent, 1)).answer(200, outcome('created'));
     await screen.findByText('row-1.jpg');
 
     // **What this can and cannot see.** React 19 dropped the
     // "state update on an unmounted component" warning, and a `setState` on a
     // detached fiber is a silent no-op — so no assertion here can distinguish
     // the guard being present from it being absent by watching React. What is
-    // checked is what remains observable: the lines that arrive after the
-    // screen has gone are consumed without the callback throwing, without the
-    // stream failing, and without anything reaching the console. The guard
-    // keeps the work itself from running; this pins the contract around it.
+    // checked is what remains observable: the answers that arrive after the
+    // screen has gone are consumed without anything throwing and without
+    // anything reaching the console.
     const complained = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       unmount();
-      stream.push(rowLine(2, 'row-2.jpg', 'created'));
-      stream.push(summaryLine(2, 0, 0));
-      stream.close();
-      await waitFor(() => expect(true).toBe(true));
+      sent[2]?.answer(200, outcome('created'));
+      await waitFor(() => {
+        expect(true).toBe(true);
+      });
 
       expect(complained).not.toHaveBeenCalled();
     } finally {
@@ -1445,33 +1606,32 @@ describe('what the report says when things go wrong around it', () => {
     }
   });
 
-  it('abandons the stream when the screen unmounts mid-batch', async () => {
-    // Stopping the painting is only half of it: the server goes on processing
-    // a hundred rows into a connection nobody is draining. The abort is what
-    // closes it, and the request's own signal is where that is observable.
-    const stream = stubStreamingFetch();
+  it('abandons the request in flight when the screen unmounts', async () => {
+    // Stopping the painting is only half of it: the server goes on embedding a
+    // row for a request nobody will read — sixteen forward passes and two
+    // object writes, spent on a screen that has gone. The abort is what closes
+    // it, and the request's own signal is where that is observable.
+    const sent = stubBatch();
     const { unmount } = render(<BulkUploadScreen onBack={(): void => undefined} />);
 
     chooseSheet();
     chooseImages();
     submit();
 
-    stream.push(rowLine(1, 'row-1.jpg', 'created'));
-    await screen.findByText('row-1.jpg');
-
-    const [, init] = stream.calls[0] ?? ['', {}];
-    expect(init.signal?.aborted).toBe(false);
+    await answerPlan(sent, [paired('row-1.jpg', { row: 1 })]);
+    const row = await request(sent, 1);
+    expect(row.init.signal?.aborted).toBe(false);
 
     unmount();
 
-    expect(init.signal?.aborted).toBe(true);
+    expect(row.init.signal?.aborted).toBe(true);
   });
 
   it('drops to the login screen when the batch is refused as signed out', async () => {
-    // Every other test of the 401 hook drives `apiRequest`; this is the one
-    // path that reaches it through `apiStream`, and a stream that refused
-    // without telling the observer would leave the shell rendering over a dead
-    // session — the exact failure that hook exists to catch.
+    // A batch runs for minutes, which makes it the likeliest place in the
+    // product for a session to expire under a request. A refusal that only
+    // rejected the caller would leave the shell rendering an admin surface
+    // over a session the server has stopped honouring.
     let asked = 0;
     vi.stubGlobal('fetch', (input: string, init: RequestInit = {}) => {
       const key = `${init.method ?? 'GET'} ${input}`;
@@ -1482,9 +1642,7 @@ describe('what the report says when things go wrong around it', () => {
           status: asked === 1 ? 200 : 401,
           json: () =>
             Promise.resolve(
-              asked === 1
-                ? ADMIN
-                : { error: { code: 'unauthorized', message: 'Not signed in.' } },
+              asked === 1 ? ADMIN : { error: { code: 'unauthorized', message: 'Not signed in.' } },
             ),
         } as unknown as Response);
       }
@@ -1513,10 +1671,7 @@ describe('what the report says when things go wrong around it', () => {
       return Promise.resolve({
         ok: false,
         status: 401,
-        body: undefined,
-        json: () =>
-          Promise.resolve({ error: { code: 'unauthorized', message: 'Not signed in.' } }),
-        text: () => Promise.resolve(''),
+        json: () => Promise.resolve({ error: { code: 'unauthorized', message: 'Not signed in.' } }),
       } as unknown as Response);
     });
 
@@ -1530,10 +1685,6 @@ describe('what the report says when things go wrong around it', () => {
     chooseImages();
     submit();
 
-    // The shell is gone and the login screen is in its place, with the notice
-    // that says why — a 401 that only rejected the caller would leave the app
-    // rendering an admin surface over a session the server has stopped
-    // honouring.
     expect(
       await screen.findByText(/your session has ended\. sign in again to continue\./i),
     ).toBeTruthy();

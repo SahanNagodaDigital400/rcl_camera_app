@@ -1,14 +1,19 @@
 """`/admin/tiles` — the Catalogue's write path, its read door, and the query that proves it worked.
 
-Eight routes and three functions that are not routes:
+Nine routes and three functions that are not routes:
 
 * `POST /admin/tiles` (FR-14) takes a Code, a Size, an optional Category and
   one to eight reference images, and creates a Tile that a Scan can return in
   the same session.
-* `POST /admin/tiles/bulk` (FR-17) takes a CSV manifest and the image set it
-  names, and does the same thing once per row — through the add's own intake
-  and embedding helpers, never a second path — streaming one NDJSON line per
-  row as that row completes.
+* `POST /admin/tiles/bulk/plan` (FR-17) reads a CSV manifest, pairs it against
+  the file names the caller is holding, and answers one item per line the
+  report will carry: which row takes which file, which rows nothing can be
+  found for, which files no row names.
+* `POST /admin/tiles/bulk/row` (FR-17) takes one of those items and its one
+  image, and does exactly what the add does — through the add's own intake and
+  embedding helpers, never a second path — answering that row's outcome. A
+  whole range is this route, once per row, driven by the caller: one image per
+  request, so a dropped connection costs one row rather than the range.
 * `PATCH /admin/tiles/{tile_id}` (FR-15) corrects one: its Code, its Size, its
   Category, and the Reference Images it carries — adding new ones through the
   *same* intake, embedding and derivative path the add uses, and removing old
@@ -106,22 +111,26 @@ the score because ranking and every server log line need it; nothing on the
 
 **The bulk path is the add, N times, and not a second implementation of it**
 (FR-17, epic context: "no shortcut for bulk"). Every image it takes reaches
-storage through `_accept_bytes` and `_prepare` — the same content sniff, the
-same colour management, the same sixteen views, the same capped derivative —
-and `tests/test_source_guards.py` fails the build if the bulk handler ever
-reaches the pixel pipeline on its own. What it adds is batching, a per-row
-report and the classification of the defects the real catalogue carries: a
-Category that cannot be recovered and a Code with no trailing number are
-**flags on a Tile that was created**, while a zero-byte or unreadable file is
-a **failure of that row alone** (AD-18, AD-7). Two rows sharing a Size and a
-Category are two distinct Tiles, merged nowhere and reported as a conflict
-nowhere.
+storage through `_accept` and `_prepare` — the same content sniff, the same
+colour management, the same sixteen views, the same capped derivative — and
+`tests/test_source_guards.py` fails the build if the bulk handler ever reaches
+the pixel pipeline on its own. What it adds is the pairing, a per-row report
+and the classification of the defects the real catalogue carries: a Category
+that cannot be recovered and a Code with no trailing number are **flags on a
+Tile that was created**, while a zero-byte or unreadable file is a **failure of
+that row alone** (AD-18, AD-7). Two rows sharing a Size and a Category are two
+distinct Tiles, merged nowhere and reported as a conflict nowhere.
 
-**The bulk response is a stream, and that decides where its refusals live.**
-The status is committed at the first byte, so everything refusable —
+**The batch is one request per image, and that decides where its refusals
+live.** A hundred reference images on one connection is gigabytes that a proxy
+timeout, a dropped hop or a reloaded tab loses whole, with no way to send back
+only the part that did not land — so the batch is driven by the caller, one
+image at a time. `bulk/plan` is where everything that is about the *batch* is
+refused, with a real envelope and before a byte of image data is sent:
 authorization, the manifest, the row cap, the missing model artifact and
-AD-14's stamp — is checked while a real envelope under a 4xx or 5xx is still
-possible. After that the status is `200` and every outcome is a row.
+AD-14's stamp. `bulk/row` answers `200` with a report line for anything that is
+about one row, because the caller is going to finish the report either way, and
+a real status only for the things that would refuse every remaining row too.
 
 **The read is the write's own contract, unchanged** (2.5). The search answers
 the same closed `Tile` model the four writes answer, in a bare array with no
@@ -140,19 +149,18 @@ and any crop step — AD-11 resolved that one explicitly
 as *no* for admin uploads. Nor any way back from a removal: no restore, no
 undo, no trash state and no grace period. The confirmation on the screen is the
 safeguard, and a Tile that should come back is added again. Nor a job table, a
-queue, a worker, a polling endpoint or a resume verb for the bulk path: one
-request, one stream, no state to garbage-collect.
+queue, a worker, a polling endpoint or a resume verb for the bulk path: the
+plan is a pure function of a sheet and a list of names, a row upload is one
+add, and the driver's own progress is the only state there is — so there is
+nothing to expire and nothing to garbage-collect.
 """
 
 from __future__ import annotations
 
 import csv
 import io
-import json
 import logging
-import tempfile
 import threading
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
@@ -163,10 +171,8 @@ from uuid import UUID, uuid4
 import psycopg
 import shared_vision
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
-from fastapi.responses import StreamingResponse
 from PIL import Image
 from psycopg import errors as pg_errors
-from psycopg_pool import ConnectionPool
 from shared_schema.errors import ApiError
 from shared_schema.tile import (
     MAX_BULK_ROWS,
@@ -188,7 +194,7 @@ from shared_schema.user import User
 # naming it (AD-4). This module records through it and names nothing.
 from api import audit
 from api.audit import AuditAction
-from api.db import get_connection, get_pool
+from api.db import get_connection
 from api.dependencies import NO_STORE, require_administrator, require_claimed_user
 from api.storage import ObjectNotFound, ObjectStore, get_object_store
 
@@ -390,15 +396,17 @@ NOT_NAMED = "No row of the sheet names this image, so it was not added."
 #: the sentence says what to change rather than apologising for it.
 UNNAMED_UPLOAD = "One uploaded file carries no file name, so no row can name it."
 
-#: The batch stopped outside any one row. By the time this can happen the
-#: response has already started, so there is no status left to carry it and
-#: this line is the only honest way to say it: the rows above are real, the
-#: rows below never ran. The cause is logged and deliberately not repeated
-#: here, for `ROW_FAILED_MESSAGE`'s reason.
-BATCH_STOPPED_MESSAGE = (
-    "The upload stopped before every row was processed. "
-    "The rows above were finished; send the rest again."
-)
+#: The refusals that are about the deployment rather than about one row.
+#:
+#: `plan_bulk_upload` pre-flights both, so an Administrator whose server has no
+#: model artifact or whose index is a generation behind is told once, in an
+#: envelope. Either can still arrive *during* a batch — a re-index started
+#: while a range is a third of the way through — and `_bulk_row` re-raises them
+#: rather than returning a report line, because they will refuse every
+#: remaining row identically and the driver should be told that once instead of
+#: a hundred times. Every other refusal it can meet is about the tile in front
+#: of it and is a line of the report.
+_BATCH_WIDE_REFUSALS = frozenset({MATCHING_UNAVAILABLE, PIPELINE_STAMP_MISMATCH})
 
 #: A row that failed in a way this handler cannot explain. **A fixed sentence**
 #: — the exception's text can carry a file path, a query fragment or a
@@ -420,14 +428,6 @@ ROW_FAILED_STATUS = "failed"
 FLAG_UNKNOWN_CATEGORY = "unknown_category"
 FLAG_UNKNOWN_FACE_NUMBER = "unknown_face_number"
 FLAG_LOW_QUALITY_IMAGE = "low_quality_image"
-
-#: The media type of the report. One JSON object per line, flushed as each row
-#: finishes — which is what EXPERIENCE.md:94 asks for ("per-row status updates
-#: as they complete, not a single spinner until the whole batch finishes") and
-#: what a single JSON array could not give, since an array is only parseable
-#: once it is closed.
-NDJSON = "application/x-ndjson"
-
 
 #: How many Candidates a search returns. Three, always (FR-7, AGENTS.md): size
 #: and finish are not recoverable from a photo, so a single answer is
@@ -1140,11 +1140,16 @@ def _read_upload(upload: UploadFile) -> bytes:
     """The uploaded bytes, bounded.
 
     Read through the spooled file rather than `await upload.read()` because
-    this handler is sync — psycopg is a synchronous driver and the embedding
+    every caller is sync — psycopg is a synchronous driver and the embedding
     below is CPU-bound for the better part of a minute, so FastAPI runs the
     whole thing in its threadpool where it cannot block the event loop.
 
     One byte past the ceiling is enough to refuse: nothing reads the rest.
+
+    Its own function rather than the first half of `_accept`, because `api.scan`
+    imports it directly: a phone photo is intaken at AD-7's *tighter* pixel
+    ceiling, so that module reuses this bounded read and calls the intake with
+    its own ceiling rather than reimplementing either.
     """
     data = upload.file.read(MAX_IMAGE_BYTES + 1)
     if len(data) > MAX_IMAGE_BYTES:
@@ -1153,7 +1158,14 @@ def _read_upload(upload: UploadFile) -> bytes:
 
 
 def _accept(upload: UploadFile) -> shared_vision.IntakeResult:
-    """One upload, read and taken through AD-7's intake. Embeds nothing.
+    """One upload, read under its ceiling and taken through AD-7's intake.
+
+    **The only place in `apps/api` that turns an Administrator's upload into
+    pixels, and both write paths reach it.** `add_tile` calls it once per image
+    and `_bulk_row` once per row, so there is exactly one bounded read, one
+    content sniff, one colour management step, one EXIF strip and one re-encode
+    between them. A second intake written for the batch path is the asymmetry
+    AD-1 and AD-7 exist to prevent, and nothing about it would raise.
 
     Separate from `_prepare` because of what each half costs. This half is a
     read and a decode; the other is sixteen forward passes, tens of seconds per
@@ -1161,34 +1173,18 @@ def _accept(upload: UploadFile) -> shared_vision.IntakeResult:
     so an oversized or corrupt second file is refused in milliseconds rather
     than after the first file has been embedded and thrown away.
 
-    The read and the intake are two functions rather than one so that the bulk
-    path can call the second half over bytes it already holds — see
-    `_accept_bytes`.
-    """
-    return _accept_bytes(_read_upload(upload))
-
-
-def _accept_bytes(data: bytes) -> shared_vision.IntakeResult:
-    """AD-7's intake over bytes that are already in hand.
-
-    **This is what makes "the bulk path uses the same intake" a fact rather
-    than a claim.** `add_tile` reaches it through `_accept` above, having read
-    an `UploadFile`; the bulk handler reaches it directly, having read its own
-    spooled copy — and there is exactly one content sniff, one colour
-    management step, one EXIF strip and one re-encode between them. A second
-    intake written for the batch path is the asymmetry AD-1 and AD-7 exist to
-    prevent, and nothing about it would raise.
-
     The refusals are raised as `ApiError` rather than returned, so that
-    `add_tile` answers a `413` or a `422` unchanged. The bulk handler catches
-    them and turns each into a failed row, which is the only difference between
-    the two callers.
+    `add_tile` answers a `413` or a `422` unchanged. `_bulk_row` catches them
+    and turns each into a failed row, which is the only difference between the
+    two callers.
     """
     try:
-        # AD-7's single intake, and the only place in `apps/api` that turns
-        # bytes into pixels. Content-sniffed; the name and the client's
-        # declared type are not consulted here or anywhere below.
-        accepted = shared_vision.intake_image(data, max_pixels=shared_vision.REFERENCE_MAX_PIXELS)
+        # AD-7's single intake for a reference image, and the only call here
+        # that turns bytes into pixels. Content-sniffed; the name and the
+        # client's declared type are not consulted here or anywhere below.
+        accepted = shared_vision.intake_image(
+            _read_upload(upload), max_pixels=shared_vision.REFERENCE_MAX_PIXELS
+        )
     except shared_vision.ImageTooLarge as oversized:
         raise _refusal(IMAGE_TOO_LARGE, TOO_LARGE, status.HTTP_413_CONTENT_TOO_LARGE) from oversized
     except shared_vision.UnreadableImage as unreadable:
@@ -1485,10 +1481,38 @@ def add_tile(
 
 
 # --- The bulk upload (FR-17) --------------------------------------------------
-# The add, once per manifest row, reported row by row. Everything expensive
-# here is `add_tile`'s: `_accept_bytes` and `_prepare` are the intake and the
-# embedding, unchanged and uncopied, and `tests/test_source_guards.py` fails
-# the build if anything below reaches the pixel pipeline on its own.
+# The add, once per manifest row, driven one request at a time. Everything
+# expensive here is `add_tile`'s: `_accept` and `_prepare` are the intake and
+# the embedding, unchanged and uncopied, and `tests/test_source_guards.py`
+# fails the build if anything below reaches the pixel pipeline on its own.
+#
+# **Two routes, because one request per image is the transfer this screen can
+# survive.** A single multipart body carrying a hundred reference images is
+# gigabytes on one connection: a proxy's idle bound, a dropped Wi-Fi hop or a
+# tab that reloads loses the whole range, and the Administrator has no way to
+# send only the part that did not land. So the batch is driven from the client,
+# one image per request, and the two routes are the two things that has to be
+# true of it:
+#
+# * `POST /admin/tiles/bulk/plan` reads the manifest and pairs it against the
+#   file names the caller is holding, and answers the whole report's worth of
+#   decisions up front — which row takes which file, which rows nothing can be
+#   found for, which files no row names.
+# * `POST /admin/tiles/bulk/row` takes one image and the row it belongs to, and
+#   answers that one row's outcome.
+#
+# **The manifest is still read here and nowhere else.** That is the point of
+# the plan: `apps/web` sends file *names* and gets back the pairing, so no CSV
+# is parsed in a browser and `_pairing_key`'s rules have exactly one
+# implementation. A client that paired for itself is a second reader of the
+# sheet, and the two would disagree about `45X90\POLISH\a.JPG` on the first
+# real export.
+#
+# **Still no job table, no queue, no worker and no polling endpoint.** Neither
+# route holds state between calls: the plan is a pure function of the sheet and
+# the names, and a row upload is one add. There is nothing to resume, nothing to
+# expire and nothing to garbage-collect — the driver's own progress *is* the
+# state, and it lives in the screen that is showing it.
 
 
 #: The ceiling on the manifest itself — a megabyte. Not `MAX_IMAGE_BYTES`: a
@@ -1496,12 +1520,6 @@ def add_tile(
 #: sized for a 128 MB press file would let an unbounded read masquerade as a
 #: bounded one. One byte past this is enough to refuse; nothing reads the rest.
 MAX_MANIFEST_BYTES = 1048576
-
-#: How much of one image is read at a time while it is copied to the spool.
-#: The whole point of copying in chunks is that memory holds one buffer rather
-#: than the whole batch — a hundred reference images at 96 MB each is not a
-#: thing a process can hold.
-SPOOL_CHUNK_BYTES = 1048576
 
 
 @dataclass(frozen=True, slots=True)
@@ -1518,34 +1536,6 @@ class _ManifestRow:
     code: str
     size: str
     category: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class _Spooled:
-    """One uploaded image, copied to a handler-owned file on disk.
-
-    `oversized` is decided during the *copy* rather than after it: the copy
-    stops one byte past `MAX_IMAGE_BYTES` and writes no more, so an oversized
-    part costs one buffer of disk rather than its own size on disk. It does
-    **not** mean the bytes never travelled — Starlette has parsed the whole
-    multipart body before this handler is entered, so the transfer has already
-    happened and the part is already in Starlette's own spool. What this bound
-    buys is the second copy, the read of it and everything downstream of that.
-    The count bound in `bulk_upload` is what limits the transfer itself.
-
-    **`path` is never built from the uploaded name.** The name is
-    caller-controlled and is kept as data alone; the file on disk is named
-    after its position in the request, so nothing a manifest or a multipart
-    part can say reaches the filesystem.
-
-    `name` is the base name exactly as it was declared, kept beside the folded
-    key the pairing matches on so that a report line quotes what the
-    Administrator actually sent rather than a lowercased version of it.
-    """
-
-    path: Path
-    name: str
-    oversized: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -1579,12 +1569,11 @@ def _failed(code: str, message: str) -> _RowResult:
 
 
 def _invalid_manifest(detail: str) -> ApiError:
-    """The manifest is not one. A `422`, before a byte of the stream exists.
+    """The manifest is not one. A `422` from the plan, before anything is sent.
 
-    Pre-stream, which is the only reason a real envelope is possible at all:
-    once the first row has been written the status is `200` and there is
-    nowhere left to put a `422`. `detail` names what was wrong with the file
-    and `NO_MANIFEST` names the fix, in that order.
+    `detail` names what was wrong with the file and `NO_MANIFEST` names the
+    fix, in that order. This is the refusal the whole plan phase exists to make
+    cheap: it costs the Administrator the sheet and no image bytes at all.
     """
     return _refusal(
         INVALID_MANIFEST, f"{detail} {NO_MANIFEST}", status.HTTP_422_UNPROCESSABLE_CONTENT
@@ -1619,80 +1608,62 @@ def _manifest_rows(data: bytes) -> list[_ManifestRow]:
     — a real export carries notes and counts, and none of them is this
     endpoint's business.
 
-    A row whose three required cells are *all* empty is a blank line and is
-    skipped; a row with some of them filled is a real row that will fail
-    below, with a code naming the cell. The difference matters because a
-    trailing newline is not a row an Administrator has to be told about.
+    Blank lines are skipped rather than counted, so `number` is an ordinal
+    among the sheet's tiles — "the twelfth tile in the sheet" — which is what
+    an Administrator needs to find a refused row in the file in front of them.
     """
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as undecodable:
-        # Almost always a workbook rather than a CSV: `.xlsx` is a ZIP archive
-        # and its first bytes do not decode as text at all.
         raise _invalid_manifest("That file is not a readable CSV.") from undecodable
 
     reader = csv.DictReader(io.StringIO(text))
     try:
-        # **`csv` raises, and what it raises is not a `ValueError` a caller
-        # would think to expect.** A cell past `csv.field_size_limit()`
-        # (131072 characters by default) and a NUL byte anywhere in the stream
-        # both raise `csv.Error` — out of the handler, past every refusal
-        # below, and into `api.main`'s unhandled-error path as a `500`. A
-        # spreadsheet this endpoint cannot read is a `422` whatever shape the
-        # defect takes, and the sentence is the same one: export it as CSV.
-        #
-        # `fieldnames` is where the header is actually parsed — the attribute
-        # reads the first row lazily — so the guard has to be here and not on
-        # the constructor above.
         header = reader.fieldnames
     except csv.Error as malformed:
         raise _invalid_manifest("That spreadsheet could not be read as a CSV.") from malformed
-    if not header:
+    if header is None:
         raise _invalid_manifest("That spreadsheet has no header row.")
 
-    # First spelling wins, so a sheet carrying `code` and `Code` resolves to
-    # the leftmost of the two rather than to whichever `dict` iteration order
-    # happened to keep.
-    columns: dict[str, str] = {}
-    for name in header:
-        if name is None:
-            continue
-        columns.setdefault(name.strip().lower(), name)
-
+    # Folded once, here, so every lookup below reads the same normalized name.
+    # A column whose name differs only in case or surrounding space is the
+    # column it looks like, and one the endpoint does not know is ignored.
+    columns = {(name or "").strip().casefold(): name for name in header if name is not None}
     missing = [column for column in MANIFEST_COLUMNS if column not in columns]
     if missing:
         raise _invalid_manifest(f"The spreadsheet has no {' or '.join(missing)} column.")
 
     def cell(record: dict[str, Any], column: str) -> str:
         value = record.get(columns[column]) if column in columns else None
-        # `DictReader` answers `None` for a short row and a list for a long
-        # one (under `restkey`, which is not set here, the extras are
-        # discarded). Neither is a string, and both mean the cell is empty.
         return value.strip() if isinstance(value, str) else ""
 
+    rows: list[_ManifestRow] = []
     try:
-        # Drained in one go, and guarded for the header's reason: the same
-        # `csv.Error` can come out of any row rather than only out of the
+        # Materialised rather than streamed, so a malformed field is refused
+        # before any of it is used — `csv` raises on the row it reads, not
         # first. Materialising is safe because `MAX_MANIFEST_BYTES` has already
-        # bounded the text this is parsed from.
+        # bounded the bytes this is reading.
         records = list(reader)
     except csv.Error as malformed:
         raise _invalid_manifest("That spreadsheet could not be read as a CSV.") from malformed
 
-    rows: list[_ManifestRow] = []
     for record in records:
         file_name = cell(record, "file")
         code = cell(record, "code")
         size = cell(record, "size")
-        if not (file_name or code or size):
-            continue
         category = cell(record, MANIFEST_OPTIONAL_COLUMN)
+        # A wholly empty line is spreadsheet padding, not a tile. Skipped
+        # rather than reported, because a sheet with a trailing newline is
+        # every sheet.
+        if not (file_name or code or size or category):
+            continue
         rows.append(
             _ManifestRow(
                 number=len(rows) + 1,
                 file=file_name,
                 code=code,
                 size=size,
+                # Absent column and blank cell are the same fact (AD-18).
                 category=category or None,
             )
         )
@@ -1702,93 +1673,170 @@ def _manifest_rows(data: bytes) -> list[_ManifestRow]:
     return rows
 
 
+def _base_name(name: str) -> str:
+    """The declared name's base name, with both separators folded first.
+
+    A sheet maintained on Windows and a picker on a Mac name the same file
+    `45X90\\POLISH\\a.jpg` and `a.jpg`, and `Path` on this server splits on
+    `/` alone — so the backslash form would arrive whole and pair with
+    nothing. This is also the name the plan quotes back, so the fold is what
+    stops one line of the report naming a file and another naming a whole
+    Windows path for the same image.
+    """
+    return Path(name.replace("\\", "/")).name
+
+
 def _pairing_key(name: str) -> str:
     """The name a manifest cell and an upload are paired on.
 
     **The base name, case-folded.** The base name because a `file` cell reading
     `45X90/POLISH/a.jpg` — which is how the source tree names a file, and what
     a sheet built from a directory listing carries — names the same image as a
-    part called `a.jpg`. Case-folded because a sheet exported on one machine
+    file called `a.jpg`. Case-folded because a sheet exported on one machine
     routinely spells `IMG_1.JPG` where the file on disk is `img_1.jpg`, and
     refusing that pair would refuse the row *and* report its image as unmatched
     — two lines of report for one difference the Administrator cannot see.
 
-    Both separators are folded before the base name is taken. A sheet
-    maintained on Windows spells that same directory listing
-    `45X90\\POLISH\\a.jpg`, and `Path` on this server splits on `/` only —
-    so the backslash form would arrive whole, pair with nothing, and produce
-    the two lines this function exists to prevent.
-
-    A real collision still survives this: two uploads that differ only by case
-    fold to one key, land in one list, and the pairing below refuses that row
-    as ambiguous rather than picking one of them.
+    A real collision still survives this: two files that differ only by case
+    fold to one key, and `_plan_items` refuses that row as ambiguous rather
+    than picking one of them.
     """
-    return Path(name.replace("\\", "/")).name.casefold()
+    return _base_name(name).casefold()
 
 
-def _spool(uploads: list[UploadFile], directory: Path) -> tuple[dict[str, list[_Spooled]], int]:
-    """Copy every uploaded image into `directory`, keyed for pairing.
+def _plan_item(
+    *,
+    row: int | None,
+    file_name: str,
+    code: str | None = None,
+    size: str | None = None,
+    category: str | None = None,
+    upload: str | None = None,
+    error: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """One line of the plan, with every key written on every item.
 
-    Returns the spool and how many parts carried bytes but no usable file name.
+    `null` included, deliberately: a caller that had to test for a key's
+    presence as well as its value is a caller with two ways to be wrong. It is
+    the same argument the report line made when this was a stream, and the
+    shape is close enough that a plan item and the result of uploading it
+    compose into one report row on the screen.
 
-    **The handler owns the bytes it reads later, and this is why.** Under a
-    `StreamingResponse` the endpoint function returns before the body runs, and
-    FastAPI's dependency exit stack — which closes the multipart form — unwinds
-    at that return. Reading an `UploadFile` from inside the generator is
-    therefore reading a file that may already be closed. Copying first makes
-    the lifetime explicit, and copying in chunks keeps memory at one buffer
-    rather than the whole batch.
-
-    A key is allowed to arrive twice. The list is what lets the pairing below
-    refuse that row as ambiguous rather than silently picking one of the two
-    files — which would put the wrong image under a Code with nothing raised.
-
-    **A part with bytes and no name is counted, not dropped.** It cannot be
-    paired — nothing can name it — but silently discarding it is the exact
-    failure `image_unmatched` exists to prevent: an image that travelled, was
-    not indexed, and that the Administrator believes is in the catalogue. The
-    caller reports one line per such part. A part with neither a name nor any
-    bytes is a picker with nothing chosen and really is nothing, so it is
-    filtered out before this is called.
+    * `row` is the item's position among the manifest's *data* rows, counted
+      from one with the header not counted and blank lines skipped — or `null`
+      for the items that have no row in the sheet at all.
+    * `file` is the name the report quotes: the manifest's own `file` cell for
+      a row of the sheet, the declared upload name for a file no row names.
+    * `upload` is the name the caller declared, and therefore the file it is to
+      send for this item — or `null` when there is nothing to send because the
+      item is already decided.
+    * `error` is that decision, in the envelope's `{code, message}` shape, and
+      `null` on an item that is still to be uploaded. Exactly one of `upload`
+      and `error` is set.
     """
-    spooled: dict[str, list[_Spooled]] = {}
+    return {
+        "row": row,
+        "file": file_name,
+        "code": code,
+        "size": size,
+        "category": category,
+        "upload": upload,
+        "error": error,
+    }
+
+
+def _plan_items(rows: list[_ManifestRow], names: list[str]) -> list[dict[str, Any]]:
+    """Pair the sheet against the names the caller is holding.
+
+    The whole report's worth of decisions, in the order the report will show
+    them: one item per manifest row, then one per file no row names, then one
+    per declared name that was blank. Every pairing rule in the product lives
+    here and only here — see the section note on why the client is not allowed
+    a second copy.
+
+    **No bytes and no database.** It is a set difference over file names, so
+    the answer costs the caller one small request before any image is sent,
+    which is what makes an unpairable sheet a refusal the Administrator gets in
+    a second rather than after a gigabyte.
+
+    Three pairing failures, all `image_not_paired` because the pairing is what
+    failed in each case, and each with its own sentence because the fixes
+    differ: the row's `file` cell is blank, nothing carries that name, or two
+    files do.
+    """
+    # Keyed for pairing, holding the names as declared. A key is allowed to
+    # arrive twice: the list is what lets a row be refused as ambiguous rather
+    # than silently taking one of two files, which would put the wrong image
+    # under a Code with nothing raised.
+    by_key: dict[str, list[str]] = {}
     unnamed = 0
-
-    for index, upload in enumerate(uploads):
-        # Both separators folded before the base name is taken, exactly as
-        # `_pairing_key` folds them. A part declared `C:\shots\a.jpg` pairs on
-        # `a.jpg` either way, but this is the name the report quotes back and
-        # sorts on — so without the fold one line of the report names a file
-        # and another names a whole Windows path for the same image.
-        name = Path((upload.filename or "").replace("\\", "/")).name
-        if not name:
-            # Reported by the caller as `image_unmatched`. Not spooled, because
-            # no row can name it and there is therefore nothing to read it for.
+    for name in names:
+        declared = _base_name(name)
+        if not declared:
+            # Nothing can name it, so it cannot be paired — and silently
+            # dropping it is the exact failure `image_unmatched` exists to
+            # prevent. Reported at the end, with its own sentence.
             unnamed += 1
             continue
+        by_key.setdefault(_pairing_key(declared), []).append(declared)
 
-        path = directory / str(index)
-        written = 0
-        oversized = False
-        with path.open("wb") as sink:
-            while True:
-                chunk = upload.file.read(SPOOL_CHUNK_BYTES)
-                if not chunk:
-                    break
-                if written + len(chunk) > MAX_IMAGE_BYTES:
-                    # One byte past the ceiling is enough to decide. Nothing
-                    # more is copied, read or decoded — see `_Spooled` for what
-                    # that does and does not save.
-                    oversized = True
-                    break
-                sink.write(chunk)
-                written += len(chunk)
-
-        spooled.setdefault(_pairing_key(name), []).append(
-            _Spooled(path=path, name=name, oversized=oversized)
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        error: dict[str, str] | None = None
+        upload: str | None = None
+        if not row.file:
+            error = {"code": IMAGE_NOT_PAIRED, "message": NO_FILE_NAMED}
+        else:
+            candidates = by_key.get(_pairing_key(row.file), [])
+            if not candidates:
+                error = {"code": IMAGE_NOT_PAIRED, "message": NOT_PAIRED.format(file=row.file)}
+            elif len(candidates) > 1:
+                error = {"code": IMAGE_NOT_PAIRED, "message": AMBIGUOUS_PAIR.format(file=row.file)}
+            else:
+                upload = candidates[0]
+        items.append(
+            _plan_item(
+                row=row.number,
+                file_name=row.file,
+                code=row.code,
+                size=row.size,
+                category=row.category,
+                upload=upload,
+                error=error,
+            )
         )
 
-    return spooled, unnamed
+    # A file no row names. Reported rather than silently dropped: an image the
+    # Administrator chose and that nothing indexed is a tile they believe is in
+    # the catalogue. Sorted by the declared name so two plans for one batch
+    # agree, and one item per *file* rather than per pairing key — two names
+    # differing only by case are two images and two things to go and look at.
+    named = {_pairing_key(row.file) for row in rows if row.file}
+    orphans = sorted(name for key, group in by_key.items() if key not in named for name in group)
+    items.extend(
+        _plan_item(
+            row=None,
+            file_name=name,
+            error={"code": IMAGE_UNMATCHED, "message": NOT_NAMED},
+        )
+        for name in orphans
+    )
+
+    # A declared name that was blank. The same code as the orphans above,
+    # because it is the same fact — an image nothing indexed — with a different
+    # reason nothing could name it. A browser's file input always sends a name,
+    # so this is a hand-built request rather than anything an Administrator can
+    # have done by accident.
+    items.extend(
+        _plan_item(
+            row=None,
+            file_name="",
+            error={"code": IMAGE_UNMATCHED, "message": UNNAMED_UPLOAD},
+        )
+        for _ in range(unnamed)
+    )
+
+    return items
 
 
 def _bulk_row(
@@ -1796,10 +1844,12 @@ def _bulk_row(
     store: ObjectStore,
     administrator: User,
     source_ip: str | None,
-    row: _ManifestRow,
-    spooled: dict[str, list[_Spooled]],
+    code: str,
+    size: str,
+    category: str | None,
+    image: UploadFile,
 ) -> _RowResult:
-    """One row: validate, pair, intake, embed, write, record. `add_tile`'s shape.
+    """One row: validate, intake, embed, write, record. `add_tile`'s shape.
 
     **Its own transaction and its own audit entry**, so a failure takes only
     this row down and the next one proceeds — which is the whole of "reports
@@ -1813,30 +1863,25 @@ def _bulk_row(
     nothing here merges, deduplicates or reports a conflict between them — they
     resolve to the same two lookup rows and to two `tile` rows, which is what
     AD-18 says a Category folder holding 26 files is.
+
+    **Every refusal is returned, never raised.** That is the one difference
+    between this and `add_tile`: the caller is reporting a row of a batch, so
+    an oversized file, a duplicate Code or an unreadable image is a line of the
+    report rather than a status on the response.
     """
-    if not row.file:
-        return _failed(IMAGE_NOT_PAIRED, NO_FILE_NAMED)
-
-    candidates = spooled.get(_pairing_key(row.file), [])
-    if not candidates:
-        return _failed(IMAGE_NOT_PAIRED, NOT_PAIRED.format(file=row.file))
-    if len(candidates) > 1:
-        return _failed(IMAGE_NOT_PAIRED, AMBIGUOUS_PAIR.format(file=row.file))
-    spool_entry = candidates[0]
-
     # The cheap rules first, exactly as `add_tile` orders them: nothing a rule
     # can reject costs a decode, let alone sixteen forward passes.
     try:
-        tile_code = clean_code(row.code)
+        tile_code = clean_code(code)
     except ValueError as invalid:
         return _failed(INVALID_CODE, str(invalid))
     try:
-        size_name = clean_size(row.size)
+        size_name = clean_size(size)
     except ValueError as invalid:
         return _failed(INVALID_SIZE, str(invalid))
     try:
         # Never a refusal for being absent (AD-18) — the sentinel and a flag.
-        category_name = clean_category(row.category)
+        category_name = clean_category(category)
     except ValueError as invalid:
         return _failed(INVALID_CATEGORY, str(invalid))
 
@@ -1845,7 +1890,7 @@ def _bulk_row(
     # and a cell that spells the sentinel are the same fact — this Tile has no
     # recoverable Category — and flagging only the first would file a Tile
     # under `UNKNOWN` and report it as a clean success (AD-18).
-    if row.category is None or category_name == UNKNOWN_CATEGORY:
+    if category is None or category_name == UNKNOWN_CATEGORY:
         flags.append(FLAG_UNKNOWN_CATEGORY)
     # A display hint and nothing else. The dash-delimited names in the real
     # tree carry none, so this is a flag rather than a guess or a refusal.
@@ -1853,26 +1898,26 @@ def _bulk_row(
     if trailing_number is None:
         flags.append(FLAG_UNKNOWN_FACE_NUMBER)
 
-    if spool_entry.oversized:
-        return _failed(IMAGE_TOO_LARGE, TOO_LARGE)
-
     # The duplicate-Code pre-flight. **An optimisation and not the decision** —
     # `tile_code_key` is, and the `UniqueViolation` below is what enforces it.
     # What this buys is the ordinary case: a Code already in the catalogue is
-    # reported before sixteen forward passes are spent on an image that is
-    # about to be thrown away.
+    # reported before a 96 MB file is read, let alone embedded sixteen times.
     if conn.execute(_SELECT_CODE, (tile_code,)).fetchone() is not None:
         return _failed(CODE_ALREADY_EXISTS, CODE_IN_USE)
 
     tile_id = uuid4()
     try:
-        # The add's own two halves, and nothing of this path's own. A zero-byte
-        # file, a renamed text file and a truncated one all raise out of the
-        # first of them, which is what keeps a garbage embedding out of the
-        # index (AD-7).
-        accepted = _accept_bytes(spool_entry.path.read_bytes())
+        # The add's own two halves, and nothing of this path's own. `_accept`
+        # is the bounded read *and* AD-7's intake, so an oversized part, a
+        # zero-byte file, a renamed text file and a truncated one all raise out
+        # of it — which is what keeps a garbage embedding out of the index.
+        accepted = _accept(image)
         prepared = _prepare(tile_id, accepted)
     except ApiError as refused:
+        # The model artifact gone since the plan is not this row's fault and
+        # will not be the next row's either. See `_BATCH_WIDE_REFUSALS`.
+        if refused.code in _BATCH_WIDE_REFUSALS:
+            raise
         return _failed(refused.code, refused.message)
 
     if prepared.featureless:
@@ -1965,9 +2010,14 @@ def _bulk_row(
                 },
             )
     except ApiError as refused:
-        # The `409` above, raised from inside the transaction. The rows rolled
-        # back with it, so the objects are next.
+        # The `409` above, raised from inside the transaction, or AD-14's stamp
+        # having moved since the plan. Either way the rows rolled back with it,
+        # so the objects are next — and then the two part company: a duplicate
+        # Code is this row's own line, a stale stamp is the batch's
+        # (`_BATCH_WIDE_REFUSALS`).
         _discard(store, written)
+        if refused.code in _BATCH_WIDE_REFUSALS:
+            raise
         return _failed(refused.code, refused.message)
     except BaseException:
         # Every other failure, `BaseException` included for `add_tile`'s
@@ -1984,207 +2034,15 @@ def _bulk_row(
     )
 
 
-def _row_line(number: int | None, file_name: str, code: str | None, result: _RowResult) -> str:
-    """One report line: a JSON object and the newline that terminates it.
-
-    Two shapes travel on this stream and `kind` is what tells them apart, so a
-    reader never has to infer which it is holding from which keys are present.
-    Every key is written on every row line, `null` included: a screen that had
-    to test for a key's presence as well as its value is a screen with two
-    ways to be wrong.
-
-    **`row` is the row's position among the manifest's data rows, or `null`.**
-    Counted from one, with the header row not counted and blank lines skipped,
-    so it is an ordinal within the sheet's tiles rather than a physical line
-    number — "the twelfth tile in the sheet", not "line twelve of the file".
-    That is what an Administrator needs to find the row that was refused, and
-    it has to mean a position in that sheet and nothing else. The lines that
-    report an upload no row named, and the one that reports the batch
-    stopping, therefore carry `null` rather than a number counted on past the
-    manifest's end — which would send somebody to row 14 of a sheet that has
-    twelve.
-    """
-    return (
-        json.dumps(
-            {
-                "kind": "row",
-                "row": number,
-                "file": file_name,
-                "code": code,
-                "status": result.status,
-                "tile_id": None if result.tile_id is None else str(result.tile_id),
-                "flags": result.flags,
-                "error": result.error,
-            },
-            separators=(",", ":"),
-        )
-        + "\n"
-    )
-
-
-def _orphans(rows: list[_ManifestRow], spooled: dict[str, list[_Spooled]]) -> list[_Spooled]:
-    """The uploads no manifest row names, in the order they will be reported.
-
-    Lifted out of `_bulk_stream` so it can be answered *before* the first row
-    runs rather than after the last one: the opening line states how many `row`
-    lines the report will carry, and these are part of that count. Nothing here
-    touches the database or the object store — it is a set difference over the
-    manifest's file names — so asking early costs the batch nothing.
-
-    Sorted by the name as declared, so two runs of the same batch report them
-    in the same order, and one entry per *file* rather than per pairing key —
-    two uploads differing only by case are two images and two things to go and
-    look at.
-    """
-    named = {_pairing_key(row.file) for row in rows}
-    unmatched = [entry for key, entries in spooled.items() if key not in named for entry in entries]
-    return sorted(unmatched, key=lambda spooled_file: spooled_file.name)
-
-
-def _bulk_stream(
-    pool: ConnectionPool,
-    store: ObjectStore,
-    administrator: User,
-    source_ip: str | None,
-    rows: list[_ManifestRow],
-    spooled: dict[str, list[_Spooled]],
-    unnamed: int,
-    spool: tempfile.TemporaryDirectory[str],
-) -> Iterator[str]:
-    """The opening line, the report a line at a time, then the summary.
-
-    **Three shapes travel on this stream, and `kind` tells them apart.** A
-    `start` line opens it, one `row` line reports each tile, and a `summary`
-    line closes it. The opening line exists so a reader has a denominator from
-    the first byte rather than after the last one: it is written before any
-    row runs, so it costs the batch nothing and arrives while the report is
-    still empty.
-
-    **The connection is opened here, not declared as a dependency.** A yielded
-    `get_connection` is returned to the pool when the *request function*
-    returns, which under a `StreamingResponse` is before a byte of this has
-    run — so the rows below would be written on a connection the pool had
-    already handed to somebody else.
-
-    **Rows are processed one after another, never concurrently.** AD-16's
-    argument applied to the write side: parallel forward passes oversubscribe
-    the same cores, so a batch run four at a time finishes no sooner and every
-    individual row takes longer to report.
-
-    **The summary always closes the report, including when the batch stops.**
-    A failure outside any one row — a pool with no free connection, a database
-    that went away between rows — happens *after* the response has started, so
-    there is no status left to change and an exception escaping here would
-    leave the client holding a `200` with a truncated body: no row saying what
-    went wrong, no summary, and rows that really were created looking like
-    rows that never ran. So an unexpected failure is logged, reported as a
-    final failed line, counted, and the summary is written anyway.
-
-    The spool is removed in the `finally`, which is what makes an abandoned
-    batch leave nothing on disk: a client that disconnects mid-stream closes
-    the iterator, the generator is thrown into, and the cleanup still runs.
-    """
-    counts = {ROW_CREATED: 0, ROW_FLAGGED: 0, ROW_FAILED_STATUS: 0}
-    orphans = _orphans(rows, spooled)
-    try:
-        # **The opening line, and the only number on this stream that is known
-        # before any work happens.** It states how many `row` lines the report
-        # carries if it runs to the end: one per manifest row, one per upload
-        # nothing named, one per part that declared no name. A reader can
-        # therefore show a real denominator — "12 of 40" — instead of guessing
-        # one from the number of files it sent, which is wrong for exactly the
-        # batch a report is most needed for: the one whose rows and uploads do
-        # not line up.
-        #
-        # It is a count of *lines*, not a promise about the catalogue: a batch
-        # that stops part-way writes one extra failed line past this total
-        # (see below), and a reader must treat it as a ceiling it can reach
-        # rather than as an invariant.
-        yield (
-            json.dumps(
-                {"kind": "start", "total": len(rows) + len(orphans) + unnamed},
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        stopped = False
-        try:
-            with pool.connection() as conn:
-                for row in rows:
-                    try:
-                        result = _bulk_row(conn, store, administrator, source_ip, row, spooled)
-                    except Exception:
-                        # One row's unexplained failure is not the batch's.
-                        # Logged with its traceback, reported as a fixed
-                        # sentence that leaks nothing, and the loop continues —
-                        # tearing the stream down here would lose the report
-                        # for every row that already succeeded.
-                        logger.exception(
-                            "bulk row %s (%s) could not be added", row.number, row.file
-                        )
-                        result = _failed(ROW_FAILED, ROW_FAILED_MESSAGE)
-
-                    counts[result.status] += 1
-                    yield _row_line(row.number, row.file, row.code or None, result)
-
-                # An image no row named. Reported rather than silently dropped:
-                # an upload that travelled and was not indexed is a tile the
-                # Administrator believes is in the catalogue. Worked out before
-                # the loop rather than here, because the opening line counts
-                # these among the rows it promises — see `_orphans`.
-                for entry in orphans:
-                    counts[ROW_FAILED_STATUS] += 1
-                    yield _row_line(None, entry.name, None, _failed(IMAGE_UNMATCHED, NOT_NAMED))
-
-                # A part that carried bytes and declared no file name. Nothing
-                # can name it, so it is reported rather than dropped — the
-                # whole reason `image_unmatched` exists. The line carries an
-                # empty `file` because there is none, and the sentence says so.
-                for _ in range(unnamed):
-                    counts[ROW_FAILED_STATUS] += 1
-                    yield _row_line(None, "", None, _failed(IMAGE_UNMATCHED, UNNAMED_UPLOAD))
-        except Exception:
-            # Outside any row, and after the response has started. See above.
-            logger.exception("the bulk upload stopped before every row was processed")
-            stopped = True
-
-        if stopped:
-            counts[ROW_FAILED_STATUS] += 1
-            yield _row_line(None, "", None, _failed(ROW_FAILED, BATCH_STOPPED_MESSAGE))
-
-        yield (
-            json.dumps(
-                {
-                    "kind": "summary",
-                    "created": counts[ROW_CREATED],
-                    "flagged": counts[ROW_FLAGGED],
-                    "failed": counts[ROW_FAILED_STATUS],
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-    finally:
-        # Guarded, because this runs *after* the summary has been written: a
-        # directory that will not go away is an operator's problem, and letting
-        # it escape here would turn a complete report into a torn-down response
-        # for the one reader who had already received every line of it.
-        try:
-            spool.cleanup()
-        except OSError:
-            logger.exception("the bulk spool could not be removed")
-
-
-@router.post("/admin/tiles/bulk")
-def bulk_upload(
+@router.post("/admin/tiles/bulk/plan")
+def plan_bulk_upload(
+    response: Response,
     administrator: Annotated[User, Depends(require_administrator)],
-    pool: Annotated[ConnectionPool, Depends(get_pool)],
-    store: Annotated[ObjectStore, Depends(get_object_store)],
-    source_ip: Annotated[str | None, Depends(audit.source_ip)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
     manifest: Annotated[UploadFile | None, File()] = None,
-    images: Annotated[list[UploadFile] | None, File()] = None,
-) -> StreamingResponse:
-    """FR-17 — load a whole range, and report on it row by row.
+    names: Annotated[list[str] | None, Form()] = None,
+) -> dict[str, Any]:
+    """FR-17, phase one — read the sheet and say what the batch will do.
 
     **Registered above every route that takes a path parameter under
     `/admin/tiles/`**, so the literal `bulk` segment can never be read as a
@@ -2192,43 +2050,37 @@ def bulk_upload(
     what keeps that a property of the route table rather than of nobody having
     added one yet.
 
-    **The stream opens with a `start` line carrying the total, then a `row`
-    line per tile, then a `summary`.** Every refusable thing is decided before
-    that first line, so a reader holding one knows the batch was accepted and
-    knows how many rows to expect.
+    Takes the manifest and the **file names** the caller is holding — names
+    only, no bytes — and answers one item per line the report will carry, in
+    the order it will carry them. Every refusal that is about the batch rather
+    than about one row is made here, where it costs no image transfer at all:
+    authorization, a manifest that is not one, the row cap, a missing model
+    artifact and AD-14's stamp.
 
-    **Everything refusable is refused before the first byte of the stream.**
-    The HTTP status is committed at that byte, so authorization, the manifest,
-    the row cap, the missing model artifact and AD-14's stamp are all decided
-    while a real `{"error": {...}}` envelope under a 4xx or 5xx is still
-    possible. Afterwards the status is `200` and every outcome is a row —
-    which is the cost of streaming, paid deliberately in exchange for a report
-    that arrives as it happens rather than after minutes of silence
-    (EXPERIENCE.md:94).
+    **Nothing is remembered.** The plan is a pure function of the sheet and the
+    names, so there is no batch to expire and nothing to garbage-collect, and a
+    caller that loses its place asks again rather than resuming a job. It also
+    means the plan is advice and not permission: `upload_bulk_row` re-validates
+    everything it is given, because a caller could always have skipped this.
 
-    **No job table, no queue, no worker, no polling endpoint.** One request,
-    one stream, nothing to garbage-collect. The connection stays busy for the
-    life of the batch, so no idle timeout fires on a run that takes minutes.
-
-    Sync, not `async def`, for `add_tile`'s reason: psycopg is synchronous and
-    the embedding is CPU-bound for tens of seconds per image. The generator is
-    sync too, and Starlette iterates it in the threadpool.
+    Sync for `add_tile`'s reason — psycopg is synchronous — though this route
+    is cheap: one CSV parse, one stamp read and no pixels.
     """
+    response.headers.update(NO_STORE)
+
     rows = _manifest_rows(_read_manifest(manifest))
 
-    # A part with neither a name nor any bytes is a file picker with nothing
-    # chosen, which `add_tile` filters the same way at its own `uploads` line.
-    # It is nothing, so it counts as nothing — against the cap below and in the
-    # report.
-    uploads = [upload for upload in (images or []) if upload.filename or upload.size]
+    # No `names` field at all is a caller holding no files, which is a plan of
+    # unpairable rows and a perfectly good answer. A name that arrived *empty*
+    # is a different thing and is reported — see `_plan_items`.
+    declared = names or []
 
     # **One ceiling, counted on both sides.** The row count alone bounds the
-    # manifest and nothing else, so a one-row sheet sent with four hundred
-    # image parts would pass it and then be spooled in full — a copy of every
-    # part at up to `MAX_IMAGE_BYTES`, for a batch that can produce one Tile.
-    # Counting the parts against the same number is what makes
-    # `MAX_BULK_ROWS`'s claim to bound the spool true.
-    if len(rows) > MAX_BULK_ROWS or len(uploads) > MAX_BULK_ROWS:
+    # manifest and nothing else, so a one-row sheet declared alongside four
+    # hundred names would pass it and produce a four-hundred-line plan the
+    # screen then has to render. Counting the names against the same number is
+    # what makes `MAX_BULK_ROWS`'s claim to bound the report true.
+    if len(rows) > MAX_BULK_ROWS or len(declared) > MAX_BULK_ROWS:
         raise _refusal(TOO_MANY_ROWS, TOO_MANY_ROWS_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT)
 
     # The two deployment-level refusals, pre-flighted rather than discovered on
@@ -2238,31 +2090,88 @@ def bulk_upload(
     # file deleted between this check and that call is a real state.
     if not shared_vision.MODEL_PATH.exists():
         raise _refusal(MATCHING_UNAVAILABLE, NOT_INSTALLED, status.HTTP_503_SERVICE_UNAVAILABLE)
-    with pool.connection() as conn:
-        # AD-14, read-only: a deployment running ahead of its re-index refuses
-        # the whole batch in milliseconds rather than one row at a time.
-        active_generation(conn)
+    # AD-14, read-only: a deployment running ahead of its re-index refuses the
+    # whole batch in milliseconds rather than one row at a time.
+    active_generation(conn)
 
-    # Spooled *here*, inside the request function, because the multipart form
-    # is closed when it returns. See `_spool`.
-    spool = tempfile.TemporaryDirectory(prefix="rocell-bulk-")
+    return {"items": _plan_items(rows, declared)}
+
+
+@router.post("/admin/tiles/bulk/row")
+def upload_bulk_row(
+    response: Response,
+    administrator: Annotated[User, Depends(require_administrator)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    store: Annotated[ObjectStore, Depends(get_object_store)],
+    source_ip: Annotated[str | None, Depends(audit.source_ip)],
+    code: Annotated[str, Form()] = "",
+    size: Annotated[str, Form()] = "",
+    category: Annotated[str | None, Form()] = None,
+    row: Annotated[int | None, Form()] = None,
+    image: Annotated[UploadFile | None, File()] = None,
+) -> dict[str, Any]:
+    """FR-17, phase two — one row of the batch, added and reported.
+
+    **This answers `200` for a row it refused, and that is the contract.** The
+    body is one line of a report: `{status, tile_id, flags, error}`, with the
+    refusal in the envelope's own `{code, message}` shape so a per-row failure
+    reads like every other refusal in the product. A row the batch cannot add —
+    an unreadable file, a Code already in use, a Size the product will not
+    store — is one line of a report the caller is still going to finish, so it
+    is described in the body rather than thrown as a status. The caller is a
+    driver working through a plan, and a 4xx per bad row would make it choose
+    between stopping and treating a refusal as a dropped connection.
+
+    **A status other than `200` therefore means the request was wrong, not the
+    row.** Authorization, a missing model artifact and AD-14's stamp are
+    answered as envelopes, because none of them is about this tile and every
+    one of them would refuse every other row identically.
+
+    **It re-validates everything.** `plan_bulk_upload` is advice — a caller can
+    skip it, and the values here arrive as form fields either way — so the
+    Code, the Size, the Category and the image bytes are checked here as
+    `add_tile` checks them. The plan pairs; this adds.
+
+    `row` is carried for the log line and for nothing else: a report line's row
+    number belongs to the caller's plan, and an operator reading a traceback
+    needs to know which line of which sheet produced it.
+
+    Sync, not `async def`, for `add_tile`'s reason: psycopg is synchronous and
+    the embedding is CPU-bound for tens of seconds per image.
+    """
+    response.headers.update(NO_STORE)
+
+    # A part with neither a name nor any bytes is a file picker with nothing
+    # chosen, which `add_tile` filters the same way. An add with no image is a
+    # catalogue row a Scan can never return, so it is refused as a request
+    # rather than reported as a row: the plan never produces an item to send
+    # without a file, so nothing a driver does can reach this.
+    if image is None or not (image.filename or image.size):
+        raise _refusal(INVALID_IMAGE, NO_IMAGE, status.HTTP_422_UNPROCESSABLE_CONTENT)
+
     try:
-        spooled, unnamed = _spool(uploads, Path(spool.name))
-    except BaseException:
-        # Nothing has been streamed yet, so the caller is about to be told this
-        # failed — and the directory must not outlive the request either way.
-        spool.cleanup()
+        result = _bulk_row(conn, store, administrator, source_ip, code, size, category, image)
+    except ApiError:
+        # A refusal that is not about this row — the model artifact gone since
+        # the plan, the stamp moved under a running batch. Answered as itself,
+        # because it will refuse every remaining row the same way and the
+        # driver should be told that rather than shown a hundred identical
+        # lines.
         raise
+    except Exception:
+        # This row's unexplained failure, and not the batch's. Logged with its
+        # traceback and reported as a fixed sentence that leaks nothing: the
+        # exception's text can carry a file path or a credential and this
+        # response goes to a browser.
+        logger.exception("bulk row %s (%s) could not be added", row, code)
+        result = _failed(ROW_FAILED, ROW_FAILED_MESSAGE)
 
-    return StreamingResponse(
-        _bulk_stream(pool, store, administrator, source_ip, rows, spooled, unnamed, spool),
-        media_type=NDJSON,
-        # `no-store` like every other authenticated response: a report naming
-        # Codes is catalogue data. `nosniff` because a browser that sniffed its
-        # way from NDJSON to something executable would be running script from
-        # the catalogue — the same argument the reference-image read makes.
-        headers={**NO_STORE, **NO_SNIFF},
-    )
+    return {
+        "status": result.status,
+        "tile_id": None if result.tile_id is None else str(result.tile_id),
+        "flags": result.flags,
+        "error": result.error,
+    }
 
 
 # --- The lookup and the edit (FR-15) ------------------------------------------

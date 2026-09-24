@@ -14,14 +14,13 @@ Matching a file against itself proves the index stores bytes; the epic's
 acceptance criterion is that an Administrator loads a range and a Scan
 submitted in the same session returns it.
 
-Nothing here rebuilds, reindexes, vacuums or analyses anything between the
-stream closing and the search, and that absence is the assertion.
+Nothing here rebuilds, reindexes, vacuums or analyses anything between the last
+row answering and the search, and that absence is the assertion.
 """
 
 from __future__ import annotations
 
 import io
-import json
 from collections.abc import Callable
 from typing import Any
 
@@ -36,7 +35,8 @@ from shared_vision import pipeline
 
 MakeUser = Callable[..., Any]
 
-BULK_UPLOAD = "/admin/tiles/bulk"
+BULK_PLAN = "/admin/tiles/bulk/plan"
+BULK_ROW = "/admin/tiles/bulk/row"
 LOGIN = "/auth/login"
 
 pytestmark = pytest.mark.skipif(
@@ -113,19 +113,44 @@ def manifest(rows: list[tuple[str, str]]) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def upload(client: TestClient, pairs: list[tuple[str, str, Image.Image]]) -> list[dict[str, Any]]:
-    """Run one batch and return its report lines."""
-    files: list[tuple[str, tuple[str, bytes, str]]] = [
-        (
-            "manifest",
-            ("codes.csv", manifest([(name, code) for name, code, _ in pairs]), "text/csv"),
-        )
-    ]
-    files.extend(("images", (name, as_upload(image), "image/jpeg")) for name, _, image in pairs)
+def upload(
+    client: TestClient,
+    pairs: list[tuple[str, str, Image.Image]],
+    *,
+    bytes_for: dict[str, bytes] | None = None,
+) -> list[dict[str, Any]]:
+    """Run one batch the way the screen does, and return its report lines.
 
-    response = client.post(BULK_UPLOAD, files=files)
-    assert response.status_code == 200, response.text
-    return [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    Plan first, then one request per row. `bytes_for` overrides what is sent
+    for a given file name, which is how a test puts a defective file into an
+    otherwise ordinary batch.
+    """
+    sheet = manifest([(name, code) for name, code, _ in pairs])
+    planned = client.post(
+        BULK_PLAN,
+        files=[("manifest", ("codes.csv", sheet, "text/csv"))],
+        data={"names": [name for name, _, _ in pairs]},
+    )
+    assert planned.status_code == 200, planned.text
+
+    data_for = {name: as_upload(image) for name, _, image in pairs} | (bytes_for or {})
+    report: list[dict[str, Any]] = []
+    for item in planned.json()["items"]:
+        if item["upload"] is None:
+            report.append({"status": "failed", "flags": [], "error": item["error"]})
+            continue
+        response = client.post(
+            BULK_ROW,
+            data={
+                "code": item["code"] or "",
+                "size": item["size"] or "",
+                "category": item["category"] or "",
+            },
+            files=[("image", (item["upload"], data_for[item["upload"]], "image/jpeg"))],
+        )
+        assert response.status_code == 200, response.text
+        report.append(response.json())
+    return report
 
 
 def scores(conn: psycopg.Connection, query: Image.Image) -> dict[str, float]:
@@ -149,7 +174,7 @@ def test_every_row_of_a_batch_is_a_candidate_the_moment_the_stream_closes(
         client,
         [(f"{index}.jpg", code, image) for index, (code, image) in enumerate(references.items())],
     )
-    assert [line["status"] for line in report if line["kind"] == "row"] == ["created"] * 3
+    assert [line["status"] for line in report] == ["created"] * 3
     # Deliberately nothing here. No REINDEX, no VACUUM, no ANALYZE, no restart,
     # and no ingestion step an operator would have to remember to run.
 
@@ -194,19 +219,25 @@ def test_a_flagged_row_is_searchable_exactly_like_a_created_one(
     # reviewed first — would pass the report tests and fail this one.
     sign_in_as_administrator(client, make_user)
     unknown = a_tile(61)
+
+    # No Category column at all, which is what makes the row flagged: `upload`
+    # writes the four-column sheet, so this one is sent by hand.
     sheet = b"file,code,size\nflagged.jpg,RC-001-OHA-156-MA-J2,45X90\n"
+    planned = client.post(
+        BULK_PLAN,
+        files=[("manifest", ("codes.csv", sheet, "text/csv"))],
+        data={"names": ["flagged.jpg"]},
+    )
+    assert planned.status_code == 200, planned.text
+    item = planned.json()["items"][0]
 
     response = client.post(
-        BULK_UPLOAD,
-        files=[
-            ("manifest", ("codes.csv", sheet, "text/csv")),
-            ("images", ("flagged.jpg", as_upload(unknown), "image/jpeg")),
-        ],
+        BULK_ROW,
+        data={"code": item["code"], "size": item["size"], "category": ""},
+        files=[("image", ("flagged.jpg", as_upload(unknown), "image/jpeg"))],
     )
     assert response.status_code == 200, response.text
-    # `[1]`, not `[0]`: the report opens with the `start` line carrying the
-    # total, and the rows follow it.
-    line = json.loads(response.text.splitlines()[1])
+    line = response.json()
     assert line["status"] == "flagged"
     assert sorted(line["flags"]) == ["unknown_category", "unknown_face_number"]
 
@@ -229,25 +260,15 @@ def test_a_failed_row_leaves_no_way_to_reach_it_at_all(
     # reaching `tile` would be invisible to a `SELECT` on Code and would still
     # be scoring against every Scan.
     sign_in_as_administrator(client, make_user)
-    good = a_tile(71)
-    sheet = (
-        b"file,code,size,category\n"
-        b"good.jpg,RP.CMA.0020DJ.SM.0T,45X90,POLISH\n"
-        b"broken.jpg,RP.CMA.0021DJ.SM.0T,45X90,POLISH\n"
-    )
+    good, broken = a_tile(71), a_tile(72)
 
-    response = client.post(
-        BULK_UPLOAD,
-        files=[
-            ("manifest", ("codes.csv", sheet, "text/csv")),
-            ("images", ("good.jpg", as_upload(good), "image/jpeg")),
-            # Zero bytes, which is a defect the real source tree carries.
-            ("images", ("broken.jpg", b"", "image/jpeg")),
-        ],
+    report = upload(
+        client,
+        [("good.jpg", "RP.CMA.0020DJ.SM.0T", good), ("broken.jpg", "RP.CMA.0021DJ.SM.0T", broken)],
+        # Zero bytes, which is a defect the real source tree carries.
+        bytes_for={"broken.jpg": b""},
     )
-    assert response.status_code == 200, response.text
-    report = [json.loads(line) for line in response.text.splitlines() if line.strip()]
-    assert [line["status"] for line in report if line["kind"] == "row"] == ["created", "failed"]
+    assert [line["status"] for line in report] == ["created", "failed"]
 
     codes = {row["code"] for row in conn.execute("SELECT code FROM tile").fetchall()}
     assert codes == {"RP.CMA.0020DJ.SM.0T"}

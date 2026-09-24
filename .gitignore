@@ -49,3 +49,6 @@ coverage/
 # Junk
 .DS_Store
 *.log
+
+# Per-developer Claude Code settings (machine-specific: LAN dev origin, etc.)
+.claude/settings.local.json
