@@ -102,6 +102,11 @@ function summaryLine(created: number, flagged: number, failed: number): string {
   return JSON.stringify({ kind: 'summary', created, flagged, failed });
 }
 
+/** The opening line: how many row lines this report will carry. */
+function startLine(total: number): string {
+  return JSON.stringify({ kind: 'start', total });
+}
+
 /**
  * Replace `fetch` with one that answers a `200` whose body this test drives.
  *
@@ -229,6 +234,47 @@ function anImage(name = 'row-1.jpg', size?: number): File {
   // the only way to reach the ceiling the screen refuses at.
   if (size !== undefined) Object.defineProperty(file, 'size', { value: size });
   return file;
+}
+
+/**
+ * An oversized image the device *can* shrink: a real three-channel JPEG header
+ * with no profile and no Adobe marker, which is what `shrinkImage` requires
+ * before it will re-encode anything. `anImage`'s four arbitrary bytes are not
+ * a JPEG at all, and are deliberately left that way — they are the file the
+ * screen must refuse.
+ */
+function aPlainJpeg(name: string, size: number): File {
+  const bytes = new Uint8Array([
+    // SOI.
+    0xff, 0xd8,
+    // SOF0, length 8: precision, height, width, and a component count of
+    // three — RGB, no profile, nothing an Adobe marker would tag.
+    0xff, 0xc0, 0x00, 0x08, 0x08, 0x01, 0x00, 0x01, 0x00, 0x03,
+    // SOS, where the marker walk stops.
+    0xff, 0xda, 0x00, 0x02,
+  ]);
+  const file = new File([bytes], name, { type: 'image/jpeg' });
+  Object.defineProperty(file, 'size', { value: size });
+  return file;
+}
+
+/** Stub the decode and canvas steps `shrinkImage` runs. Returns the encoded size. */
+function stubRedraw(): number {
+  const shrunk = new Blob(['a much smaller press file'], { type: 'image/jpeg' });
+  vi.stubGlobal(
+    'createImageBitmap',
+    vi.fn(() => Promise.resolve({ width: 19276, height: 9638, close: vi.fn() })),
+  );
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+    drawImage: vi.fn(),
+  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function toBlob(
+    this: HTMLCanvasElement,
+    callback: BlobCallback,
+  ) {
+    callback(shrunk);
+  });
+  return shrunk.size;
 }
 
 function chooseSheet(file: File | null = aSheet()): void {
@@ -495,6 +541,135 @@ describe('the report streams', () => {
     await waitFor(() => expect(progress.textContent).toMatch(/finished/i));
   });
 
+  it('shows an indeterminate bar until the server says how many rows there are', async () => {
+    // **The bar has no denominator of its own and must not invent one**
+    // (AD-20). The rows live in a sheet only the server reads, so the number
+    // of images chosen here is the wrong number for exactly the batch this
+    // report exists for — the one whose rows and uploads do not line up. ARIA
+    // defines a progressbar with no `aria-valuenow` as indeterminate, which is
+    // the true shape of "the images are still going up".
+    const stream = stubStreamingFetch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('a.jpg'), anImage('b.jpg')]);
+    submit();
+
+    const bar = await screen.findByRole('progressbar');
+    expect(bar.getAttribute('aria-valuenow')).toBeNull();
+    expect(bar.getAttribute('aria-valuemax')).toBeNull();
+
+    // Two images were chosen and the sheet has three rows. A screen that had
+    // guessed would now be showing a denominator of two.
+    stream.push(startLine(3));
+    await waitFor(() => expect(bar.getAttribute('aria-valuemax')).toBe('3'));
+    expect(bar.getAttribute('aria-valuenow')).toBe('0');
+
+    stream.close();
+  });
+
+  it('counts whole rows against the server’s total as they arrive', async () => {
+    const stream = stubStreamingFetch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages();
+    submit();
+
+    stream.push(startLine(3));
+    const bar = await screen.findByRole('progressbar');
+
+    stream.push(rowLine(1, 'a.jpg', 'created'));
+    await waitFor(() => expect(bar.getAttribute('aria-valuenow')).toBe('1'));
+    stream.push(rowLine(2, 'b.jpg', 'flagged', { flags: ['low_quality_image'] }));
+    stream.push(rowLine(3, 'c.jpg', 'failed'));
+    await waitFor(() => expect(bar.getAttribute('aria-valuenow')).toBe('3'));
+
+    // The three counts beside it, each with its word — the colours are held by
+    // `styling-wiring.test.ts` and jsdom paints none of them, so a bar that
+    // signalled by colour alone would be invisible to the whole suite.
+    expect(screen.getByText('1 added')).toBeTruthy();
+    expect(screen.getByText('1 flagged')).toBeTruthy();
+    expect(screen.getByText('1 failed')).toBeTruthy();
+    expect(screen.getByText(/3 of 3 rows/)).toBeTruthy();
+
+    stream.close();
+  });
+
+  it('never lets the bar overrun its own total when the batch stops', async () => {
+    // A batch that stops part-way writes one failed line *past* the total the
+    // opening line promised, because the total counts a clean run. Without the
+    // guard the bar would read 3 of 2 on the one batch whose reader is looking
+    // hardest at it.
+    const stream = stubStreamingFetch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages();
+    submit();
+
+    stream.push(startLine(1));
+    stream.push(rowLine(1, 'a.jpg', 'created'));
+    stream.push(
+      JSON.stringify({
+        kind: 'row',
+        row: null,
+        file: '',
+        code: null,
+        status: 'failed',
+        tile_id: null,
+        flags: [],
+        error: { code: 'row_failed', message: 'The upload stopped before every row ran.' },
+      }),
+    );
+    const bar = await screen.findByRole('progressbar');
+    await waitFor(() => expect(bar.getAttribute('aria-valuenow')).toBe('2'));
+
+    expect(bar.getAttribute('aria-valuemax')).toBe('2');
+
+    stream.close();
+  });
+
+  it('opens the report as soon as the batch starts, before any row', async () => {
+    // The minutes before the first row are exactly when there is nothing else
+    // on screen to say the batch is alive.
+    const stream = stubStreamingFetch();
+    renderScreen();
+
+    expect(screen.queryByRole('progressbar')).toBeNull();
+
+    chooseSheet();
+    chooseImages();
+    submit();
+
+    expect(await screen.findByRole('progressbar')).toBeTruthy();
+    expect(reportedRows()).toEqual([]);
+
+    stream.close();
+  });
+
+  it('stamps each line with the time it arrived', async () => {
+    // A batch runs for minutes and the rows do not arrive evenly — a 96 MB
+    // press file takes tens of seconds to embed. The gap between two stamps is
+    // the only evidence an Administrator has of where the time went. Nothing
+    // is derived from it: there is no rate here and no projected finish, which
+    // would be invented numbers (AD-20).
+    const stream = stubStreamingFetch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages();
+    submit();
+
+    stream.push(rowLine(1, 'row-1.jpg', 'created'));
+    await screen.findByText('row-1.jpg');
+
+    const [only] = reportedRows();
+    expect(only!.textContent).toMatch(/\d{2}:\d{2}:\d{2}/);
+
+    stream.close();
+  });
+
   it('closes the report with the summary', async () => {
     const stream = stubStreamingFetch();
     renderScreen();
@@ -721,7 +896,12 @@ describe('the refusals it makes itself', () => {
     expect(screen.getByLabelText(/reference images/i).getAttribute('aria-invalid')).toBe('true');
   });
 
-  it('refuses an image over the byte ceiling without uploading it', async () => {
+  it('refuses an oversized image it could not shrink, and names it', async () => {
+    // Over the ceiling is no longer refused on sight — it is redrawn whole and
+    // sent. This is what is left when that cannot be done: `anImage`'s bytes
+    // are not a JPEG the sniffer can vouch for, so re-encoding it might change
+    // its colour, and a changed colour is a corrupted embedding nobody would
+    // ever see (CLAUDE.md, AD-15).
     const { calls } = stubFetch({ status: 200, text: '' });
     renderScreen();
 
@@ -729,8 +909,63 @@ describe('the refusals it makes itself', () => {
     chooseImages([anImage('small.jpg'), anImage('huge.jpg', MAX_IMAGE_BYTES + 1)]);
     submit();
 
-    expect((await screen.findByRole('alert')).textContent).toMatch(/under 128 MB/i);
+    const refusal = (await screen.findByRole('alert')).textContent ?? '';
+    // The file, so a batch of a hundred with one bad one is not a hunt.
+    expect(refusal).toMatch(/huge\.jpg/);
+    // The bound, and the fix — which is a re-export, not a retry.
+    expect(refusal).toMatch(/128 MB/);
+    expect(refusal).toMatch(/sRGB/i);
+    // The one that was fine is not named, and nothing travelled.
+    expect(refusal).not.toMatch(/small\.jpg/);
     expect(calls).toHaveLength(0);
+  });
+
+  it('shrinks an oversized image on the device and sends the smaller one', async () => {
+    // The request the Administrator no longer has to make by hand: a 96 MB
+    // press file is oversampled by an order of magnitude against the 2048 px
+    // the server decodes to, so the whole frame is redrawn smaller and sent
+    // rather than refused.
+    const encoded = stubRedraw();
+    const stream = stubStreamingFetch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([anImage('small.jpg'), aPlainJpeg('huge.jpg', MAX_IMAGE_BYTES + 1)]);
+    submit();
+
+    stream.push(rowLine(1, 'small.jpg', 'created'));
+    await screen.findByText('small.jpg');
+
+    const body = (stream.calls[0]?.[1].body ?? new FormData()) as FormData;
+    const sent = body.getAll('images') as File[];
+    expect(sent).toHaveLength(2);
+    // The name is untouched, because the manifest pairs on it.
+    expect(sent.map((file) => file.name)).toEqual(['small.jpg', 'huge.jpg']);
+    // The oversized one shrank; the one that already fitted travelled as
+    // chosen, byte for byte — re-encoding it would spend a generation of JPEG
+    // artefacts on a problem it does not have.
+    expect(sent[1]?.size).toBe(encoded);
+    expect(sent[0]?.size).toBe(4);
+
+    stream.close();
+  });
+
+  it('says what it did to the oversized images rather than doing it quietly', async () => {
+    // The bytes indexed are not the bytes chosen. An Administrator comparing a
+    // stored reference image against the file on their disk deserves to know
+    // why the two differ.
+    stubRedraw();
+    const stream = stubStreamingFetch();
+    renderScreen();
+
+    chooseSheet();
+    chooseImages([aPlainJpeg('huge.jpg', MAX_IMAGE_BYTES + 1)]);
+    submit();
+
+    const note = await screen.findByText(/huge\.jpg.*MB sent as.*MB/);
+    expect(note).toBeTruthy();
+
+    stream.close();
   });
 
   it('retires the report when a different batch is chosen', async () => {

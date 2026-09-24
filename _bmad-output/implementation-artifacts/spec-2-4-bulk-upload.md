@@ -312,6 +312,15 @@ deferred:
 {"kind":"summary","created":1,"flagged":0,"failed":1}
 ```
 
+> **Added after this story shipped:** the stream now opens with a third shape,
+> `{"kind":"start","total":N}`, where `N` is the number of `row` lines a clean
+> run will write (manifest rows + unmatched uploads + unnamed parts). It exists
+> so the screen can show a progress bar against a real denominator instead of
+> guessing one from the number of images it sent — which is the wrong number
+> for exactly the batch the report is most needed for. A batch that stops
+> part-way writes one failed line past that total; readers treat it as a
+> ceiling they can reach, not an invariant. See `api/catalogue.py::_bulk_stream`.
+
 `status` is exactly the three outcomes DESIGN.md:144-149 paints, so the screen maps one field to one token with nothing to infer. A `flagged` row *is* created and carries a `tile_id`; the flag is follow-up, not failure. `error` reuses the envelope's `{code, message}` shape so a per-row failure reads the same as any other refusal.
 
 **Why no new audit action.** A Tile added through the bulk path is a Tile added: same actor, same `details`, same consequence for the catalogue. A second action naming the same fact is drift — the argument Story 2.3 used to refuse a second `tile_not_found`. The provenance that is genuinely lost (which batch a Tile came from) is not something FR-20 asks for, and inventing a `bulk` flag inside `details` would fork a shape three tests pin.

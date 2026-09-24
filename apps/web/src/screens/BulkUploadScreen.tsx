@@ -1,6 +1,6 @@
-import { CheckCircle, Warning, XCircle } from '@phosphor-icons/react';
+import { ArrowDown, CheckCircle, Warning, XCircle } from '@phosphor-icons/react';
 import { useEffect, useId, useRef, useState } from 'react';
-import type { ChangeEvent, FormEvent, JSX } from 'react';
+import type { ChangeEvent, FormEvent, JSX, UIEvent } from 'react';
 
 import {
   ApiRequestError,
@@ -10,6 +10,7 @@ import {
   TOO_MANY_ROWS,
   apiStream,
 } from '../api/client';
+import { shrinkImage } from '../upload/shrinkImage';
 import styles from './BulkUploadScreen.module.css';
 
 /**
@@ -44,6 +45,24 @@ import styles from './BulkUploadScreen.module.css';
  * Painting it as a failure would tell an Administrator to re-upload a tile that
  * is already in the catalogue.
  *
+ * **The progress bar's denominator is the server's, or there is no
+ * denominator.** The stream opens with a line carrying the number of row lines
+ * the report will hold, and that is the only honest total: the rows live in a
+ * sheet only the server reads, and a total guessed from the number of images
+ * chosen is wrong for exactly the batch a report is most needed for — the one
+ * whose rows and uploads do not line up. Until that line arrives the bar is
+ * indeterminate, which is the true shape of "the images are still going up and
+ * nothing has been counted yet".
+ *
+ * **The log scrolls inside itself only on a wide viewport.** A hundred rows in
+ * a fixed box on a phone is a region a thumb cannot leave, so below the
+ * breakpoint the report grows and the page owns the scroll, as it always has.
+ * At desktop width — where an Administrator actually runs a batch — the console
+ * keeps the form, the bar and the newest rows on one screen, follows the tail,
+ * and stops following the moment the reader scrolls up to read something.
+ *
+ * **An oversized image is shrunk here rather than refused.** See `shrink`.
+ *
  * **Every rule belongs to the server.** This screen does not parse the
  * manifest, does not derive a trailing number from a Code, and does not decide
  * what makes a row a failure rather than a flag. It renders what the stream
@@ -63,9 +82,10 @@ import styles from './BulkUploadScreen.module.css';
  * - **No dry run, no resume, no retry-failed-rows.** A failed row is a row to
  *   fix and send again, and a second verb that re-sent a subset would be a
  *   second way into the same endpoint with its own rules about what a batch is.
- * - **No per-row progress percentage.** A row is either reported or it is not;
- *   a percentage inside one would be an invented number, and this product has
- *   a standing rule against those (AD-20).
+ * - **No per-row progress percentage.** A row is either reported or it is not,
+ *   and a percentage inside one would be an invented number (AD-20). The bar
+ *   across the *batch* counts whole rows against a total the server sent, so
+ *   it is neither per-row nor invented — see `asStart`.
  * - **No ZIP or folder upload.** The images are a file list, which is what a
  *   file input gives and what a multipart body carries.
  * - **No similarity value, in any form** (AD-20). There is nothing to show one
@@ -117,9 +137,41 @@ const MAX_IMAGE_BYTES = 134217728;
 const TOO_MANY_FILES =
   `Upload at most ${MAX_BULK_ROWS} reference images at a time. ` +
   'Split a larger range into two batches.';
-const FILE_TOO_LARGE = `Each reference image must be under ${
-  MAX_IMAGE_BYTES / (1024 * 1024)
-} MB.`;
+const MEGABYTE = 1024 * 1024;
+
+/** A byte count as an Administrator reads it, to one decimal place. */
+function megabytes(bytes: number): string {
+  return (bytes / MEGABYTE).toFixed(1);
+}
+
+/**
+ * The refusal for an image over the ceiling that this device could not shrink.
+ *
+ * **Reached only after `shrinkImage` has tried.** A file over the ceiling is
+ * no longer refused on sight: it is redrawn whole at `SHRINK_MAX_EDGE` and
+ * sent, because a 96 MB press file is oversampled by an order of magnitude
+ * against the 2048 px the server decodes to, and making an Administrator
+ * re-export a hundred of those by hand is work this screen can do for them.
+ *
+ * This is what is left when that fails, and the sentence has to say *which*
+ * failure it is, because the two have different fixes. A CMYK or
+ * profile-carrying image is refused deliberately and not for want of trying:
+ * a canvas re-encode would drop the profile and corrupt both the colour and
+ * the embedding, invisibly (CLAUDE.md, AD-15), so the fix is a re-export in a
+ * tool that knows the rendering intent. Anything else the browser could not
+ * decode — a `.tif`, which the real source tree carries — has the same fix for
+ * a different reason.
+ *
+ * Names the files, because a batch of a hundred with two bad ones is otherwise
+ * a hunt.
+ */
+function cannotShrink(names: string[]): string {
+  return (
+    `Over ${MAX_IMAGE_BYTES / MEGABYTE} MB and could not be made smaller here: ${names.join(', ')}. ` +
+    'Re-export each one as an sRGB JPEG under that size — a CMYK or colour-profiled ' +
+    'image cannot be shrunk in the browser without changing its colour.'
+  );
+}
 
 /**
  * The starter sheet this screen hands out, and the name it saves under.
@@ -171,8 +223,23 @@ const TEMPLATE_CSV = `${[TEMPLATE_COLUMNS.join(','), ...TEMPLATE_LINES].join('\n
 const TEMPLATE_HREF = `data:text/csv;charset=utf-8,${encodeURIComponent(TEMPLATE_CSV)}`;
 
 /** The spoken states of the progress line. See `progress` below. */
+const SHRINKING = 'Making oversized images smaller…';
 const UPLOADING = 'Uploading…';
 const FINISHED = 'Finished.';
+
+/**
+ * How close to the foot of the log still counts as being at the foot.
+ *
+ * A console that only followed at exactly zero would stop following on a
+ * half-pixel rounding or a rubber-band overscroll, and an Administrator who
+ * never touched the wheel would watch it silently stop keeping up. A few
+ * pixels of slack is what makes "am I at the bottom" answerable at all.
+ *
+ * Unitless because it is compared against `scrollTop`, which is a number: this
+ * is arithmetic on a measurement, not a styling value the token layer could
+ * express.
+ */
+const AT_FOOT_SLACK = 24;
 
 /**
  * The report did not run to the end of the batch.
@@ -186,6 +253,28 @@ const FINISHED = 'Finished.';
  * instead would read exactly like a batch that finished cleanly.
  */
 const CUT_SHORT = 'The report stopped early. The rows below were finished; send the rest again.';
+
+/**
+ * The clock beside each line of the log.
+ *
+ * **The time the line *arrived here*, not a duration and not an estimate.** A
+ * batch runs for minutes and the rows do not arrive evenly — a 96 MB press
+ * file takes tens of seconds to embed and a small one takes two — so the gap
+ * between two stamps is the one piece of evidence an Administrator has for
+ * where a slow batch is actually spending its time. Nothing derives anything
+ * from it: there is no rate here and no projection of when the batch will end,
+ * which would be an invented number (AD-20).
+ *
+ * Built once at module scope rather than per row: a hundred rows arriving over
+ * minutes would otherwise construct a hundred formatters. `h23` so a log read
+ * at a glance never has to be scanned for am/pm.
+ */
+const CLOCK = new Intl.DateTimeFormat(undefined, {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
 
 /** Which picker a failure is about — and therefore which one is marked and focused. */
 type Field = 'manifest' | 'images';
@@ -240,6 +329,8 @@ interface ReportRow {
   flags: string[];
   /** The `{code, message}` of a refusal, in the envelope's own shape. */
   error: { code: string; message: string } | null;
+  /** When this line reached the screen, already formatted. See `CLOCK`. */
+  at: string;
 }
 
 /** The closing line: how the batch came out. */
@@ -363,7 +454,41 @@ function asRow(line: Record<string, unknown>, seq: number): ReportRow {
       typeof failure['message'] === 'string'
         ? { code: failure['code'], message: failure['message'] }
         : null,
+    at: CLOCK.format(new Date()),
   };
+}
+
+/**
+ * Narrow the opening `kind: "start"` line, or fail loudly.
+ *
+ * **This is the whole reason the progress bar is allowed to exist.** The
+ * server writes this line before it processes anything, and `total` is the
+ * number of `row` lines the report will carry: one per manifest row, one per
+ * upload no row named, one per part that declared no file name. It is the only
+ * honest denominator available to this screen — the rows live in a sheet only
+ * the server reads, and the number of images chosen here is a different number
+ * for exactly the batch a report is most needed for.
+ *
+ * Checked as hard as `status` is, and for the same reason: a total that is not
+ * a number would paint a bar that means nothing, and a bar that means nothing
+ * is worse than none — it is read as a promise about how far the batch has
+ * got.
+ *
+ * A server that sends no opening line at all is not an error here. Nothing
+ * requires one to arrive: `running` with no total is the indeterminate bar,
+ * which is exactly what "the images are still going up" looks like.
+ */
+function asStart(line: Record<string, unknown>): number {
+  const total = line['total'];
+  if (typeof total !== 'number' || !Number.isFinite(total) || total < 0) throw malformed();
+  return total;
+}
+
+/** How many rows of each outcome are in the report so far. */
+function tally(rows: ReportRow[]): Record<Outcome, number> {
+  const counts: Record<Outcome, number> = { created: 0, flagged: 0, failed: 0 };
+  for (const row of rows) counts[row.status] += 1;
+  return counts;
 }
 
 /**
@@ -407,13 +532,36 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
   const [files, setFiles] = useState<File[]>([]);
   const [rows, setRows] = useState<ReportRow[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  /**
+   * How many row lines the report will carry, straight from the server's
+   * opening line — or `null` before it arrives, and on a server that sends
+   * none. The progress bar is determinate only while this is a number; see
+   * `asStart`.
+   */
+  const [total, setTotal] = useState<number | null>(null);
+  /** What this device did to the oversized images before sending them. */
+  const [notes, setNotes] = useState<string[]>([]);
+  /** The redraw pass runs before the request opens. See `prepare`. */
+  const [shrinking, setShrinking] = useState(false);
   /** The stream ended with no closing line. See `CUT_SHORT`. */
   const [cutShort, setCutShort] = useState(false);
   const [error, setError] = useState<FormError | null>(null);
   const [running, setRunning] = useState(false);
+  /**
+   * Whether the log is still following its own tail.
+   *
+   * True until the reader scrolls up, and true again the moment they scroll
+   * back down — a console that stopped following for good the first time
+   * somebody looked at row 12 would need a reload to start again. Only ever
+   * false on a viewport where the console scrolls at all, which is at and
+   * above the breakpoint; below it the page owns the scroll and there is
+   * nothing here to follow.
+   */
+  const [follow, setFollow] = useState(true);
 
   const manifestRef = useRef<HTMLInputElement>(null);
   const imagesRef = useRef<HTMLInputElement>(null);
+  const consoleRef = useRef<HTMLDivElement>(null);
 
   /**
    * Whether this screen is still mounted, and the handle that stops the batch.
@@ -431,6 +579,17 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
    */
   const alive = useRef(true);
   const runningBatch = useRef<AbortController | null>(null);
+
+  /**
+   * Whether a submit is in flight, readable from inside one.
+   *
+   * The mirror of `running` that a callback can trust. `running` closes over
+   * the render that started the batch, where it is `false` however long the
+   * batch has been going since — and there is now a phase *before* the request
+   * exists (the redraw pass), so the abort handle is no longer a stand-in for
+   * "busy" either.
+   */
+  const busy = useRef(false);
 
   useEffect(() => {
     alive.current = true;
@@ -468,13 +627,45 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
   function refuse(message: string, field: Field | null): void {
     setError({ message, fieldAtFault: field });
     if (field === null) return;
-    // Straight away when nothing is in flight — the screen's own refusals are
-    // decided before the request — and deferred when a batch is still ending.
-    // Read off the batch handle rather than off `running`, which in a submit's
-    // own closure is the value it had when the button was pressed: `false`,
-    // however long the batch has been going since.
-    if (runningBatch.current !== null) focusWhenIdle.current = field;
+    // Straight away when nothing is in flight — the screen's own pre-flight
+    // refusals are decided before anything starts — and deferred while a
+    // submit is still unwinding, because both pickers are `disabled` then and
+    // `focus()` on a disabled control does nothing at all. Read off the ref
+    // and not off `running`, which in a submit's own closure is the value it
+    // had when the button was pressed.
+    if (busy.current) focusWhenIdle.current = field;
     else focus(field);
+  }
+
+  /**
+   * Keep the newest line in view while the log is following.
+   *
+   * `scrollTop` rather than `scrollTo`: the assignment is a no-op on an
+   * element that does not scroll — which is every viewport below the
+   * breakpoint, where the console has no height cap and the page owns the
+   * axis — so nothing here has to know which layout is in force.
+   *
+   * Depends on the row *count* rather than on the array: the rows already
+   * painted never change, so a new identity with the same length would be a
+   * scroll for nothing.
+   */
+  const logged = rows.length;
+  useEffect(() => {
+    const log = consoleRef.current;
+    if (!follow || logged === 0 || log === null) return;
+    log.scrollTop = log.scrollHeight;
+  }, [logged, follow]);
+
+  /** Stop following when the reader scrolls up; resume when they come back. */
+  function watchScroll(event: UIEvent<HTMLDivElement>): void {
+    const log = event.currentTarget;
+    setFollow(log.scrollHeight - log.scrollTop - log.clientHeight <= AT_FOOT_SLACK);
+  }
+
+  function jumpToLatest(): void {
+    const log = consoleRef.current;
+    if (log !== null) log.scrollTop = log.scrollHeight;
+    setFollow(true);
   }
 
   /**
@@ -484,25 +675,93 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
    * sheet or a different set of images is chosen it is describing something
    * that is no longer on screen.
    */
-  function chooseManifest(event: ChangeEvent<HTMLInputElement>): void {
+  function retireReport(): void {
     setError(null);
     setRows([]);
     setSummary(null);
+    setTotal(null);
+    setNotes([]);
     setCutShort(false);
+    setFollow(true);
+  }
+
+  function chooseManifest(event: ChangeEvent<HTMLInputElement>): void {
+    retireReport();
     setManifest(event.target.files?.[0] ?? null);
   }
 
   function chooseFiles(event: ChangeEvent<HTMLInputElement>): void {
-    setError(null);
-    setRows([]);
-    setSummary(null);
-    setCutShort(false);
+    retireReport();
     setFiles([...(event.target.files ?? [])]);
+  }
+
+  /**
+   * Make the oversized images small enough to send, or refuse the ones that
+   * cannot be.
+   *
+   * Answers the list to upload, or `null` when it has already refused.
+   *
+   * **A file within the ceiling is never touched.** It travels as chosen,
+   * byte for byte: re-encoding it would cost a generation of JPEG artefacts to
+   * solve a problem it does not have. Only the oversized ones are redrawn, and
+   * they are redrawn *whole* — `shrinkImage` crops nothing, because a
+   * reference image is the tile and a tile with its edge cut off is a
+   * different reference image.
+   *
+   * **Sequentially, not `Promise.all`.** Each decode holds a frame of up to
+   * 186 megapixels; a hundred of those in flight at once is a tab that dies
+   * rather than a batch that goes faster, and the work is the browser's single
+   * decode thread either way.
+   *
+   * **One refusal for all of them, at the end.** A batch with two bad files in
+   * a hundred should be told about both at once, rather than refusing on the
+   * first and making the Administrator discover the second on the next
+   * attempt.
+   */
+  async function prepare(chosen: File[]): Promise<File[] | null> {
+    const oversized = chosen.filter((file) => file.size > MAX_IMAGE_BYTES);
+    if (oversized.length === 0) return chosen;
+
+    setShrinking(true);
+    const smaller = new Map<File, File>();
+    const beyondUs: string[] = [];
+    const done: string[] = [];
+
+    for (const file of oversized) {
+      // **Sequential on purpose, and `Promise.all` would be wrong here.** Each
+      // call holds a decoded frame of up to 186 megapixels; a hundred of those
+      // in flight at once is a tab that dies rather than a batch that finishes
+      // sooner, and the decoding is the browser's single image thread either
+      // way.
+      // oxlint-disable-next-line no-await-in-loop
+      const shrunk = await shrinkImage(file);
+      // The screen went while a 96 MB file was decoding. Nothing left to send
+      // it to, and nothing left to paint.
+      if (!alive.current) return null;
+      if (shrunk === null) {
+        beyondUs.push(file.name);
+        continue;
+      }
+      smaller.set(file, shrunk);
+      done.push(`${file.name} — ${megabytes(file.size)} MB sent as ${megabytes(shrunk.size)} MB.`);
+    }
+
+    setShrinking(false);
+    if (beyondUs.length > 0) {
+      refuse(cannotShrink(beyondUs), 'images');
+      return null;
+    }
+
+    // Said out loud rather than done quietly: the bytes indexed are not the
+    // bytes chosen, and an Administrator comparing a stored reference image
+    // against the file on their disk deserves to know why they differ.
+    setNotes(done);
+    return chosen.map((file) => smaller.get(file) ?? file);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (running) return;
+    if (busy.current) return;
 
     if (manifest === null) {
       refuse(NO_MANIFEST, 'manifest');
@@ -516,17 +775,25 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
       refuse(TOO_MANY_FILES, 'images');
       return;
     }
-    if (files.some((file) => file.size > MAX_IMAGE_BYTES)) {
-      refuse(FILE_TOO_LARGE, 'images');
-      return;
-    }
 
+    busy.current = true;
     setRunning(true);
-    setError(null);
-    setRows([]);
-    setSummary(null);
-    setCutShort(false);
+    retireReport();
 
+    try {
+      const sending = await prepare(files);
+      if (sending !== null) await send(manifest, sending);
+    } finally {
+      busy.current = false;
+      if (alive.current) {
+        setRunning(false);
+        setShrinking(false);
+      }
+    }
+  }
+
+  /** Open the stream and paint it, a line at a time. */
+  async function send(sheet: File, sending: File[]): Promise<void> {
     const batch = new AbortController();
     runningBatch.current = batch;
     /** Whether the closing line arrived. See the check after the stream ends. */
@@ -560,8 +827,8 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
     // endpoint's parameter names; `images` repeats once per file, which is how
     // a multipart body expresses a list.
     const body = new FormData();
-    body.append('manifest', manifest);
-    for (const file of files) body.append('images', file);
+    body.append('manifest', sheet);
+    for (const file of sending) body.append('images', file);
 
     try {
       await apiStream(
@@ -596,6 +863,13 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
             closed = true;
             return;
           }
+          // The opening line, and the only thing on this stream that is known
+          // before any work happens. It turns the bar from indeterminate into
+          // a count against a real denominator — see `asStart`.
+          if (line['kind'] === 'start') {
+            setTotal(asStart(line));
+            return;
+          }
           throw malformed();
         },
       );
@@ -622,8 +896,10 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
         );
       }
     } finally {
+      // `running` is reset by `handleSubmit`'s own `finally`, which owns the
+      // whole submit — the redraw pass included — rather than just the part of
+      // it that had a request open.
       if (runningBatch.current === batch) runningBatch.current = null;
-      if (alive.current) setRunning(false);
     }
   }
 
@@ -635,8 +911,23 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
   // denominator: the manifest is the server's to read, and inventing a total
   // from the number of images chosen would be wrong for every batch whose rows
   // and files do not line up — which is exactly the batch this report is for.
+  const counts = tally(rows);
+  /**
+   * The bar's denominator, or `null` while there is none.
+   *
+   * `Math.max` against the rows already in hand, because the server's total is
+   * a count of the lines a *clean* run writes and a batch that stops part-way
+   * adds one more on top of it (the line that says so). Without this the bar
+   * would overrun its own track on the one batch where its reader is looking
+   * hardest.
+   */
+  const scale = total === null ? null : Math.max(total, rows.length);
+
   let progress = '';
-  if (running) progress = rows.length === 0 ? UPLOADING : `${rows.length} reported.`;
+  if (shrinking) progress = SHRINKING;
+  else if (running && rows.length === 0) progress = UPLOADING;
+  else if (running)
+    progress = scale === null ? `${rows.length} reported.` : `${rows.length} of ${scale} reported.`;
   else if (cutShort) progress = CUT_SHORT;
   else if (summary !== null) progress = FINISHED;
 
@@ -759,50 +1050,154 @@ export function BulkUploadScreen({ onBack }: { onBack: () => void }): JSX.Elemen
         </div>
       </form>
 
-      {rows.length > 0 && (
+      {(running || rows.length > 0) && (
         // A labelled region, deliberately **not** a second live region. The
         // progress line above already announces that rows are arriving;
         // marking the list `role="status"` as well would read every row out in
         // full as it appeared, which on a hundred-row batch is the report
         // narrated twice over. A screen reader reaches it by its heading,
         // which is what a region is for.
+        //
+        // Opened as soon as the batch starts rather than when the first row
+        // lands, because the bar is the thing that has something to say during
+        // the minutes before there is a row to show.
         <section className={styles.report} aria-labelledby={reportId}>
           <h2 className={styles.subtitle} id={reportId}>
             Report
           </h2>
+
+          {/* The bar. **Determinate only once the server has said how many
+              rows there are** — `aria-valuenow` and `aria-valuemax` are
+              omitted while `scale` is null, which is precisely what ARIA
+              defines an indeterminate progressbar to be, and is the honest
+              shape for "the images are going up and nothing is counted yet".
+
+              The fill is three segments in the three outcome colours rather
+              than one bar in one colour: the same report, at a glance, in the
+              same navy/orange/red this screen already uses row by row. The
+              colours come from the row classes themselves — `.segment` paints
+              with `currentColor` — so there is exactly one place that decides
+              what "flagged" looks like here. */}
+          <div className={styles.progress}>
+            <div
+              className={styles.track}
+              role="progressbar"
+              aria-label="Rows reported"
+              aria-valuetext={progress === '' ? UPLOADING : progress}
+              aria-valuemin={0}
+              aria-valuemax={scale ?? undefined}
+              aria-valuenow={scale === null ? undefined : rows.length}
+            >
+              {scale === null ? (
+                <span className={styles.waiting} />
+              ) : (
+                <>
+                  <span
+                    className={`${styles.segment} ${styles.created}`}
+                    style={{ width: `${(counts.created / scale) * 100}%` }}
+                  />
+                  <span
+                    className={`${styles.segment} ${styles.flagged}`}
+                    style={{ width: `${(counts.flagged / scale) * 100}%` }}
+                  />
+                  <span
+                    className={`${styles.segment} ${styles.failed}`}
+                    style={{ width: `${(counts.failed / scale) * 100}%` }}
+                  />
+                </>
+              )}
+            </div>
+            {/* The counts, in the same three colours and never colour alone —
+                each carries its word, for the reason every row does. Not a
+                live region: the one `role="status"` beside the buttons is what
+                speaks, and a second announcer would read the batch twice. */}
+            <p className={styles.counts}>
+              <span className={styles.created}>{counts.created} added</span>
+              <span className={styles.flagged}>{counts.flagged} flagged</span>
+              <span className={styles.failed}>{counts.failed} failed</span>
+              {scale !== null && (
+                <span className={styles.ofTotal}>
+                  {rows.length} of {scale} rows
+                </span>
+              )}
+            </p>
+          </div>
+
+          {/* What this device did before the batch left. Paragraphs rather
+              than a list: the report below is the one list on this screen, and
+              a second one would be a second thing to navigate for what is a
+              footnote about bytes. */}
+          {notes.length > 0 && (
+            <div className={styles.notes}>
+              {notes.map((note) => (
+                <p className={styles.note} key={note}>
+                  {note}
+                </p>
+              ))}
+            </div>
+          )}
           {/* `role="list"` restated on a list that has no markers. Safari and
               VoiceOver drop list semantics from an `<ol>` whose `list-style`
               is `none` — the rows stop being announced as "list, 30 items" and
               "row 4 of 30" goes with them, which on a report this long is the
               one piece of orientation a screen-reader user has. Redundant in
               every other browser and harmless there. */}
-          <ol className={styles.rows} role="list">
-            {rows.map((row) => (
-              <li key={row.seq} className={`${styles.row} ${outcomeClass(row.status)}`}>
-                <span className={styles.outcome}>
-                  {outcomeIcon(row.status)}
-                  <span className={styles.word}>{WORD[row.status]}</span>
-                </span>
-                {/* The manifest row, where there is one. This is what an
-                    Administrator looks up in the sheet in front of them, so it
-                    leads the line rather than sitting after the file name.
-                    Absent on the lines that have no row — an upload nothing
-                    named, and the one that reports the batch stopping. */}
-                {row.row !== null && <span className={styles.rowNumber}>Row {row.row}</span>}
-                {/* Empty on a line that reports a part which declared no file
-                    name at all; its message says so, and an empty element here
-                    would be a gap with nothing in it. */}
-                {row.file !== '' && <span className={styles.fileName}>{row.file}</span>}
-                {row.code !== null && <span className={styles.codeValue}>{row.code}</span>}
-                {row.error !== null && <span className={styles.detail}>{row.error.message}</span>}
-                {row.flags.map((flag) => (
-                  <span className={styles.detail} key={flag}>
-                    {flagSentence(flag)}
-                  </span>
+          {rows.length > 0 && (
+            <div className={styles.console} ref={consoleRef} onScroll={watchScroll}>
+              <ol className={styles.rows} role="list">
+                {rows.map((row) => (
+                  <li key={row.seq} className={`${styles.row} ${outcomeClass(row.status)}`}>
+                    {/* The line's own head: everything that identifies it, on
+                        one wrapping line, so a hundred of them read as a log
+                        and not as a hundred paragraphs. The sentences beneath
+                        are what only some rows have. */}
+                    <span className={styles.head}>
+                      {/* When this line landed. See `CLOCK`: the gap between
+                          two stamps is the only evidence of where a slow batch
+                          is spending its minutes. */}
+                      <span className={styles.time}>{row.at}</span>
+                      <span className={styles.outcome}>
+                        {outcomeIcon(row.status)}
+                        <span className={styles.word}>{WORD[row.status]}</span>
+                      </span>
+                      {/* The manifest row, where there is one. This is what an
+                          Administrator looks up in the sheet in front of them.
+                          Absent on the lines that have no row — an upload
+                          nothing named, and the one that reports the batch
+                          stopping. */}
+                      {row.row !== null && <span className={styles.rowNumber}>Row {row.row}</span>}
+                      {/* Empty on a line that reports a part which declared no
+                          file name at all; its message says so, and an empty
+                          element here would be a gap with nothing in it. */}
+                      {row.file !== '' && <span className={styles.fileName}>{row.file}</span>}
+                      {row.code !== null && <span className={styles.codeValue}>{row.code}</span>}
+                    </span>
+                    {row.error !== null && (
+                      <span className={styles.detail}>{row.error.message}</span>
+                    )}
+                    {row.flags.map((flag) => (
+                      <span className={styles.detail} key={flag}>
+                        {flagSentence(flag)}
+                      </span>
+                    ))}
+                  </li>
                 ))}
-              </li>
-            ))}
-          </ol>
+              </ol>
+            </div>
+          )}
+
+          {/* The way back to the tail, and only when there is one to offer: the
+              console has scrolled away from its foot while rows are still
+              arriving. Absent at rest, which is what keeps this screen's
+              control count what it says it is — and absent entirely below the
+              breakpoint, where the console does not scroll and the page's own
+              scroll is the reader's. */}
+          {running && !follow && (
+            <button className={styles.follow} type="button" onClick={jumpToLatest}>
+              <ArrowDown className={styles.followIcon} aria-hidden="true" />
+              Jump to latest
+            </button>
+          )}
           {summary !== null && (
             // The closing line, and a summary *of* the list rather than
             // instead of it (EXPERIENCE.md:73). It states three counts and

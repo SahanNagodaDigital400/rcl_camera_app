@@ -20,11 +20,17 @@
  * floor and the accent focus ring are already on `button` and `input` in
  * global.css and are deliberately not restated. */
 
+/* **The column is the content's, and the form keeps its own measure.** Every
+ * other admin form on this screen's pattern is `--measure-form` wide and this
+ * one still is — but the report beneath it is a log, and a hundred lines of
+ * timestamp, outcome, row number, file name and Code inside a 22rem column
+ * wraps every single one of them onto four lines. The form's rhythm is
+ * unchanged; only the report gets the room. */
 .screen {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
-  max-width: var(--measure-form);
+  max-width: var(--measure-content);
 }
 
 .title {
@@ -39,6 +45,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
+  max-width: var(--measure-form);
 }
 
 .field {
@@ -204,6 +211,145 @@
   color: var(--color-text);
 }
 
+/* The progress block: the bar and the counts beneath it. */
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* The bar's track. Navy at 6% — the same tint the admin surfaces use for a
+ * quiet fill — so the unfilled remainder reads as "not yet" rather than as a
+ * fourth outcome colour. `overflow: hidden` is what lets the segments inside
+ * take the pill radius without each carrying one. */
+.track {
+  display: flex;
+  block-size: var(--progress-track-height);
+  border-radius: var(--radius-full);
+  background: var(--color-primary-tint);
+  overflow: hidden;
+}
+
+/* One outcome's share of the bar.
+ *
+ * **`currentColor`, never a colour of its own.** The element carries
+ * `.created`, `.flagged` or `.failed` beside this class and those three rules
+ * — the ones DESIGN.md:144-149 pins — set the colour. So there is exactly one
+ * place in this stylesheet that decides what a flagged thing looks like, and
+ * the bar cannot drift from the rows it summarises.
+ *
+ * The width transition is the only motion here; `global.css`'s
+ * `prefers-reduced-motion` block freezes it with everything else. */
+.segment {
+  block-size: 100%;
+  background: currentColor;
+  transition: width var(--motion-fast) var(--motion-ease);
+}
+
+/* The indeterminate state: the images are still going up and the server has
+ * not said how many rows there are, so nothing is known and nothing is
+ * implied. A band sweeping the track rather than a bar at some invented
+ * fraction of it (AD-20). Animated through `background-position`, which moves
+ * no layout. */
+.waiting {
+  inline-size: 100%;
+  block-size: 100%;
+  background-image: var(--progress-waiting-sweep);
+  background-size: var(--progress-waiting-width) 100%;
+  background-repeat: no-repeat;
+  animation: sweep 1.4s var(--motion-ease) infinite;
+}
+
+@keyframes sweep {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 100% 0;
+  }
+}
+
+/* The three counts, and the position beside them. Each carries its word, so
+ * the colour is the glance and never the signal — the rows' own rule, applied
+ * to their summary. */
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+/* "12 of 40 rows" — the bar in words, for anyone who cannot read a length.
+ * Muted and pushed to the far end: it is the denominator's caption, not a
+ * fourth outcome. Tabular figures so the number does not jitter sideways as
+ * it counts up. */
+.ofTotal {
+  margin-inline-start: auto;
+  color: var(--color-muted-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* What this device did to the oversized images before the batch left.
+ * Paragraphs and not a list: the log below is the one list on this screen. */
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.note {
+  color: var(--color-muted-text);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+
+/* The log's viewport.
+ *
+ * **Bare below the breakpoint, and that is the design.** A hundred rows inside
+ * a fixed box on a phone is a scroll trap a thumb cannot leave, so there the
+ * report simply grows and the page owns the vertical axis — exactly as it did
+ * before this element existed. The height cap and the inner scroll are added
+ * at desktop width in the media query at the foot of this file, where an
+ * Administrator actually runs a batch and where keeping the form, the bar and
+ * the newest rows on one screen is worth more than an uninterrupted page.
+ *
+ * `min-inline-size: 0` because this is a flex child of `.report` and a long
+ * unbroken Code inside it would otherwise force the whole card wider than the
+ * viewport rather than wrapping. */
+.console {
+  min-inline-size: 0;
+}
+
+/* The way back to the tail, offered only when the reader has scrolled away
+ * from it mid-batch. Navy outline, pill — a secondary control, and not a
+ * second accent: Upload is this screen's one orange action. */
+.follow {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.followIcon {
+  inline-size: var(--icon-size-sm);
+  block-size: var(--icon-size-sm);
+  flex: none;
+}
+
 /* The rows.
  *
  * **It scrolls with the page, not inside a box of its own.** EXPERIENCE.md:73
@@ -223,7 +369,7 @@
 .rows {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
   list-style: none;
   padding: 0;
 }
@@ -235,8 +381,38 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding-bottom: var(--space-3);
+  padding-bottom: var(--space-2);
   border-bottom: var(--border-hairline) solid var(--color-border);
+}
+
+/* One log line's head: everything that identifies the row, on a single
+ * wrapping line. This is what makes a hundred rows read as a log rather than
+ * as a hundred paragraphs — the sentences underneath are the exception, not
+ * the shape. `baseline` so the clock, the word and the file name sit on one
+ * optical line despite three different sizes. */
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  min-inline-size: 0;
+}
+
+/* When the line arrived.
+ *
+ * Monospace and tabular, which is the one thing that makes a column of
+ * timestamps legible as a column: the gap between two of them is the only
+ * evidence an Administrator has of where a slow batch is spending its minutes,
+ * and figures that shift sideways row to row are a gap nobody can read off.
+ * Muted, because it is the line's margin note and not its subject. */
+.time {
+  color: var(--color-muted-text);
+  font-family: var(--font-mono);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* The indicator and its word, on one line and never apart. The word is the
@@ -341,4 +517,22 @@
   color: var(--color-text);
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
+}
+
+/* The one breakpoint in the system. Below it this file says nothing: the
+ * report grows, the page scrolls, and the log is read the way every other list
+ * in this product is read on a phone.
+ *
+ * At and above it the log gets a viewport of its own, which is the whole point
+ * of the console treatment — the form, the bar and the newest rows stay on one
+ * screen through a batch that runs for minutes, instead of the bar scrolling
+ * off the top after twenty rows. `overscroll-behavior: contain` stops a wheel
+ * that reaches the foot of the log from carrying on down the page, which is
+ * the one way an inner scroll region surprises somebody. */
+@media (min-width: 768px) {
+  .console {
+    max-block-size: var(--log-console-max-height);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }

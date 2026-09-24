@@ -195,6 +195,32 @@
   --spinner-size: 16px;
   --spinner-border-width: 2px;
 
+  /* Bulk upload's progress bar. Derived, not in DESIGN.md's frontmatter —
+   * adding a token is fine, contradicting one is not.
+   *
+   * A bar rather than a ring: the batch has a countable denominator (the
+   * server sends it) and a horizontal run reads as "how far through a list"
+   * in a way a spinner cannot. Thin, because it is a status and not the
+   * subject — the log beneath it is what an Administrator is reading. */
+  --progress-track-height: 8px;
+  /* The sweep shown while the images are still going up and nothing has been
+   * counted yet: no value is known, so none is implied. A moving band across
+   * a third of the track, painted as a background so the animation is a
+   * `background-position` rather than a layout property. */
+  --progress-waiting-width: 30%;
+  --progress-waiting-sweep: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-primary),
+    transparent
+  );
+  /* How tall the bulk-upload log grows before it scrolls inside itself —
+   * applied only at and above the breakpoint. Below it the page owns the
+   * scroll, because a hundred rows in a fixed box on a phone is a region a
+   * thumb cannot leave. Sized so the form, the bar and roughly a dozen rows
+   * sit on one desktop screen together. */
+  --log-console-max-height: 26rem;
+
   /* The one breakpoint in the system: below it, mobile scan surfaces with
    * generous spacing and a bottom tab bar; at and above it, desktop admin
    * surfaces with a sidebar and denser table rows. CSS media queries cannot
