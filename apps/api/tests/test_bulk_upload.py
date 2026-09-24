@@ -220,6 +220,12 @@ def summary_of(response: Any) -> dict[str, Any]:
     return closing
 
 
+def start_of(response: Any) -> dict[str, Any]:
+    opening = lines(response)[0]
+    assert opening["kind"] == "start", opening
+    return opening
+
+
 def count(conn: psycopg.Connection, statement: str) -> int:
     row = conn.execute(statement).fetchone()
     assert row is not None
@@ -320,13 +326,68 @@ def test_the_rows_arrive_as_they_complete_rather_than_at_the_end(
         for line in response.iter_lines():
             if line.strip():
                 seen.append(json.loads(line)["kind"])
-                # The first thing on the stream is a row, not the summary:
-                # the report is written as the batch runs rather than
-                # composed from its result.
-                if len(seen) == 1:
-                    assert seen == ["row"]
+                # The first thing on the stream is the opening line, and the
+                # second is a row rather than the summary: the report is
+                # written as the batch runs rather than composed from its
+                # result.
+                if len(seen) == 2:
+                    assert seen == ["start", "row"]
 
-    assert seen == ["row", "row", "summary"]
+    assert seen == ["start", "row", "row", "summary"]
+
+
+@needs_model
+def test_the_opening_line_counts_every_row_line_that_follows(
+    client: TestClient, administrator: Any
+) -> None:
+    # The whole reason the `start` line exists: a reader needs a denominator
+    # from the first byte, and the only honest one is the number of `row`
+    # lines this report will carry. A total that did not match would be worse
+    # than none at all — a progress bar that stops at nine tenths, or reaches
+    # the end with rows still arriving.
+    response = bulk(client, sheet=manifest(THREE_ROWS), images=THREE_IMAGES)
+
+    assert start_of(response)["total"] == len(rows_of(response)) == 3
+    # Nothing else rides on the opening line. It is a count and a discriminator
+    # — a batch id, an estimate of how long this will take or a echo of the
+    # manifest would each be a second thing for a reader to trust.
+    assert set(start_of(response)) == {"kind", "total"}
+
+
+@needs_model
+def test_the_opening_total_counts_uploads_no_row_names(
+    client: TestClient, administrator: Any
+) -> None:
+    # The count is of *report lines*, not of manifest rows, and this is the
+    # batch that tells the two apart: one row in the sheet, two images sent.
+    # A reader that had guessed its denominator from either number alone would
+    # have been wrong here, which is exactly why the server states it.
+    rows = [{"file": "a.jpg", "code": STRUCTURED_CODE, "size": SIZE, "category": CATEGORY}]
+    images = [THREE_IMAGES[0], ("stray.jpg", jpeg_bytes(a_tile_photograph(9)))]
+
+    response = bulk(client, sheet=manifest(rows), images=images)
+
+    assert start_of(response)["total"] == len(rows_of(response)) == 2
+
+
+# `needs_model` although nothing here embeds — the route pre-flights the
+# artifact before the stream opens.
+@needs_model
+def test_the_opening_total_counts_a_part_that_declared_no_name(
+    client: TestClient, administrator: Any
+) -> None:
+    # The third kind of line the total has to include. A part with bytes and no
+    # file name is reported (`image_unmatched`), so it is a row the reader will
+    # paint and a row the denominator has to have room for.
+    rows = [{"file": "a.jpg", "code": "", "size": SIZE, "category": CATEGORY}]
+    body, headers = raw_multipart(
+        [("manifest", "codes.csv", manifest(rows)), ("images", "", b"not nothing")]
+    )
+
+    response = client.post(BULK_UPLOAD, content=body, headers=headers)
+    assert response.status_code == 200, response.text
+
+    assert start_of(response)["total"] == len(rows_of(response)) == 2
 
 
 @needs_model
@@ -1571,10 +1632,10 @@ def test_an_abandoned_batch_still_removes_its_spool(
         spool=spool,
     )
 
-    # One line, then hang up. The pool is `None`, so opening a connection
-    # raises inside the guard and the batch reports itself as stopped — which
-    # is a line, which is all this needs to have started the generator.
-    assert json.loads(next(stream))["kind"] == "row"
+    # One line, then hang up. The opening line is written before any work
+    # happens, which is all this needs to have started the generator — and
+    # starting it is what arms the `finally` that removes the spool.
+    assert json.loads(next(stream))["kind"] == "start"
     stream.close()
 
     assert not directory.exists()

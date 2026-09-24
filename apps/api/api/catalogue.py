@@ -2022,6 +2022,25 @@ def _row_line(number: int | None, file_name: str, code: str | None, result: _Row
     )
 
 
+def _orphans(rows: list[_ManifestRow], spooled: dict[str, list[_Spooled]]) -> list[_Spooled]:
+    """The uploads no manifest row names, in the order they will be reported.
+
+    Lifted out of `_bulk_stream` so it can be answered *before* the first row
+    runs rather than after the last one: the opening line states how many `row`
+    lines the report will carry, and these are part of that count. Nothing here
+    touches the database or the object store — it is a set difference over the
+    manifest's file names — so asking early costs the batch nothing.
+
+    Sorted by the name as declared, so two runs of the same batch report them
+    in the same order, and one entry per *file* rather than per pairing key —
+    two uploads differing only by case are two images and two things to go and
+    look at.
+    """
+    named = {_pairing_key(row.file) for row in rows}
+    unmatched = [entry for key, entries in spooled.items() if key not in named for entry in entries]
+    return sorted(unmatched, key=lambda spooled_file: spooled_file.name)
+
+
 def _bulk_stream(
     pool: ConnectionPool,
     store: ObjectStore,
@@ -2032,7 +2051,14 @@ def _bulk_stream(
     unnamed: int,
     spool: tempfile.TemporaryDirectory[str],
 ) -> Iterator[str]:
-    """The report, a line at a time, then the summary that closes it.
+    """The opening line, the report a line at a time, then the summary.
+
+    **Three shapes travel on this stream, and `kind` tells them apart.** A
+    `start` line opens it, one `row` line reports each tile, and a `summary`
+    line closes it. The opening line exists so a reader has a denominator from
+    the first byte rather than after the last one: it is written before any
+    row runs, so it costs the batch nothing and arrives while the report is
+    still empty.
 
     **The connection is opened here, not declared as a dependency.** A yielded
     `get_connection` is returned to the pool when the *request function*
@@ -2059,7 +2085,28 @@ def _bulk_stream(
     the iterator, the generator is thrown into, and the cleanup still runs.
     """
     counts = {ROW_CREATED: 0, ROW_FLAGGED: 0, ROW_FAILED_STATUS: 0}
+    orphans = _orphans(rows, spooled)
     try:
+        # **The opening line, and the only number on this stream that is known
+        # before any work happens.** It states how many `row` lines the report
+        # carries if it runs to the end: one per manifest row, one per upload
+        # nothing named, one per part that declared no name. A reader can
+        # therefore show a real denominator — "12 of 40" — instead of guessing
+        # one from the number of files it sent, which is wrong for exactly the
+        # batch a report is most needed for: the one whose rows and uploads do
+        # not line up.
+        #
+        # It is a count of *lines*, not a promise about the catalogue: a batch
+        # that stops part-way writes one extra failed line past this total
+        # (see below), and a reader must treat it as a ceiling it can reach
+        # rather than as an invariant.
+        yield (
+            json.dumps(
+                {"kind": "start", "total": len(rows) + len(orphans) + unnamed},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
         stopped = False
         try:
             with pool.connection() as conn:
@@ -2082,19 +2129,10 @@ def _bulk_stream(
 
                 # An image no row named. Reported rather than silently dropped:
                 # an upload that travelled and was not indexed is a tile the
-                # Administrator believes is in the catalogue. Sorted by the
-                # name as declared, so two runs of the same batch report them
-                # in the same order, and one line per *file* rather than per
-                # key — two uploads differing only by case are two images and
-                # two things to go and look at.
-                named = {_pairing_key(row.file) for row in rows}
-                orphans = [
-                    entry
-                    for key, entries in spooled.items()
-                    if key not in named
-                    for entry in entries
-                ]
-                for entry in sorted(orphans, key=lambda spooled_file: spooled_file.name):
+                # Administrator believes is in the catalogue. Worked out before
+                # the loop rather than here, because the opening line counts
+                # these among the rows it promises — see `_orphans`.
+                for entry in orphans:
                     counts[ROW_FAILED_STATUS] += 1
                     yield _row_line(None, entry.name, None, _failed(IMAGE_UNMATCHED, NOT_NAMED))
 
@@ -2153,6 +2191,11 @@ def bulk_upload(
     Tile id. There is no `POST /admin/tiles/{tile_id}` today; the ordering is
     what keeps that a property of the route table rather than of nobody having
     added one yet.
+
+    **The stream opens with a `start` line carrying the total, then a `row`
+    line per tile, then a `summary`.** Every refusable thing is decided before
+    that first line, so a reader holding one knows the batch was accepted and
+    knows how many rows to expect.
 
     **Everything refusable is refused before the first byte of the stream.**
     The HTTP status is committed at that byte, so authorization, the manifest,

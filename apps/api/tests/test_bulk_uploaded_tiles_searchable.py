@@ -204,7 +204,9 @@ def test_a_flagged_row_is_searchable_exactly_like_a_created_one(
         ],
     )
     assert response.status_code == 200, response.text
-    line = json.loads(response.text.splitlines()[0])
+    # `[1]`, not `[0]`: the report opens with the `start` line carrying the
+    # total, and the rows follow it.
+    line = json.loads(response.text.splitlines()[1])
     assert line["status"] == "flagged"
     assert sorted(line["flags"]) == ["unknown_category", "unknown_face_number"]
 

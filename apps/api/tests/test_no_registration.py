@@ -141,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_eighteen_routes_the_product_serves() -> None:
+def test_the_route_table_is_the_nineteen_routes_the_product_serves() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -257,6 +257,17 @@ def test_the_route_table_is_the_eighteen_routes_the_product_serves() -> None:
     # yet — Story 3.5). It cannot be a registration surface because it cannot
     # be reached without a session that already required one.
     #
+    # `/scans/sizes` is the thirteenth new path and the third outside
+    # `/admin/`: the Sizes a scan may declare, read by the Scan screen's size
+    # picker so a staff member can narrow a match to the size of the tile in
+    # their hand. A read, and a read of nothing but Size names already in the
+    # index — it takes no body at all and names no person, address or
+    # password. Authenticated through `require_claimed_user`, the same door
+    # `/scans` itself uses, because it configures that submission and is
+    # reachable by exactly whoever can submit one. A sub-path of `/scans`
+    # rather than a root `/sizes`, which would read as a catalogue resource
+    # and belong behind `require_administrator` with the rest of them.
+    #
     # `/tiles/{tile_id}/images/{image_id}` (Story 3.4) is the twelfth new
     # path, and the second outside `/admin/` — the Scan surface's own
     # reference-image proxy behind Results' Candidate cards, gated by
@@ -290,6 +301,7 @@ def test_the_route_table_is_the_eighteen_routes_the_product_serves() -> None:
         "/admin/tiles/{tile_id}",
         "/admin/tiles/{tile_id}/images/{image_id}",
         "/scans",
+        "/scans/sizes",
         "/tiles/{tile_id}/images/{image_id}",
     }
 
