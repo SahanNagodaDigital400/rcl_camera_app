@@ -41,13 +41,6 @@ def a_tile_photograph(seed: int = 5, size: tuple[int, int] = (320, 320)) -> Imag
     return Image.fromarray(rng.integers(0, 255, (size[1], size[0], 3), dtype=np.uint8), "RGB")
 
 
-def a_flat_photograph(size: tuple[int, int] = (320, 320)) -> Image.Image:
-    """A single uniform colour — zero Laplacian variance, `test_scan_submission.py`'s
-    own fixture for the quality gate's refusal (FR-9), unchanged.
-    """
-    return Image.new("RGB", size, (180, 180, 180))
-
-
 def jpeg_bytes(image: Image.Image | None = None) -> bytes:
     buf = io.BytesIO()
     (image or a_tile_photograph()).save(buf, format="JPEG", quality=92)
@@ -199,33 +192,31 @@ def test_a_throttled_caller_keeps_being_refused_and_keeps_being_counted(
 def test_a_submission_refused_for_a_later_reason_still_counts(
     client: TestClient, conn: psycopg.Connection, make_user: MakeUser, low_limit: int
 ) -> None:
-    """The throttle check runs before the crop rectangle and the quality gate
-    (AD-16's fixed order), so a submission refused for either of those later
-    reasons must still increment the counter — this is what stops a future
-    refactor that moves the throttle check later from silently letting refused
-    requests bypass it for free.
+    """The throttle check runs before the crop rectangle (AD-16's fixed order),
+    so a submission refused for that later reason must still increment the
+    counter — this is what stops a future refactor that moves the throttle
+    check later from silently letting refused requests bypass it for free.
 
-    Driven with a flat photograph, which fails FR-9's quality gate every time
-    (`test_scan_submission.py`'s own `a_flat_photograph` fixture) — chosen over
-    an invalid crop rectangle only because it is refused *after* the crop
-    still succeeds, which is the harder of the two cases to get right: the
-    rate limit has to be checked and counted before either refusal, not just
-    before the one that fails earliest.
+    Driven with an out-of-bounds crop rectangle. It used to be driven by a
+    flat photograph failing FR-9's blur gate, deliberately, because that
+    refusal landed *after* the crop succeeded and so was the harder case to
+    get right. That gate has since been removed, and no refusal after the
+    crop is reachable without breaking the model, so the rectangle is what is
+    left to assert with.
     """
     account = make_user()
     sign_in(client, account)
-    flat = ("scan.jpg", jpeg_bytes(a_flat_photograph()), "image/jpeg")
 
     for expected in range(1, low_limit + 1):
-        response = submit_scan(client, image=flat)
+        response = submit_scan(client, crop_x=0.9, crop_width=0.5)
         assert response.status_code == 422, expected
-        assert response.json()["error"]["code"] == "scan_quality_too_low"
+        assert response.json()["error"]["code"] == "invalid_crop_rect"
         row = _rate_limit_row(conn, account.id)
         assert row is not None
         assert row["submission_count"] == expected
 
-    # The counter is now at `low_limit`, purely from quality refusals and with
-    # no successful scan ever recorded — so an otherwise-valid submission is
+    # The counter is now at `low_limit`, purely from refusals and with no
+    # successful scan ever recorded — so an otherwise-valid submission is
     # itself throttled, proving the earlier refusals were not free.
     assert submit_scan(client).status_code == 429
     assert _scan_rows(conn) == []
@@ -323,7 +314,7 @@ def test_an_invalid_rate_falls_back_to_the_default(
 def test_an_invalid_window_falls_back_to_the_default(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, raw: str
 ) -> None:
-    """`shared_vision.quality._read_threshold`'s exact shape: unparseable,
+    """Unparseable,
     non-finite and negative values must all fall back rather than reach the
     SQL below with a window that could never resolve.
 

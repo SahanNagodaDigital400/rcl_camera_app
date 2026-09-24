@@ -718,76 +718,6 @@ describe('the upload path', () => {
 });
 
 describe('a submission refused on Scan', () => {
-  it('shows the retake prompt beside the live picker on scan_quality_too_low, and offers the crop', async () => {
-    stubCanvas();
-    stubImageBitmap({ width: 1000, height: 1000 });
-    stubFetch({
-      '/api/auth/session': [{ status: 200, body: STAFF }],
-      '/api/scans': [
-        {
-          status: 422,
-          body: {
-            error: {
-              code: 'scan_quality_too_low',
-              message: "This photo's a little blurry — try again.",
-            },
-          },
-        },
-        { status: 200, body: [A_CANDIDATE] },
-      ],
-    });
-    render(<App />);
-    await openScan();
-
-    fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
-
-    expect(await screen.findByRole('alert')).toHaveProperty(
-      'textContent',
-      "This photo's a little blurry — try again.",
-    );
-    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /crop this photo/i })).toBeTruthy();
-    // Retaking is the picker (or the shutter) itself; no second control says so.
-    expect(screen.queryByRole('button', { name: /^retake$/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull();
-
-    fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
-
-    expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
-  });
-
-  it('lets the refusal be dismissed, clearing the viewfinder without taking another photo', async () => {
-    stubCanvas();
-    stubImageBitmap({ width: 1000, height: 1000 });
-    stubFetch({
-      '/api/auth/session': [{ status: 200, body: STAFF }],
-      '/api/scans': [
-        {
-          status: 422,
-          body: {
-            error: {
-              code: 'scan_quality_too_low',
-              message: "This photo's a little blurry — try again.",
-            },
-          },
-        },
-      ],
-    });
-    render(<App />);
-    await openScan();
-
-    fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
-    await screen.findByRole('alert');
-
-    fireEvent.click(screen.getByRole('button', { name: /^dismiss$/i }));
-
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.queryByRole('button', { name: /crop this photo/i })).toBeNull();
-    // Still on Scan, with the picker live for the next attempt.
-    expect(screen.getByRole('heading', { name: /^scan$/i })).toBeTruthy();
-    expect(screen.getByLabelText(/choose a photo/i)).toHaveProperty('disabled', false);
-  });
-
   it('lets a failure be dismissed the same way', async () => {
     stubCanvas();
     stubImageBitmap({ width: 1000, height: 1000 });
@@ -826,11 +756,11 @@ describe('a submission refused on Scan', () => {
       '/api/auth/session': [{ status: 200, body: STAFF }],
       '/api/scans': [
         {
-          status: 422,
+          status: 503,
           body: {
             error: {
-              code: 'scan_quality_too_low',
-              message: "This photo's a little blurry — try again.",
+              code: 'matching_unavailable',
+              message: 'The image matching service is not set up on this server.',
             },
           },
         },
@@ -1309,59 +1239,6 @@ describe('confirming a crop', () => {
 
     expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
   });
-
-  it(
-    'shows the retake prompt and relabels the action "Retake" on a ' +
-      'scan_quality_too_low refusal, returning to the viewfinder on tap',
-    async () => {
-      stubCanvas();
-      const { revoke } = stubObjectUrl();
-      stubImageBitmap({ width: 1000, height: 1000 });
-      stubFetch({
-        '/api/auth/session': [{ status: 200, body: STAFF }],
-        '/api/scans': [
-          { status: 200, body: [] },
-          {
-            status: 422,
-            body: {
-              error: {
-                code: 'scan_quality_too_low',
-                message: "This photo's a little blurry — try again.",
-              },
-            },
-          },
-          { status: 200, body: [A_CANDIDATE] },
-        ],
-      });
-
-      await reachCrop();
-
-      fireEvent.click(screen.getByRole('button', { name: /confirm crop/i }));
-
-      expect(await screen.findByRole('alert')).toHaveProperty(
-        'textContent',
-        "This photo's a little blurry — try again.",
-      );
-      expect(screen.getByRole('heading', { name: /^crop$/i })).toBeTruthy();
-      expect(screen.queryByRole('button', { name: /confirm crop/i })).toBeNull();
-      expect(screen.queryByRole('button', { name: /^back$/i })).toBeNull();
-      const retake = screen.getByRole('button', { name: /^retake$/i });
-      expect(retake).toBeTruthy();
-
-      fireEvent.click(retake);
-
-      // The camera, not the Results this crop was refining: a blurry frame
-      // needs another photo.
-      expect(await screen.findByRole('heading', { name: /^scan$/i })).toBeTruthy();
-      expect(screen.queryByRole('heading', { name: /^crop$/i })).toBeNull();
-      expect(revoke).toHaveBeenCalledWith('blob:mock-preview');
-
-      fireEvent.change(screen.getByLabelText(/choose a photo/i), { target: { files: [aFile()] } });
-
-      expect(await screen.findByRole('heading', { name: /^results$/i })).toBeTruthy();
-      expect(screen.getByText(A_CANDIDATE.code)).toBeTruthy();
-    },
-  );
 
   it(
     'shows an inline error and re-enables Confirm on a failed submission, ' +

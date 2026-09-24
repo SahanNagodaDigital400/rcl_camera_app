@@ -2,8 +2,8 @@
 
 Story 3.1 gave Scan a capture/upload path with nowhere to send the result.
 `submit_scan` is that destination: it crops the submitted image server-side,
-in `shared_vision`, checks the cropped region's quality, matches the
-surviving crop against the catalogue through `api.catalogue.find_candidates`
+in `shared_vision`, matches the cropped region against the catalogue through
+`api.catalogue.find_candidates`
 — the same function Epic 2 built and tested, wrapped here rather than
 reimplemented (AD-1) — answers `200` with up to three ranked Candidates
 (Stories 3.2-3.4), and persists what it just answered as one `scan` row
@@ -93,20 +93,6 @@ INVALID_CROP_RECT = "invalid_crop_rect"
 #: translation rather than a selection to fix by hand.
 INVALID_RECT_MESSAGE = "That crop selection is not valid. Adjust it and try again."
 
-#: The cropped region scored below `shared_vision.SCAN_QUALITY_THRESHOLD`
-#: (FR-9, AD-12). `CropScreen` recognises this code and swaps its actions for
-#: a single "Retake" — see its own module comment — rather than leaving a
-#: resubmission of the same photo live, which would only fail again.
-SCAN_QUALITY_TOO_LOW = "scan_quality_too_low"
-
-#: Verbatim, EXPERIENCE.md's own microcopy for this refusal. `CropScreen`
-#: renders `failure.message` straight from the server rather than holding a
-#: second copy of this sentence, so there is no TypeScript twin for
-#: `error-code-parity.test.ts` to pin it against — only the *code* above has
-#: one. This exact wording is pinned by nothing but
-#: `test_scan_submission.py`'s own direct assertion against it.
-SCAN_QUALITY_MESSAGE = "This photo's a little blurry — try again."
-
 #: The Size the submission declared is not one the active generation holds.
 #:
 #: **Validated against the index, never taken on trust** — the POC's own rule
@@ -174,11 +160,10 @@ def submit_scan(
     source_ip: Annotated[str | None, Depends(audit.source_ip)],
     size: Annotated[str, Form()] = "",
 ) -> list[ScanCandidate]:
-    """Crop, gate on quality, match, and answer up to three ranked Candidates.
+    """Crop, match, and answer up to three ranked Candidates.
 
-    Story 3.2 crops the submitted scan, server-side, exactly once. Story 3.3
-    gates what survives that crop on FR-9's quality check. Story 3.4 sends the
-    surviving crop — never the pre-crop frame — through
+    Story 3.2 crops the submitted scan, server-side, exactly once. Story 3.4
+    sends that crop — never the pre-crop frame — through
     `api.catalogue.find_candidates`, the same tested search Epic 2 built, and
     maps each returned Candidate to the closed `ScanCandidate` contract:
     `tile_id`, `code`, `size`, `category`, `image_id` — never `score`, `rank`
@@ -214,16 +199,23 @@ def submit_scan(
     synchronous route in this product already uses. An empty catalogue (no
     tile ever indexed) is not an error — `find_candidates` answers `[]`, and
     this route answers the same empty array, which `apps/web`'s Results screen
-    reads as "no confident match" rather than a failure. A quality failure
-    (3.3, above) never reaches the match at all.
+    reads as "no confident match" rather than a failure.
+
+    **There is no blur or framing gate.** One was specified (FR-9, AD-12) and
+    built, on a threshold its own module described as an uncalibrated
+    placeholder deferred by PRD OQ-13. It was removed: the POC this product's
+    accuracy is measured against has no such gate, so the only thing the bound
+    could do here was refuse photos the POC would have matched — a refusal the
+    staff member cannot appeal and the catalogue never gets a chance to answer.
+    A soft-focus photo that still retrieves the right tile is a good scan.
 
     **Story 3.5 persists the answer.** Once the Candidates below are built,
     one `scan` row is inserted — `user_id`, and the same array as
     `candidates_snapshot` (AD-10) — including an empty array, which is a real
     answer and not the absence of one. A refused submission (an invalid crop
-    rectangle, a quality failure, an oversized or unreadable upload, a missing
-    model, a stale index) writes no row, because every refusal above raises
-    before this point is ever reached. `GET /scans` below is the read that
+    rectangle, an oversized or unreadable upload, a missing model, a stale
+    index) writes no row, because every refusal above raises before this
+    point is ever reached. `GET /scans` below is the read that
     surfaces it.
 
     **The embedding forward pass is serialized service-wide** (AD-16):
@@ -237,7 +229,7 @@ def submit_scan(
 
     # Story 3.6 / AD-16's fixed order: session validation (already done, by
     # `require_claimed_user`) → AD-8's rate-limit check → only then, the crop,
-    # the quality gate and the inference lock. A throttled caller never pays
+    # the crop and the inference lock. A throttled caller never pays
     # for any image work, and no `scan` row is written for this refusal, as
     # for every other pre-match refusal in this handler.
     throttled = scan_throttle.check_and_record(conn, user.id)
@@ -305,14 +297,6 @@ def submit_scan(
         raise _refusal(
             INVALID_CROP_RECT, INVALID_RECT_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
         ) from invalid
-
-    # FR-9 / AD-12: the quality gate runs on the cropped region `cropped` is —
-    # never on `accepted.image`, the pre-crop upload. A failing score stops
-    # the request here; matching never sees a blurry or poorly-framed scan.
-    if not shared_vision.passes_quality(cropped):
-        raise _refusal(
-            SCAN_QUALITY_TOO_LOW, SCAN_QUALITY_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
-        )
 
     # Matching runs on `cropped`, never on the pre-crop frame (AD-1). One call,
     # through the function Epic 2 already tested — no second search here.
@@ -404,8 +388,8 @@ def _scan_entry_not_found() -> ApiError:
     `AUDIT_ENTRY_NOT_FOUND` has no TypeScript twin either, for the reason
     given below, and earns that exemption because `api.audit` sits outside
     `error-code-parity.test.ts`'s scanned router list entirely. `api.scan` is
-    on that list, for its other codes — `INVALID_CROP_RECT`,
-    `SCAN_QUALITY_TOO_LOW` — which do need a twin, so a *module-level*
+    on that list, for its other codes — `INVALID_CROP_RECT`, `UNKNOWN_SIZE` —
+    which do need a twin, so a *module-level*
     `NAME = "value"` assignment here is exactly the shape that test's "every
     code the API can emit" scan looks for and would demand one of. Scoping
     the two constants to this function keeps them out of that scan without

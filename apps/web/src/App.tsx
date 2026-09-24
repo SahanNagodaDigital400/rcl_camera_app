@@ -769,7 +769,6 @@ function Gate(): JSX.Element {
               ? setSection('results')
               : showSection('scan')
           }
-          onRetake={() => showSection('scan')}
           // `submitScan` runs the request; `showResults` only runs once it
           // resolves — a rejection propagates straight back to `CropScreen`,
           // which is what leaves the image and the selection in place with

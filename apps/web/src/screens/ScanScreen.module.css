@@ -294,39 +294,12 @@
   line-height: var(--type-label-line);
 }
 
-/* EXPERIENCE.md's `retake-prompt`: a quiet surface banner — DESIGN.md's own
- * block, surface fill, hairline, body text — laid over the viewfinder just
- * above the controls, where the eye is, with the shutter that retakes one
- * thumb-reach below it. Above the controls' gradient and the framing guide. */
-.prompt {
-  position: absolute;
-  inset-inline: var(--space-4);
-  bottom: calc(var(--shutter-size) + var(--space-12));
-  z-index: 3;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border: var(--border-hairline) solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: var(--color-text);
-  box-shadow: var(--elevation-card);
-}
-
 /* The sentence and its close control on one line, the control never
  * shrinking below the touch-target floor `global.css` holds it to. */
 .promptHead {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-}
-
-.promptText {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--type-body-size);
-  line-height: var(--type-body-line);
 }
 
 /* Dismiss: no fill, no outline — the banner is already a surface, and a
@@ -387,8 +360,9 @@
   height: var(--icon-size-sm);
 }
 
-/* A decode or submission failure and its ways forward, in the prompt's own
- * place and shape so a message is never where the eye is not. */
+/* A decode or submission failure and its ways forward, laid over the
+ * viewfinder just above the controls — where the eye already is, with the
+ * shutter one thumb-reach below. Above the controls' gradient and the guide. */
 .failure {
   position: absolute;
   inset-inline: var(--space-4);

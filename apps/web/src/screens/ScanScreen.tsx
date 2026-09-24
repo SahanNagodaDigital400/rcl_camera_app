@@ -2,7 +2,7 @@ import { ArrowsClockwise, Camera, Crop, Image, X } from '@phosphor-icons/react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { ChangeEvent, JSX } from 'react';
 
-import { ApiRequestError, fetchScanSizes, SCAN_QUALITY_TOO_LOW, UNKNOWN_SIZE } from '../api/client';
+import { ApiRequestError, fetchScanSizes, UNKNOWN_SIZE } from '../api/client';
 import {
   computeCentreSquare,
   computeDownscaledDimensions,
@@ -183,8 +183,6 @@ export function ScanScreen({
     canQueryPermission() ? 'checking' : 'unrequested',
   );
   const [fileError, setFileError] = useState<string | null>(null);
-  /** The server's quality refusal for the last submission, or `null`. */
-  const [qualityRefusal, setQualityRefusal] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   /** The last frame submitted, kept for "Try again" and "Crop this photo". */
@@ -357,17 +355,11 @@ export function ScanScreen({
   async function submit(image: Blob): Promise<void> {
     setLastImage(image);
     setFileError(null);
-    setQualityRefusal(null);
     setSubmitting(true);
     try {
       await onCaptured(image);
     } catch (failure) {
-      if (failure instanceof ApiRequestError && failure.code === SCAN_QUALITY_TOO_LOW) {
-        // The photo's content failed, not the request: the answer is another
-        // photo (the shutter is right there) or, if the tile is small in the
-        // frame, a crop of this one.
-        setQualityRefusal(failure.message);
-      } else if (failure instanceof ApiRequestError && failure.code === UNKNOWN_SIZE) {
+      if (failure instanceof ApiRequestError && failure.code === UNKNOWN_SIZE) {
         forgetStaleSize();
         setFileError(failure.message);
       } else {
@@ -440,7 +432,6 @@ export function ScanScreen({
 
   /** Put the viewfinder back: a message that has been read is in the way. */
   function dismiss(): void {
-    setQualityRefusal(null);
     setFileError(null);
   }
 
@@ -551,40 +542,6 @@ export function ScanScreen({
 
           <div className={styles.controlsSpacer} aria-hidden="true" />
         </div>
-
-        {/* EXPERIENCE.md's `retake-prompt`: an inline, surface-coloured banner,
-              never a modal — and never the destructive red, since a quality gate
-              is not a failed request. Laid over the viewfinder directly above
-              the shutter, where the eye already is, rather than below the camera
-              where a message can scroll out of sight. The shutter is the retake;
-              the one control here is the other way out, a crop of the frame that
-              failed. */}
-        {qualityRefusal !== null && lastImage !== null && (
-          <div className={styles.prompt}>
-            <div className={styles.promptHead}>
-              <p className={styles.promptText} role="alert">
-                {qualityRefusal}
-              </p>
-              {/* Labelled for assistive technology, an X to the eye — the
-                  banner's own text is what a screen reader has already
-                  announced, so the glyph carries no second sentence. */}
-              <button
-                aria-label="Dismiss"
-                className={styles.dismiss}
-                type="button"
-                onClick={dismiss}
-              >
-                <X className={styles.dismissIcon} aria-hidden="true" />
-              </button>
-            </div>
-            <div className={styles.promptActions}>
-              <button className={styles.secondary} type="button" onClick={() => onCrop(lastImage)}>
-                <Crop className={styles.secondaryIcon} aria-hidden="true" />
-                Crop this photo
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* A decode or submission failure, in the same place for the same
               reason. Red is destructive-or-failed in this system and nothing

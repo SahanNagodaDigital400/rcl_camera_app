@@ -50,7 +50,7 @@ flagged-but-unthrottled burst still proceeds.
 **`ANOMALY_BASELINE_WINDOW` and `ANOMALY_DEVIATION_MULTIPLIER` are documented,
 uncalibrated placeholders**, read once at import, `scan_throttle.py`'s own
 `_read_rate_limit`/`_read_window` shape (itself copied from
-`shared_vision.quality._read_threshold`): PRD OQ-13 explicitly defers the real
+`scan_throttle`): PRD OQ-13 explicitly defers the real
 numbers to the Foundation build and the Phase 2 pilot. Both constants are
 shared across the two signals — epics.md's AC names one baseline window and
 one deviation, not four.
@@ -79,7 +79,7 @@ logger = logging.getLogger("rocell.api.anomaly")
 
 #: The environment variable that overrides `DEFAULT_ANOMALY_BASELINE_WINDOW`.
 #: Changing it requires a process restart to take effect (read once, below,
-#: `shared_vision.quality`'s own pattern) — never a per-request re-read.
+#: `shared_vision.pipeline.GREY_WORLD`'s own pattern) — never a per-request re-read.
 ANOMALY_BASELINE_WINDOW_ENV = "TILEMATCH_ANOMALY_BASELINE_WINDOW_SECONDS"
 
 #: A documented, uncalibrated placeholder, in seconds — one day. PRD OQ-13

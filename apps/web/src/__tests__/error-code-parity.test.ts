@@ -56,7 +56,6 @@ import {
   PASSWORD_CHANGE_REQUIRED,
   PIPELINE_STAMP_MISMATCH,
   ROW_FAILED,
-  SCAN_QUALITY_TOO_LOW,
   SCAN_RATE_LIMITED,
   UNKNOWN_SIZE,
   TILE_NOT_FOUND,
@@ -183,7 +182,6 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   invalid_crop_rect: { file: 'scan.py', name: 'INVALID_CROP_RECT' },
   unknown_size: { file: 'scan.py', name: 'UNKNOWN_SIZE' },
   // Story 3.3's — the same router, gating the cropped region's quality.
-  scan_quality_too_low: { file: 'scan.py', name: 'SCAN_QUALITY_TOO_LOW' },
   // Story 3.6's — the same router, gating the per-user submission rate.
   scan_rate_limited: { file: 'scan.py', name: 'SCAN_RATE_LIMITED' },
 };
@@ -220,7 +218,6 @@ const TYPESCRIPT: Record<string, string> = {
   image_unmatched: IMAGE_UNMATCHED,
   row_failed: ROW_FAILED,
   invalid_crop_rect: INVALID_CROP_RECT,
-  scan_quality_too_low: SCAN_QUALITY_TOO_LOW,
   scan_rate_limited: SCAN_RATE_LIMITED,
   unknown_size: UNKNOWN_SIZE,
 };

@@ -32,7 +32,7 @@ anything smoother — a second counter shape for the same architectural
 decision would be complexity with no requirement behind it.
 
 **`SCAN_RATE_LIMIT` and `SCAN_RATE_LIMIT_WINDOW` are documented, uncalibrated
-placeholders**, read once at import, `shared_vision.quality.SCAN_QUALITY_THRESHOLD`'s
+placeholders**, read once at import, `pipeline.GREY_WORLD`'s
 own pattern: PRD OQ-13 explicitly defers the real numbers to the Foundation
 build and the Phase 2 pilot, grouped with FR-9's blur bound as the same
 bucket of "calibrated later" thresholds. A runtime env read per request would
@@ -63,7 +63,7 @@ logger = logging.getLogger("rocell.api.scan_throttle")
 
 #: The environment variable that overrides `DEFAULT_SCAN_RATE_LIMIT`. Changing
 #: it requires a process restart to take effect (read once, below,
-#: `shared_vision.quality`'s own pattern) — never a per-request re-read.
+#: `shared_vision.pipeline.GREY_WORLD`'s own pattern) — never a per-request re-read.
 SCAN_RATE_LIMIT_ENV = "TILEMATCH_SCAN_RATE_LIMIT"
 
 #: A documented, uncalibrated placeholder — PRD OQ-13 defers the real number
@@ -128,7 +128,7 @@ def _read_rate_limit() -> int:
 def _read_window() -> float:
     """`SCAN_RATE_LIMIT_WINDOW_ENV`'s value, falling back to the default.
 
-    `shared_vision.quality._read_threshold`'s exact shape: a value `float()`
+    A value `float()`
     cannot parse, or one that parses to something non-finite (`nan`, `inf`,
     `-inf` are all valid input to `float()` with no error at all), falls back
     to the default rather than reaching the SQL below with a window that
@@ -180,7 +180,7 @@ def _read_window() -> float:
 
 
 #: The limit `check_and_record` gates against. Read once at import — exactly
-#: `shared_vision.quality.SCAN_QUALITY_THRESHOLD`'s own pattern — so the value
+#: `shared_vision.pipeline.GREY_WORLD`'s own pattern — so the value
 #: in effect for the life of a process is fixed at start-up.
 SCAN_RATE_LIMIT = _read_rate_limit()
 

@@ -57,7 +57,7 @@ PEER = "127.0.0.1"
 #: concurrency test gives a second, deliberately racing thread a real chance
 #: to reach the point under contention before checking it has not gone past
 #: it, and how long it then waits for the threads it started to actually
-#: finish. Generous rather than tight — a decode and a quality check are
+#: finish. Generous rather than tight — a decode and an embed are
 #: milliseconds of work, and what this buys is headroom against a loaded CI
 #: box, not precision.
 LOCK_OVERLAP_SECONDS = 1.0
@@ -83,15 +83,6 @@ def jpeg_bytes(image: Image.Image | None = None) -> bytes:
     buf = io.BytesIO()
     (image or a_tile_photograph()).save(buf, format="JPEG", quality=92)
     return buf.getvalue()
-
-
-def a_flat_photograph(size: tuple[int, int] = (320, 320)) -> Image.Image:
-    """A single uniform colour — zero Laplacian variance, whatever the crop
-    rectangle takes from it, and the fixture Story 3.3's quality gate exists
-    to refuse. `a_tile_photograph`'s random-noise fixture scores far above any
-    provisional threshold, so it stays the happy-path fixture unchanged.
-    """
-    return Image.new("RGB", size, (180, 180, 180))
 
 
 def sign_in(client: TestClient, account: Any) -> None:
@@ -226,17 +217,20 @@ def test_an_empty_match_result_still_persists_a_row(
     assert rows[0]["candidates_snapshot"] == []
 
 
-def test_a_quality_refusal_persists_no_row(
+def test_a_refused_submission_persists_no_row(
     client: TestClient, conn: psycopg.Connection, make_user: MakeUser
 ) -> None:
-    """A refused submission (here, the quality gate) writes nothing at all — the
-    crop/quality gates and matching must all succeed before anything lands.
+    """A refused submission writes nothing at all — the crop and the match must
+    both succeed before anything lands.
+
+    Driven by an out-of-bounds crop rectangle. It used to be driven by the
+    blur gate, which was the later of the two refusals and therefore the
+    stronger case; that gate no longer exists, so the rectangle is what
+    remains.
     """
     sign_in(client, make_user())
 
-    response = submit_scan(
-        client, image=("scan.jpg", jpeg_bytes(a_flat_photograph()), "image/jpeg")
-    )
+    response = submit_scan(client, crop_x=0.9, crop_width=0.5)
 
     assert response.status_code == 422, response.text
     assert _scan_rows(conn) == []
@@ -273,7 +267,7 @@ def a_tile(seed: int) -> Image.Image:
 def a_photograph_of(image: Image.Image) -> Image.Image:
     """A perturbed copy standing in for a phone photo of the physical tile —
     `test_tile_searchable.py`'s own helper, softened less than that file's
-    own copy: this one has to clear `POST /scans`' own quality gate (FR-9)
+    own copy: this one has to survive the crop
     as well as still retrieve, where that file's calls it straight through
     `find_candidates` and never meets the gate at all.
     """
@@ -561,28 +555,6 @@ def test_a_degenerate_or_out_of_bounds_rect_is_refused(
 
     assert response.status_code == 422, response.text
     assert response.json()["error"]["code"] == "invalid_crop_rect"
-
-
-def test_a_blurry_or_flat_crop_is_refused_as_low_quality(
-    client: TestClient, make_user: MakeUser
-) -> None:
-    """FR-9 / AD-12 — a cropped region that scores below the quality gate is
-    refused before matching (3.4) ever exists to see it, with a dedicated
-    `422` distinct from `invalid_crop_rect`: the rectangle here is perfectly
-    valid, it is the pixels inside it that fail.
-    """
-    sign_in(client, make_user())
-
-    response = submit_scan(
-        client, image=("scan.jpg", jpeg_bytes(a_flat_photograph()), "image/jpeg")
-    )
-
-    assert response.status_code == 422, response.text
-    assert response.json()["error"]["code"] == "scan_quality_too_low"
-    # This exact wording has no TypeScript twin — `CropScreen` renders the
-    # server's own `message` verbatim rather than holding a second copy — so
-    # this assertion is the only thing pinning it anywhere.
-    assert response.json()["error"]["message"] == "This photo's a little blurry — try again."
 
 
 def test_a_valid_full_frame_rect_is_accepted(client: TestClient, make_user: MakeUser) -> None:

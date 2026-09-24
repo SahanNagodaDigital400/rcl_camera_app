@@ -172,18 +172,6 @@
   line-height: var(--type-body-line);
 }
 
-/* EXPERIENCE.md's `retake-prompt`: an inline, surface-colored banner — never
- * the destructive red `.error` above, since a quality refusal is not the
- * failed-request case that colour is reserved for. Sits directly above the
- * one action, so Retake is one thumb-reach away. */
-.retakePrompt {
-  background: var(--color-surface);
-  border: var(--border-hairline) solid var(--color-border);
-  color: var(--color-text);
-  border-radius: var(--radius-sm);
-  padding: var(--space-3) var(--space-4);
-}
-
 /* Stacked on a phone — Confirm full width first, Back beneath — and a row
  * from the breakpoint up. */
 .actions {

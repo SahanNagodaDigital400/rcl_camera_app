@@ -40,9 +40,6 @@ The surfaces
 * `intake` — AD-7's single upload path (`intake_image`) and AD-17's capped
   display derivative (`display_derivative`). Every writer calls this and
   nothing else.
-* `quality` — FR-9's retake gate (`blur_score`, `passes_quality`), AD-12's
-  enforcement point. Runs on `crop_to_rect`'s output only, never on the
-  pre-crop image; `apps/api/api/scan.py` is its one caller today.
 
 Porting rule
 ------------
@@ -91,13 +88,6 @@ from shared_vision.pipeline import (
     load_image,
     preprocess,
 )
-from shared_vision.quality import (
-    DEFAULT_SCAN_QUALITY_THRESHOLD,
-    SCAN_QUALITY_THRESHOLD,
-    SCAN_QUALITY_THRESHOLD_ENV,
-    blur_score,
-    passes_quality,
-)
 from shared_vision.views import (
     CANONICAL_VIEWS,
     VIEW_CROP,
@@ -115,7 +105,6 @@ __all__ = [
     "CANONICAL_VIEWS",
     "CROP_SIZE",
     "DECODE_MAX_EDGE",
-    "DEFAULT_SCAN_QUALITY_THRESHOLD",
     "DERIVATIVE_MAX_BYTES",
     "DERIVATIVE_MAX_EDGE",
     "EMBED_DIM",
@@ -126,8 +115,6 @@ __all__ = [
     "PORT_SOURCE",
     "REFERENCE_MAX_PIXELS",
     "RESIZE_SHORTEST_EDGE",
-    "SCAN_QUALITY_THRESHOLD",
-    "SCAN_QUALITY_THRESHOLD_ENV",
     "UPLOAD_MAX_PIXELS",
     "VIEWS_PER_IMAGE",
     "VIEW_CROP",
@@ -137,7 +124,6 @@ __all__ = [
     "IntakeResult",
     "InvalidCropRect",
     "UnreadableImage",
-    "blur_score",
     "config_hash",
     "crop_to_rect",
     "display_derivative",
@@ -146,7 +132,6 @@ __all__ = [
     "generate_views",
     "intake_image",
     "load_image",
-    "passes_quality",
     "preprocess",
     "view_kind",
 ]
