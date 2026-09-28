@@ -271,7 +271,13 @@
  * keyboard path is the labelled control at the row end. */
 .row {
   display: grid;
-  grid-template-columns: var(--thumbnail-size) minmax(0, 1fr);
+  /* `max-content`, not `--thumbnail-size`: the first column holds the picture
+   * *and* the cell padding around it. Sized to the token alone the image
+   * overflowed its own track by that padding and ran into the column beside
+   * it, leaving the Code, Size and Category set flush against the picture with
+   * no gutter at all. Measuring the cell keeps the two columns apart by the
+   * padding they each already carry. */
+  grid-template-columns: max-content minmax(0, 1fr);
   grid-template-rows: auto auto auto auto;
   padding: var(--space-2);
   border: var(--border-hairline) solid var(--color-border);
@@ -314,19 +320,23 @@
   grid-column: 1;
 }
 
-/* Code, Size and Category stack in the second column. Size and Category run
- * their caption inline so the card stays short. */
+/* Code, Size and Category stack in the second column. */
 .cell:nth-child(2),
 .cell:nth-child(3),
 .cell:nth-child(4) {
   grid-column: 2;
 }
 
+/* Size and Category keep `.cell`'s own stack — caption above value — rather
+ * than running the caption inline beside it. Inline, the two captions are
+ * different widths, so `40X40` and `MONO COLOUR GLOSSY` started at two
+ * different x positions and the longer value wrapped into a hanging second
+ * line against the card edge. Stacked, every value on the card shares the
+ * Code's left edge and the full width of the column, which is enough for a
+ * category name to stay on one line. Tighter block padding than the Code
+ * above them holds the card to the height of the picture beside it. */
 .cell:nth-child(3),
 .cell:nth-child(4) {
-  flex-direction: row;
-  align-items: baseline;
-  gap: var(--space-2);
   padding-block: var(--space-1);
 }
 
