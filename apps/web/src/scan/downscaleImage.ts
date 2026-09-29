@@ -74,22 +74,19 @@ export function computeCentreSquare(width: number, height: number): SourceRect {
  * can assert against without touching the DOM at all.
  */
 /**
- * The long-edge cap for a frame that is going to be **measured** rather than
- * matched — four times the linear resolution of the matching budget.
+ * The long-edge cap for the copy of a frame that will be **measured** — four
+ * times the linear resolution of the matching budget.
  *
- * Matching can afford ~1024px because `shared/vision` resizes to 224 anyway;
- * measuring cannot. `api.measure` locates a marker's corners in the pixels it
- * is given and refuses a marker spanning fewer than 60 of them, because that
- * is where one pixel of corner error starts to move the derived scale by more
- * than the gap between two catalogue Sizes. A printed card occupying a fifth
- * of the frame is ~200px here and ~100px at the matching cap — and the
- * capture path's centre-square crop can take it below the floor entirely.
+ * One shutter press produces two frames from the same photograph: matching
+ * takes the centre square at ~1024px, which is all `shared/vision` can use
+ * since it resizes to 224 anyway, and measuring takes the whole frame at this
+ * cap. They differ because `api.measure` locates a marker's corners in the
+ * pixels it is handed and refuses a marker under 60 of them — and the centre
+ * square can crop a marker out of the frame entirely.
  *
- * **2048 because that is exactly what the server can use**: `intake_image`
- * decodes through `shared_vision.pipeline.DECODE_MAX_EDGE`, which is 2048, so
- * a larger upload is bytes over a showroom connection that are resized away on
- * arrival. Keep the two numbers equal — raising this alone buys nothing, and
- * lowering it silently starves the detector.
+ * 2048 because that is exactly what the server can use: `intake_image` decodes
+ * through `shared_vision.pipeline.DECODE_MAX_EDGE`, which is 2048, so a larger
+ * upload is bytes resized away on arrival. Keep the two equal.
  */
 export const MEASURE_MAX_EDGE = 2048;
 

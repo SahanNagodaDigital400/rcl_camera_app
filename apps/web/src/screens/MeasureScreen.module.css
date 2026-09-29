@@ -68,34 +68,88 @@
  * below can be placed against it in percentages — which is what keeps a tap
  * meaningful at any rendered size, exactly as the crop rectangle is normalized
  * rather than stored in pixels. */
+/* **Shrink-wrapped to the photograph, and that is a correctness rule.**
+ *
+ * At `width: 100%` with an `object-fit: contain` image inside, a portrait
+ * photo is letterboxed: the painted picture is narrower than the box, while
+ * every corner is stored as a fraction of the *box*. The server then maps
+ * those fractions onto the *image*, so each one lands somewhere it was not
+ * put — no error at the centre, growing toward the edges, which is exactly
+ * where a tile's corners are. It reads as a measurement that is wrong for no
+ * visible reason.
+ *
+ * `fit-content` makes the box the picture, so the two coordinate spaces are
+ * one. `MeasureScreen` also reads the `<img>`'s own rect rather than this
+ * element's, so a future change here cannot quietly reintroduce the gap. */
 .canvas {
   position: relative;
   display: block;
-  width: 100%;
-  max-height: var(--viewfinder-max-height);
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
   border: var(--border-hairline) solid var(--color-border);
   border-radius: var(--radius-md);
   background: transparent;
   padding: 0;
-  overflow: hidden;
   cursor: crosshair;
+  /* **Without this a drag scrolls the page instead of moving a corner.** The
+   * browser claims a touch for panning unless the element says it handles it,
+   * and the pointer events below never see the move. */
+  touch-action: none;
+  user-select: none;
 }
 
+/* **Capped so the whole photograph is on screen while the corners are being
+ * tapped.** At `--viewfinder-max-height` the picture plus the app bar, the
+ * title, the marker picker, the instruction, the buttons and the tab bar do
+ * not fit a phone, so tapping meant scrolling — and a corner that has scrolled
+ * out of view gets tapped somewhere near where it used to be. That produces a
+ * quadrilateral that is not the tile and a measurement with nothing visibly
+ * wrong about it. Precision lost to the smaller picture costs far less: a
+ * couple of pixels of tap error is about 0.3% of the measurement. */
 .photo {
   display: block;
+  max-width: 100%;
+  max-height: var(--measure-photo-max-height);
+  border-radius: var(--radius-md);
+}
+
+/* The quad as the server will read it, drawn over the photo. The outline is
+ * the check: four dots can look right while describing the wrong shape, and a
+ * bow-tie or a corner on the floor beside the tile is obvious as an outline
+ * and invisible as dots. */
+.outline {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  max-height: var(--viewfinder-max-height);
-  object-fit: contain;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* The marker the measurement is scaled by, in the brand primary — the same
+ * colour its tapped corners use, so the two never read as different things. */
+.markerShape {
+  fill: none;
+  stroke: var(--color-primary);
+  stroke-width: var(--crop-border-width);
+  vector-effect: non-scaling-stroke;
+}
+
+.outlineShape {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: var(--crop-border-width);
+  vector-effect: non-scaling-stroke;
 }
 
 /* One tapped corner. Centred on the tap by a half-width translate, so the dot
  * sits where the finger went rather than down and to the right of it. */
 .corner {
   position: absolute;
-  width: var(--icon-size-sm);
-  height: var(--icon-size-sm);
-  margin-left: calc(var(--icon-size-sm) / -2);
-  margin-top: calc(var(--icon-size-sm) / -2);
+  width: var(--icon-size);
+  height: var(--icon-size);
+  margin-left: calc(var(--icon-size) / -2);
+  margin-top: calc(var(--icon-size) / -2);
   border: var(--crop-border-width) solid var(--color-accent);
   border-radius: var(--radius-full);
   background: var(--color-surface);
@@ -154,6 +208,56 @@
   font-weight: var(--type-label-weight);
   line-height: var(--type-label-line);
   cursor: pointer;
+}
+
+/* What the corners currently measure, while they are being moved. Mono,
+ * because it is a number read against a tape measure — and stated large
+ * enough to be read at arm's length with a finger on the screen. */
+.preview {
+  font-family: var(--font-mono);
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: var(--color-text);
+}
+
+/* Why the blue outline is there. */
+.markerNote {
+  max-width: var(--measure-prose);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  color: var(--color-muted-text);
+}
+
+/* How far through the four taps. Stated because the dots are small and a
+ * missed tap otherwise shows up only as a measurement that will not run. */
+.progress {
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  color: var(--color-muted-text);
+}
+
+/* Before a photograph exists: what to do, where the photo will appear. A
+ * bordered placeholder rather than nothing, so the screen does not reflow by
+ * the height of a photo the moment one is taken. */
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-8) var(--space-5);
+  border: var(--border-hairline) dashed var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--color-muted-text);
+  text-align: center;
+}
+
+.fileInput {
+  composes: visuallyHidden from global;
 }
 
 /* The measurement, once there is one. */

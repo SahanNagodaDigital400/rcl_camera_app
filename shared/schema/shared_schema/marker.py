@@ -308,6 +308,52 @@ class Point(BaseModel):
     y: float = Field(ge=0.0, le=1.0)
 
 
+class TileProposal(BaseModel):
+    """Where the tile's four corners probably are — a starting point, not an answer.
+
+    **Always four corners.** The screen that receives this draws draggable
+    handles, and a shape to adjust beats an empty frame even when nothing was
+    found: `detected` is `False` and the corners are a default rectangle in the
+    marker's own plane, already in perspective, so a drag moves a handle along
+    the tile rather than across the screen.
+
+    **`detected` is honest about how often that happens.** On real showroom
+    photographs both detectors found nothing usable on 5 of 5 — samples are
+    laid against neighbours of near-identical tone, and the gradient across a
+    tile's boundary is no stronger than the variation within its own surface.
+    The screen says which it got, because "we found your tile" and "here is a
+    box to drag" are different claims and only one of them is usually true.
+
+    **Nothing here measures anything.** The corners a staff member confirms are
+    what `POST /scans/measure` is then given; this only saves them starting
+    from nothing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Normalized 0-1 against the submitted image, in perimeter order —
+    #: `Point`'s rule, for its reason.
+    corners: list[Point]
+    detected: bool
+    #: Where the fiducial was found, normalized the same way.
+    #:
+    #: **Sent so the screen can draw it and a person can check it.** Everything
+    #: downstream is scaled by this quadrilateral: if the detector locked onto
+    #: something that is not the printed square, every millimetre it produces
+    #: is wrong by that ratio and nothing else on the screen would show it.
+    #: Drawing it turns an invisible assumption into one glance.
+    marker: list[Point]
+    #: The 3x3 homography taking a **normalized** image point to millimetres in
+    #: the marker's plane, row-major.
+    #:
+    #: Sent so the screen can put a live measurement under a corner while it is
+    #: being dragged, instead of making somebody press Measure to find out
+    #: whether they have it right yet. It is a *preview*: `POST /scans/measure`
+    #: remains the only thing that produces a measurement anyone acts on, and
+    #: it recomputes from the corners it is given rather than trusting this.
+    homography: list[float]
+
+
 class Measurement(BaseModel):
     """What one measurement concluded.
 

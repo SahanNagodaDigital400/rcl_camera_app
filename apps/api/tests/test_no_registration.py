@@ -141,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_twentythree_routes_the_product_serves() -> None:
+def test_the_route_table_is_the_twentyfour_routes_the_product_serves() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -330,6 +330,11 @@ def test_the_route_table_is_the_twentythree_routes_the_product_serves() -> None:
         "/admin/markers/{marker_id}",
         "/scans/markers",
         "/scans/measure",
+        # The starting quad the Measure screen opens on. A path of its own
+        # rather than a flag on `/scans/measure`, because it answers a
+        # different question — "where is the tile" against "how big is it" —
+        # and only one of the two produces a number anybody acts on.
+        "/scans/propose",
     }
 
 

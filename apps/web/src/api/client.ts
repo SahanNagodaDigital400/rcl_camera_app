@@ -14,8 +14,8 @@
  * same reason.
  */
 import { isErrorEnvelope } from '@rocell/schema/errors';
-import { isMarker, isMeasurement } from '@rocell/schema/marker';
-import type { Marker, Measurement, Point } from '@rocell/schema/marker';
+import { isMarker, isMeasurement, isTileProposal } from '@rocell/schema/marker';
+import type { Marker, Measurement, Point, TileProposal } from '@rocell/schema/marker';
 import { isScanCandidate } from '@rocell/schema/scan';
 import type { ScanCandidate } from '@rocell/schema/scan';
 
@@ -940,5 +940,33 @@ export async function measureTile(
     timeoutMs: UPLOAD_TIMEOUT_MS,
   });
   if (isMeasurement(answer)) return answer;
+  throw new ApiRequestError(MALFORMED_RESPONSE, 'The server returned an unexpected response.', 200);
+}
+
+/**
+ * Where the tile's corners probably are — `POST /scans/propose`.
+ *
+ * **A starting shape, never an answer.** The corners come back so the Measure
+ * screen can open on a draggable quadrilateral instead of an empty photo; on
+ * real showroom photographs the detector is wrong more often than right,
+ * because tiles are laid against neighbours of near-identical tone and a
+ * tile's boundary is no more contrasty than its own veining. Every corner is
+ * moved by the staff member before anything is measured.
+ *
+ * The marker has to be found for this to mean anything — the proposal is made
+ * in the marker's plane — so `marker_not_detected` is an ordinary outcome and
+ * the caller falls back to placing the corners by hand.
+ */
+export async function proposeTile(image: Blob, markerId: string): Promise<TileProposal> {
+  const body = new FormData();
+  body.append('image', image, 'measure.jpg');
+  body.append('marker_id', markerId);
+
+  const answer = await apiRequest('/scans/propose', {
+    method: 'POST',
+    body,
+    timeoutMs: UPLOAD_TIMEOUT_MS,
+  });
+  if (isTileProposal(answer)) return answer;
   throw new ApiRequestError(MALFORMED_RESPONSE, 'The server returned an unexpected response.', 200);
 }

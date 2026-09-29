@@ -426,3 +426,79 @@ class TestAuthorization:
 
         assert answer.status_code == 200
         assert len(answer.json()) == 2
+
+
+class TestProposingCorners:
+    """`POST /scans/propose` — the starting quad the Measure screen opens on."""
+
+    def propose(self, client: TestClient, marker_id: str, image: bytes | None = None) -> Any:
+        return client.post(
+            "/scans/propose",
+            data={"marker_id": [marker_id]},
+            files={"image": ("scene.jpg", image if image is not None else _scene(), "image/jpeg")},
+        )
+
+    def test_answers_four_normalized_corners(self, client: TestClient, fiducial_id: str) -> None:
+        """**Always four**, so the screen has handles to draw whatever happened."""
+        answer = self.propose(client, fiducial_id)
+
+        assert answer.status_code == 200, answer.text
+        body = answer.json()
+        assert len(body["corners"]) == 4
+        for corner in body["corners"]:
+            assert 0.0 <= corner["x"] <= 1.0
+            assert 0.0 <= corner["y"] <= 1.0
+        assert isinstance(body["detected"], bool)
+
+    def test_says_when_it_did_not_find_the_tile(self, client: TestClient, fiducial_id: str) -> None:
+        """`detected` is a claim about the world and has to be able to be false.
+
+        Measured on real showroom photographs it is false on all of them: tiles
+        are laid against neighbours of near-identical tone, so a tile's
+        boundary carries no more contrast than its own surface. The rendered
+        scene here has a marker on a flat background and no tile at all, which
+        is the same answer for a simpler reason.
+        """
+        answer = self.propose(client, fiducial_id, image=_scene(with_fiducial=True))
+
+        assert answer.status_code == 200
+        # Whatever it decides, it may not claim a tile it cannot show: a
+        # `True` here has to come with corners that are not the frame's own.
+        body = answer.json()
+        if body["detected"]:
+            xs = [c["x"] for c in body["corners"]]
+            ys = [c["y"] for c in body["corners"]]
+            assert min(xs) > 0.01 and max(xs) < 0.99
+            assert min(ys) > 0.01 and max(ys) < 0.99
+
+    def test_an_unregistered_marker_is_refused(self, client: TestClient, fiducial_id: str) -> None:
+        answer = self.propose(client, str(uuid4()))
+
+        assert answer.status_code == 422
+        assert answer.json()["error"]["code"] == UNKNOWN_MARKER
+
+    def test_a_marker_with_no_fiducial_is_refused(
+        self, client: TestClient, administrator: Any, make_user: MakeUser
+    ) -> None:
+        """The proposal is made in the marker's plane, so there has to be one."""
+        plain_id = client.post(MARKERS, json={**PLAIN_MARKER, "name": "Card four"}).json()["id"]
+        client.post("/auth/logout")
+        sign_in(client, make_user(role=Role.STAFF))
+
+        answer = self.propose(client, plain_id)
+
+        assert answer.status_code == 422
+        assert answer.json()["error"]["code"] == MARKER_NOT_DETECTED
+
+    def test_a_frame_without_the_fiducial_is_refused(
+        self, client: TestClient, fiducial_id: str
+    ) -> None:
+        answer = self.propose(client, fiducial_id, image=_scene(with_fiducial=False))
+
+        assert answer.status_code == 422
+        assert answer.json()["error"]["code"] == MARKER_NOT_DETECTED
+
+    def test_a_signed_out_caller_is_refused(self, client: TestClient) -> None:
+        client.post("/auth/logout")
+
+        assert self.propose(client, str(uuid4())).status_code == 401

@@ -336,3 +336,254 @@ def measure_tile(
     if short_mm <= 0.0:
         raise DegenerateQuad("The tile corners do not form a usable shape.")
     return short_mm, long_mm
+
+
+#: The window, in millimetres, the tile is looked for inside — a square of this
+#: side centred on the marker. Wide enough for the largest plausible tile with
+#: the marker anywhere on it, and no wider: every extra millimetre is warped
+#: pixels nobody reads.
+PROPOSAL_REACH_MM: Final = 3200.0
+
+#: The plausible bounds on a tile edge. Narrower at the bottom than
+#: `shared_schema.marker`'s size tolerance because this one is rejecting
+#: *shapes*, not measurements: below the floor the candidate is the marker's
+#: own paper, above the ceiling it is the floor the tile is lying on.
+MIN_TILE_EDGE_MM: Final = 250.0
+MAX_TILE_EDGE_MM: Final = 1500.0
+
+#: What a proposal falls back to when nothing is found: a square of this side,
+#: centred on the marker, **in the marker's own plane** — so it arrives already
+#: in perspective and a drag moves a corner along the tile rather than across
+#: the screen.
+FALLBACK_TILE_MM: Final = 600.0
+
+
+def _rectify(
+    image: np.ndarray, marker_corners: np.ndarray, width_mm: float, height_mm: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The rectified frame, the transform, and where the photograph reaches.
+
+    One millimetre per pixel, so every threshold below is in millimetres and a
+    question like "could this be a tile" is answerable rather than a guess
+    about pixels at an unknown distance.
+    """
+    destination = np.array(
+        [[0, 0], [width_mm, 0], [width_mm, height_mm], [0, height_mm]], dtype=np.float32
+    )
+    offset = np.array(
+        [[1, 0, PROPOSAL_REACH_MM / 2], [0, 1, PROPOSAL_REACH_MM / 2], [0, 0, 1]],
+        dtype=np.float32,
+    )
+    transform = offset @ cv2.getPerspectiveTransform(marker_corners.astype(np.float32), destination)
+    side = int(PROPOSAL_REACH_MM)
+    flat = cv2.warpPerspective(image, transform, (side, side))
+    # Where the photograph actually reaches, in the same frame. Warping leaves
+    # everything outside the source as a flat fill, and the boundary between
+    # the two is the strongest straight edge in the rectified image — a
+    # rectangle of a plausible size, containing the marker, that is never a
+    # tile. Eroded, so a candidate merely *touching* that boundary is out too.
+    covered = cv2.warpPerspective(np.full(image.shape[:2], 255, np.uint8), transform, (side, side))
+    covered = cv2.erode(covered, np.ones((9, 9), np.uint8), iterations=2)
+    return flat, transform, covered
+
+
+def _plausible(quad_mm: np.ndarray, centre: np.ndarray, covered: np.ndarray) -> bool:
+    """Whether a rectified quad could be the tile the marker is lying on.
+
+    Three questions, and the first is the one that does the work: **the marker
+    is on the tile**, so a candidate that does not contain it is the floor, a
+    neighbouring sample, or a shoe. The other two ask whether it is a rectangle
+    and whether it is a tile-sized one.
+    """
+    here = (float(centre[0]), float(centre[1]))
+    if cv2.pointPolygonTest(quad_mm.astype(np.float32), here, False) < 0:
+        return False
+
+    # **Every corner inside the photograph's own reach.** See `_rectify`: the
+    # boundary of the warped source is a confident rectangle of a plausible
+    # size containing the marker, and it is never a tile.
+    height, width = covered.shape[:2]
+    for x, y in quad_mm:
+        column, row = int(round(x)), int(round(y))
+        if not (0 <= column < width and 0 <= row < height) or covered[row, column] == 0:
+            return False
+
+    ordered = order_corners(quad_mm)
+    top, right, bottom, left = _edge_lengths(ordered)
+    first = float(np.linalg.norm(ordered[2] - ordered[0]))
+    second = float(np.linalg.norm(ordered[3] - ordered[1]))
+    for a, b in ((top, bottom), (right, left), (first, second)):
+        longest = max(a, b)
+        if longest <= 0.0 or abs(a - b) / longest > RECTANGULARITY_TOLERANCE:
+            return False
+
+    short_mm, long_mm = sorted(((top + bottom) / 2.0, (right + left) / 2.0))
+    return MIN_TILE_EDGE_MM <= short_mm and long_mm <= MAX_TILE_EDGE_MM
+
+
+def _from_contours(flat: np.ndarray, centre: np.ndarray, covered: np.ndarray) -> np.ndarray | None:
+    """The largest plausible 4-gon around the marker, from edges.
+
+    Works when the tile has a visible outline. On a showroom floor it often
+    does not: samples are butted against neighbours of near-identical tone, and
+    the tile's own veining is a stronger edge than its boundary.
+    """
+    grey = cv2.bilateralFilter(cv2.cvtColor(flat, cv2.COLOR_BGR2GRAY), 9, 60, 60)
+    edges = cv2.morphologyEx(cv2.Canny(grey, 30, 110), cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    best: tuple[float, np.ndarray] | None = None
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        approximated = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
+        if len(approximated) != QUAD_CORNERS or not cv2.isContourConvex(approximated):
+            continue
+        quad = approximated.reshape(QUAD_CORNERS, 2).astype(np.float64)
+        if not _plausible(quad, centre, covered):
+            continue
+        area = abs(float(cv2.contourArea(quad.astype(np.float32))))
+        if best is None or area > best[0]:
+            best = (area, quad)
+    return None if best is None else best[1]
+
+
+def _from_surface(
+    flat: np.ndarray, centre: np.ndarray, marker_mm: float, covered: np.ndarray
+) -> np.ndarray | None:
+    """The extent of the surface the marker is lying on, as a rectangle.
+
+    Asks "which pixels are the same surface as the one under the marker"
+    rather than "where is the outline", so a grout line or a shadow crossing
+    the tile does not break it. `minAreaRect` returns a rectangle by
+    construction, so there is no 4-gon approximation to fail.
+    """
+    lab = cv2.cvtColor(cv2.GaussianBlur(flat, (5, 5), 0), cv2.COLOR_BGR2LAB)
+    pad = marker_mm * 0.75
+    x0, y0 = int(centre[0] - pad), int(centre[1] - pad)
+    x1, y1 = int(centre[0] + pad), int(centre[1] + pad)
+
+    ring = np.zeros(lab.shape[:2], np.uint8)
+    reach = int(marker_mm * 1.8)
+    cv2.rectangle(ring, (x0 - reach, y0 - reach), (x1 + reach, y1 + reach), 255, -1)
+    cv2.rectangle(ring, (x0, y0), (x1, y1), 0, -1)
+    if cv2.countNonZero(ring) == 0:
+        return None
+
+    mean = np.array(cv2.mean(lab, mask=ring)[:3], np.float32)
+    surface = (np.linalg.norm(lab.astype(np.float32) - mean, axis=2) < 26).astype(np.uint8) * 255
+    cv2.rectangle(surface, (x0, y0), (x1, y1), 255, -1)
+    surface = cv2.morphologyEx(surface, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
+    surface = cv2.morphologyEx(surface, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
+
+    count, labels = cv2.connectedComponents(surface)
+    mine = labels[int(centre[1]), int(centre[0])]
+    if count < 2 or mine == 0:
+        return None
+    contours, _ = cv2.findContours(
+        (labels == mine).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return None
+    biggest = max(contours, key=cv2.contourArea)
+    rect = cv2.minAreaRect(biggest)
+    if rect[1][0] <= 0 or rect[1][1] <= 0:
+        return None
+    # A tile fills its own bounding rectangle; two samples merged across a
+    # seam make an L and do not.
+    if cv2.contourArea(biggest) / (rect[1][0] * rect[1][1]) < 0.85:
+        return None
+    quad = cv2.boxPoints(rect).astype(np.float64)
+    return quad if _plausible(quad, centre, covered) else None
+
+
+def propose_tile_quad(
+    image: np.ndarray,
+    marker_corners: np.ndarray,
+    marker_width_mm: float,
+    marker_height_mm: float,
+) -> tuple[np.ndarray, bool]:
+    """A starting quadrilateral for the tile, and whether it was really found.
+
+    **Always returns four corners.** The caller is a screen with draggable
+    handles, and a proposal it can adjust is more useful than an empty frame
+    even when the detector found nothing — so a failure falls back to a
+    `FALLBACK_TILE_MM` square centred on the marker, in the marker's plane, and
+    says so with `False`.
+
+    **Expect the fallback often.** Measured on real showroom photographs, both
+    detectors below found nothing usable on 5 of 5: samples are laid against
+    neighbours of near-identical tone, and the gradient across a tile's
+    boundary (33-52) is no stronger than the variation within its own surface
+    (38-67). There is no outline there to find, and no threshold recovers a
+    signal that is absent. This is a convenience over the manual path, never a
+    replacement for it — which is why nothing here decides a measurement and
+    the corners it returns are the ones the staff member then moves.
+    """
+    marker_corners = np.asarray(marker_corners, dtype=np.float64).reshape(QUAD_CORNERS, 2)
+    flat, transform, covered = _rectify(image, marker_corners, marker_width_mm, marker_height_mm)
+    centre = np.array(
+        [
+            PROPOSAL_REACH_MM / 2 + marker_width_mm / 2,
+            PROPOSAL_REACH_MM / 2 + marker_height_mm / 2,
+        ]
+    )
+
+    found = _from_contours(flat, centre, covered)
+    if found is None:
+        found = _from_surface(flat, centre, max(marker_width_mm, marker_height_mm), covered)
+
+    detected = found is not None
+    if found is None:
+        half = FALLBACK_TILE_MM / 2.0
+        found = np.array(
+            [
+                [centre[0] - half, centre[1] - half],
+                [centre[0] + half, centre[1] - half],
+                [centre[0] + half, centre[1] + half],
+                [centre[0] - half, centre[1] + half],
+            ],
+            dtype=np.float64,
+        )
+
+    back = np.linalg.inv(transform)
+    projected = cv2.perspectiveTransform(found.reshape(1, QUAD_CORNERS, 2).astype(np.float32), back)
+    return np.asarray(projected, dtype=np.float64).reshape(QUAD_CORNERS, 2), detected
+
+
+def normalized_to_millimetres(
+    marker_corners: np.ndarray,
+    marker_width_mm: float,
+    marker_height_mm: float,
+    image_width: int,
+    image_height: int,
+) -> list[float]:
+    """The homography from a **normalized** image point to millimetres, row-major.
+
+    The same transform `measure_tile` solves, composed with the normalization
+    the wire uses, so a screen holding four normalized corners can put a live
+    measurement under the one being dragged instead of making somebody press
+    Measure to find out whether they have it right yet.
+
+    **A preview, and the server does not trust it back.** `POST /scans/measure`
+    recomputes everything from the corners it is sent — including the
+    rectangularity check that catches a marker out of plane — so a client that
+    got this arithmetic wrong produces a wrong number on its own screen and
+    never a wrong measurement in the product.
+
+    No origin offset: the caller measures distances between transformed points
+    and a translation cancels in every one of them.
+    """
+    marker_corners = np.asarray(marker_corners, dtype=np.float64).reshape(QUAD_CORNERS, 2)
+    destination = np.array(
+        [
+            [0, 0],
+            [marker_width_mm, 0],
+            [marker_width_mm, marker_height_mm],
+            [0, marker_height_mm],
+        ],
+        dtype=np.float32,
+    )
+    to_millimetres = cv2.getPerspectiveTransform(marker_corners.astype(np.float32), destination)
+    # Normalized -> pixels is a scale, and it goes on the input side.
+    scale = np.array(
+        [[float(image_width), 0.0, 0.0], [0.0, float(image_height), 0.0], [0.0, 0.0, 1.0]]
+    )
+    return [float(value) for value in (to_millimetres @ scale).ravel()]

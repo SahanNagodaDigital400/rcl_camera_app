@@ -110,25 +110,7 @@ const refusal = (code: string, message: string, status: number): Reply => ({
 
 const noop = (): void => undefined;
 
-/**
- * Four taps on the photo, one per tile corner.
- *
- * At module scope because it captures nothing: `oxlint`'s
- * `unicorn/consistent-function-scoping` refuses a nested function that could
- * live here, and the coordinates are fixed against the 400x300 box
- * `layOutTheCanvas` gives the element.
- */
-function tapFourCorners(): void {
-  const canvas = screen.getByRole('button', { name: /tile being measured/i });
-  for (const [x, y] of [
-    [40, 30],
-    [360, 30],
-    [360, 270],
-    [40, 270],
-  ]) {
-    fireEvent.click(canvas, { clientX: x, clientY: y });
-  }
-}
+
 
 /** The body of the nth request, parsed. */
 function jsonBody(calls: [string, RequestInit][], index: number): Record<string, unknown> {
@@ -293,11 +275,68 @@ describe('registering and correcting a marker', () => {
   });
 });
 
+/**
+ * Wait until the proposal has seeded the quad.
+ *
+ * Measure stays disabled until four corners exist, so waiting for the marker
+ * picker is not enough — the click would land on a disabled button and the
+ * test would assert against a request that was never made.
+ */
+async function waitForCorners(container: HTMLElement): Promise<void> {
+  await waitFor(() => {
+    expect(container.querySelector('polygon')).toBeTruthy();
+  });
+}
+
+/** The quad the server proposes, normalized — deliberately *not* the tile. */
+const PROPOSAL = {
+  corners: [
+    { x: 0.2, y: 0.2 },
+    { x: 0.8, y: 0.2 },
+    { x: 0.8, y: 0.8 },
+    { x: 0.2, y: 0.8 },
+  ],
+  detected: true,
+  marker: [
+    { x: 0.45, y: 0.45 },
+    { x: 0.55, y: 0.45 },
+    { x: 0.55, y: 0.55 },
+    { x: 0.45, y: 0.55 },
+  ],
+  // A plain scale — 1 normalized unit to 1000 mm on each axis — so the
+  // proposal's 0.2–0.8 quad reads as 600 × 600 mm and the assertions below can
+  // be checked by hand.
+  homography: [1000, 0, 0, 0, 1000, 0, 0, 0, 1],
+};
+
+const MEASURED = {
+  short_mm: 301.4,
+  long_mm: 598.2,
+  matched_size: '60X30',
+  auto_detected: true,
+};
+
+
+function surface(): HTMLElement {
+  return screen.getByRole('application', { name: /tile being measured/i });
+}
+
+/** Drag the corner nearest the start point over to the end point. */
+function dragCorner(from: [number, number], to: [number, number]): void {
+  const el = surface();
+  fireEvent.pointerDown(el, { clientX: from[0], clientY: from[1], pointerId: 1 });
+  fireEvent.pointerMove(el, { clientX: to[0], clientY: to[1], pointerId: 1 });
+  fireEvent.pointerUp(el, { pointerId: 1 });
+}
+
+const photo = (): Blob => new Blob(['photo'], { type: 'image/jpeg' });
+
 describe('measuring a tile', () => {
   /**
-   * jsdom lays nothing out, so a tap would divide by a zero-sized box and the
-   * screen's own guard would discard it. This gives the photo a size so the
-   * normalized coordinates a tap produces are the ones a phone would produce.
+   * jsdom lays nothing out, so a pointer would divide by a zero-sized box and
+   * the screen's own guard would discard it. This gives the photo a size, so
+   * the normalized coordinates a drag produces are the ones a phone produces —
+   * and stubs `setPointerCapture`, which jsdom does not implement.
    */
   function layOutTheCanvas(): void {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
@@ -311,6 +350,7 @@ describe('measuring a tile', () => {
       y: 0,
       toJSON: () => ({}),
     } as DOMRect);
+    Element.prototype.setPointerCapture = vi.fn();
     vi.stubGlobal('URL', {
       ...URL,
       createObjectURL: () => 'blob:photo',
@@ -318,24 +358,182 @@ describe('measuring a tile', () => {
     });
   }
 
-  const photo = new Blob(['photo'], { type: 'image/jpeg' });
 
-  it('measures once four corners are tapped, and offers the matched size', async () => {
+
+  it('opens on the corners the server proposes, ready to measure', async () => {
+    layOutTheCanvas();
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+    });
+
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+
+    // Four handles, from the proposal, without a single tap.
+    await waitFor(() => {
+      expect(container.querySelectorAll('span[style*="left"]').length).toBeGreaterThanOrEqual(4);
+    });
+    // And the copy never claims the proposal is right — on real showroom
+    // photos it usually is not.
+    expect(screen.getByText(/Drag each corner onto the tile’s corner/)).toBeTruthy();
+    expect(screen.queryByText(/found your tile/i)).toBeNull();
+  });
+
+  it('draws the marker it is scaled by, and says why', async () => {
+    // Everything downstream is scaled by this quadrilateral. A detector that
+    // locked onto something other than the printed square produces
+    // millimetres wrong by that ratio, and nothing else on the screen would
+    // show it — so it is drawn, and labelled.
+    layOutTheCanvas();
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+    });
+
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+    await waitForCorners(container);
+
+    const shapes = [...container.querySelectorAll('polygon')].map((p) => p.getAttribute('points'));
+    expect(shapes).toContain('45.00,45.00 55.00,45.00 55.00,55.00 45.00,55.00');
+    expect(screen.getByText(/outline is the marker the measurement is scaled by/i)).toBeTruthy();
+  });
+
+  it('shows what the corners currently measure, and follows a drag', async () => {
+    // The point of the readout: drag until it says the size on the sticker,
+    // rather than pressing Measure to find out whether you are close.
+    layOutTheCanvas();
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+    });
+
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+    await waitForCorners(container);
+
+    // 0.2–0.8 of the unit square, scaled by 1000 mm, is 600 × 600.
+    expect(screen.getByText('Currently 600 × 600 mm')).toBeTruthy();
+
+    // Pull the top-left corner out to the origin and the readout follows —
+    // which is the whole point of it being there.
+    dragCorner([84, 64], [0, 0]);
+
+    expect(screen.queryByText('Currently 600 × 600 mm')).toBeNull();
+    expect(screen.getByText(/^Currently \d+ × \d+ mm$/)).toBeTruthy();
+  });
+
+  it('measures a tap against the photo, not the box around it', async () => {
+    // **The letterbox bug, pinned.** A portrait photo inside a full-width box
+    // is painted narrower than the box. Reading a tap off the box then puts
+    // every corner somewhere it was not placed — no error at the centre,
+    // growing toward the edges, which is where a tile's corners are. It reads
+    // as a measurement that is wrong for no visible reason.
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: () => 'blob:photo',
+      revokeObjectURL: noop,
+    });
+    Element.prototype.setPointerCapture = vi.fn();
+    // The container is 400 wide; the picture inside it is 200 wide, offset by
+    // 100 — exactly what `object-fit: contain` does to a portrait photo.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const picture = this.tagName === 'IMG';
+      return {
+        left: picture ? 100 : 0,
+        top: 0,
+        width: picture ? 200 : 400,
+        height: 300,
+        right: picture ? 300 : 400,
+        bottom: 300,
+        x: picture ? 100 : 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+    });
+
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+    await waitForCorners(container);
+
+    // Tap the picture's own left edge. Against the picture that is x = 0;
+    // against the container it would be 100/400 = 0.25.
+    fireEvent.pointerDown(surface(), { clientX: 100, clientY: 0, pointerId: 1 });
+    fireEvent.pointerUp(surface(), { pointerId: 1 });
+
+    const points = container.querySelector('polygon')?.getAttribute('points') ?? '';
+    expect(points).toContain('0.00,0.00');
+    expect(points).not.toContain('25.00,0.00');
+  });
+
+  it('falls back to a default quad when the proposal is refused', async () => {
+    // A refusal is not surfaced: the staff member would be dragging corners
+    // either way, and a rejection they cannot act on is noise.
+    layOutTheCanvas();
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'POST /api/scans/propose': [
+        refusal('marker_not_detected', 'The marker was not found in the photo.', 422),
+      ],
+    });
+
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('span[style*="left"]').length).toBeGreaterThanOrEqual(4);
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('moves the nearest corner to a tap, and keeps moving it on a drag', async () => {
+    layOutTheCanvas();
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+    });
+
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+    await waitFor(() => {
+      expect(container.querySelector('polygon')).toBeTruthy();
+    });
+    const before = container.querySelector('polygon')?.getAttribute('points');
+
+    // 0.2,0.2 of a 400x300 box is (80, 60); drag that corner to (10, 10).
+    dragCorner([84, 64], [10, 10]);
+
+    const after = container.querySelector('polygon')?.getAttribute('points');
+    expect(after).not.toBe(before);
+    expect(after).toContain('2.50,3.33');
+  });
+
+  it('measures the corners as adjusted, and offers the matched size', async () => {
     layOutTheCanvas();
     const used: string[] = [];
     const { calls } = stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
-      'POST /api/scans/measure': [
-        {
-          status: 200,
-          body: { short_mm: 301.4, long_mm: 598.2, matched_size: '60X30', auto_detected: true },
-        },
-      ],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+      'POST /api/scans/measure': [{ status: 200, body: MEASURED }],
     });
 
-    render(<MeasureScreen image={photo} onUseSize={(size) => used.push(size)} onBack={noop} />);
-    await screen.findByRole('option', { name: /Rocell marker card/ });
-    tapFourCorners();
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={(size) => used.push(size)} onBack={noop} />,
+    );
+    await waitForCorners(container);
     fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
 
     expect(await screen.findByText('301 × 598 mm')).toBeTruthy();
@@ -353,22 +551,21 @@ describe('measuring a tile', () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
       'POST /api/scans/measure': [
         refusal(
           'marker_not_detected',
           'The marker was not found in the photo. Tap its four corners instead.',
           422,
         ),
-        {
-          status: 200,
-          body: { short_mm: 300, long_mm: 600, matched_size: '60X30', auto_detected: false },
-        },
+        { status: 200, body: { ...MEASURED, auto_detected: false } },
       ],
     });
 
-    render(<MeasureScreen image={photo} onUseSize={noop} onBack={noop} />);
-    await screen.findByRole('option', { name: /Rocell marker card/ });
-    tapFourCorners();
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+    await waitForCorners(container);
     fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
 
     // Rendered as the next instruction rather than as a rejection: a creased
@@ -376,12 +573,18 @@ describe('measuring a tile', () => {
     expect(await screen.findByText(/Tap the marker’s four corners too/)).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
 
-    tapFourCorners();
+    for (const [x, y] of [
+      [40, 30],
+      [360, 30],
+      [360, 270],
+      [40, 270],
+    ]) {
+      fireEvent.pointerDown(surface(), { clientX: x, clientY: y, pointerId: 1 });
+      fireEvent.pointerUp(surface(), { pointerId: 1 });
+    }
     fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
 
     expect(await screen.findByText('Matches 60X30')).toBeTruthy();
-    // And the screen says the measurement rests on the taps, because the staff
-    // member is the only one who knows how carefully they placed them.
     expect(screen.getByText(/corners you tapped/i)).toBeTruthy();
   });
 
@@ -389,6 +592,7 @@ describe('measuring a tile', () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
       'POST /api/scans/measure': [
         {
           status: 200,
@@ -397,9 +601,10 @@ describe('measuring a tile', () => {
       ],
     });
 
-    render(<MeasureScreen image={photo} onUseSize={noop} onBack={noop} />);
-    await screen.findByRole('option', { name: /Rocell marker card/ });
-    tapFourCorners();
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+    await waitForCorners(container);
     fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
 
     // Never "the nearest size anyway" — a 300mm-out nearest is a wrong answer
@@ -413,6 +618,7 @@ describe('measuring a tile', () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
       'POST /api/scans/measure': [
         refusal(
           'measurement_refused',
@@ -422,30 +628,32 @@ describe('measuring a tile', () => {
       ],
     });
 
-    render(<MeasureScreen image={photo} onUseSize={noop} onBack={noop} />);
-    await screen.findByRole('option', { name: /Rocell marker card/ });
-    tapFourCorners();
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+    await waitForCorners(container);
     fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
 
     expect((await screen.findByRole('alert')).textContent).toContain('lie flat on the tile');
   });
 
-  it('cannot be measured before four corners are tapped', async () => {
+  it('asks for a photograph when there is no frame to inherit', async () => {
     layOutTheCanvas();
     stubFetch({ 'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }] });
 
-    render(<MeasureScreen image={photo} onUseSize={noop} onBack={noop} />);
+    render(<MeasureScreen initialImage={null} onUseSize={noop} onBack={noop} />);
     await screen.findByRole('option', { name: /Rocell marker card/ });
 
-    expect(screen.getByRole('button', { name: 'Measure' }).hasAttribute('disabled')).toBe(true);
-    expect(screen.getByText(/Tap the tile’s four corners/)).toBeTruthy();
+    expect(screen.getByText(/Lay the marker flat on the tile/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Take a photo' })).toBeTruthy();
+    expect(screen.queryByRole('application', { name: /tile being measured/i })).toBeNull();
   });
 
   it('says so when nothing is registered to measure against', async () => {
     layOutTheCanvas();
     stubFetch({ 'GET /api/scans/markers': [{ status: 200, body: [] }] });
 
-    render(<MeasureScreen image={photo} onUseSize={noop} onBack={noop} />);
+    render(<MeasureScreen initialImage={null} onUseSize={noop} onBack={noop} />);
 
     expect(await screen.findByText(/no markers are registered/i)).toBeTruthy();
   });

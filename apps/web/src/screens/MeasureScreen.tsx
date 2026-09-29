@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { JSX, MouseEvent } from 'react';
+import type { ChangeEvent, JSX, PointerEvent } from 'react';
 
 import type { Marker, Measurement, Point } from '@rocell/schema/marker';
 
@@ -8,6 +8,7 @@ import {
   fetchScanMarkers,
   MARKER_NOT_DETECTED,
   measureTile,
+  proposeTile,
 } from '../api/client';
 import styles from './MeasureScreen.module.css';
 
@@ -52,18 +53,163 @@ import styles from './MeasureScreen.module.css';
 /** How many corners a quad has. Mirrors `shared_schema.marker.QUAD_CORNERS`. */
 const QUAD_CORNERS = 4;
 
-const TAP_THE_TILE = 'Tap the tile’s four corners, in any order.';
+const TAKE_A_PHOTO = 'Lay the marker flat on the tile and take a photo of both.';
+const DRAG_THE_CORNERS =
+  'Drag each corner onto the tile’s corner. Tap anywhere to move the nearest one.';
 const TAP_THE_MARKER =
   'The marker was not found automatically. Tap the marker’s four corners too, in any order.';
-const READY_TO_MEASURE = 'Ready. Measure, or tap again to start over.';
+const PROPOSING = 'Looking for the tile…';
 const NO_MARKERS =
   'No markers are registered, so there is nothing to measure against. An administrator ' +
   'registers one on the Markers screen.';
 const COULD_NOT_MEASURE = 'The measurement could not be taken.';
 
+/**
+ * The tapped corners in perimeter order — **the server's own ordering**.
+ *
+ * `api.measure.order_corners` sorts by angle about the centroid and starts
+ * at the corner nearest the top-left, so drawing them in tap order would
+ * show a shape the measurement does not use. Mirroring the rule here is what
+ * makes the outline a genuine preview: if the drawn quad is not the tile,
+ * the measurement will not be either, and that is visible before pressing
+ * Measure rather than afterwards as a number that looks plausible.
+ */
+function inPerimeterOrder(points: readonly Point[]): readonly Point[] {
+  if (points.length < 3) return points;
+  const cx = points.reduce((t, p) => t + p.x, 0) / points.length;
+  const cy = points.reduce((t, p) => t + p.y, 0) / points.length;
+  // `Array#toSorted` is the rule's own suggestion and is an ES2023 method the
+  // project's `lib` does not declare (`tsconfig.json` targets ES2022), so it
+  // does not typecheck here — `AuditLogScreen.detailsText` carries the same
+  // note. The mutation the rule guards against cannot happen either way: the
+  // spread makes a fresh array nothing else holds a reference to.
+  // oxlint-disable-next-line unicorn/no-array-sort
+  const clockwise = [...points].sort(
+    (a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx),
+  );
+  let start = 0;
+  clockwise.forEach((p, i) => {
+    const best = clockwise[start];
+    if (best !== undefined && p.x + p.y < best.x + best.y) start = i;
+  });
+  return [...clockwise.slice(start), ...clockwise.slice(0, start)];
+}
+
+/**
+ * The quadrilateral a photo opens on when the server cannot propose one.
+ *
+ * A generous box rather than the frame's corners: it has to be obviously *not*
+ * the tile, so nobody measures it by accident, while still being close enough
+ * that each corner is a short drag from where it belongs.
+ */
+const DEFAULT_QUAD: readonly Point[] = [
+  { x: 0.25, y: 0.25 },
+  { x: 0.75, y: 0.25 },
+  { x: 0.75, y: 0.75 },
+  { x: 0.25, y: 0.75 },
+];
+
+/**
+ * Where a pointer event landed, normalized against **the photograph itself**.
+ *
+ * Measured off the `<img>` rather than the element the event fired on, and
+ * that is the whole of it: the server maps these fractions onto the image's
+ * own pixels, so anything measured against a box that is not exactly the
+ * picture puts every corner somewhere it was not placed. A letterboxed photo
+ * did precisely that — no error at the centre, growing toward the edges,
+ * which is where a tile's corners are.
+ */
+function at(image: HTMLImageElement | null, clientX: number, clientY: number): Point | null {
+  if (image === null) return null;
+  const bounds = image.getBoundingClientRect();
+  if (bounds.width === 0 || bounds.height === 0) return null;
+  return {
+    x: Math.min(Math.max((clientX - bounds.left) / bounds.width, 0), 1),
+    y: Math.min(Math.max((clientY - bounds.top) / bounds.height, 0), 1),
+  };
+}
+
+/** The index of the corner nearest `point`, of whichever quad is in hand. */
+function nearestTo(point: Point, corners: readonly Point[]): number {
+  let best = 0;
+  let bestGap = Number.POSITIVE_INFINITY;
+  corners.forEach((corner, index) => {
+    const gap = (corner.x - point.x) ** 2 + (corner.y - point.y) ** 2;
+    if (gap < bestGap) {
+      bestGap = gap;
+      best = index;
+    }
+  });
+  return best;
+}
+
+/**
+ * Apply a row-major 3x3 homography to a normalized point.
+ *
+ * The preview half of the measurement: the server solved this matrix from the
+ * marker it found, so applying it here gives the same millimetres without a
+ * round trip — which is what lets the readout follow a corner while it is
+ * being dragged. `POST /scans/measure` recomputes from scratch and is the only
+ * number anybody acts on.
+ */
+function toMillimetres(h: readonly number[], point: Point): Point | null {
+  const w = (h[6] ?? 0) * point.x + (h[7] ?? 0) * point.y + (h[8] ?? 0);
+  if (w === 0 || !Number.isFinite(w)) return null;
+  return {
+    x: ((h[0] ?? 0) * point.x + (h[1] ?? 0) * point.y + (h[2] ?? 0)) / w,
+    y: ((h[3] ?? 0) * point.x + (h[4] ?? 0) * point.y + (h[5] ?? 0)) / w,
+  };
+}
+
+/**
+ * The quad's two edge lengths in millimetres, short edge first, or `null`.
+ *
+ * Opposite edges are averaged, exactly as `api.measure.measure_tile` averages
+ * them: both are measurements of the same physical edge, and the average
+ * halves the error of a single misplaced corner.
+ */
+function previewSize(
+  homography: readonly number[] | null,
+  corners: readonly Point[],
+): { short: number; long: number } | null {
+  if (homography === null || homography.length !== 9 || corners.length !== QUAD_CORNERS) {
+    return null;
+  }
+  const flat = inPerimeterOrder(corners).map((c) => toMillimetres(homography, c));
+  if (flat.some((p) => p === null)) return null;
+  const points = flat as Point[];
+  const edge = (a: number, b: number): number => {
+    const from = points[a];
+    const to = points[b];
+    if (from === undefined || to === undefined) return 0;
+    return Math.hypot(to.x - from.x, to.y - from.y);
+  };
+  const horizontal = (edge(0, 1) + edge(2, 3)) / 2;
+  const vertical = (edge(1, 2) + edge(3, 0)) / 2;
+  if (!Number.isFinite(horizontal) || !Number.isFinite(vertical)) return null;
+  return { short: Math.min(horizontal, vertical), long: Math.max(horizontal, vertical) };
+}
+
+/**
+ * A quad as an SVG `points` string, in percent.
+ *
+ * Fixed to two decimals because `0.45 * 100` is `45.00000000000001` in
+ * floating point, and an attribute full of that is unreadable in a DOM
+ * inspector and unmatchable in a test. Two decimals is a hundredth of a
+ * percent of the photo's width — far below a pixel.
+ */
+function asPoints(corners: readonly Point[]): string {
+  return corners.map((c) => `${(c.x * 100).toFixed(2)},${(c.y * 100).toFixed(2)}`).join(' ');
+}
+
 interface MeasureScreenProps {
-  /** The photo to measure — the whole frame, never the scan crop. */
-  image: Blob;
+  /**
+   * The scan's own photograph, whole — what this screen opens on.
+   *
+   * One shutter press serves both jobs. `null` when there is no frame to
+   * inherit, and then the screen asks for one.
+   */
+  initialImage: Blob | null;
   /**
    * Accept the measured Size. `ScanScreen` pre-fills its picker with it; the
    * staff member confirms or changes it before the scan is submitted.
@@ -73,7 +219,28 @@ interface MeasureScreenProps {
   onBack: () => void;
 }
 
-export function MeasureScreen({ image, onUseSize, onBack }: MeasureScreenProps): JSX.Element {
+export function MeasureScreen({
+  initialImage,
+  onUseSize,
+  onBack,
+}: MeasureScreenProps): JSX.Element {
+  /**
+   * The photograph being measured — **this screen's own, never the scan's.**
+   *
+   * The two cannot be one picture, and that is measured rather than assumed:
+   * matching an A4 marker sheet lying centred on the tile costs 24 points of
+   * top-1 accuracy (75.6% against 100% on 45 catalogue tiles), because
+   * `shared/vision` resizes the shortest edge to 256 and centre-crops 224 —
+   * so the sheet fills much of the only region the embedding ever sees.
+   * Laying the marker at the tile's edge recovers half of that and no more,
+   * and cropping clear of it recovers 4 points, because a narrow crop then
+   * mismatches the reference on scale instead.
+   *
+   * So matching wants the surface clean and measuring wants a marker on it,
+   * and one shutter press cannot serve both. Scan first with nothing on the
+   * tile; place the marker only for this.
+   */
+  const [photo, setPhoto] = useState<Blob | null>(initialImage);
   const [markers, setMarkers] = useState<readonly Marker[] | null>(null);
   const [markerId, setMarkerId] = useState('');
   const [tileCorners, setTileCorners] = useState<readonly Point[]>([]);
@@ -87,11 +254,23 @@ export function MeasureScreen({ image, onUseSize, onBack }: MeasureScreenProps):
    * rather than the default.
    */
   const [tapMarker, setTapMarker] = useState(false);
+  /** The corner currently under the finger, or `null`. */
+  const [dragging, setDragging] = useState<number | null>(null);
+  /** Whether the server is being asked where the tile is. */
+  const [proposing, setProposing] = useState(false);
+  /** Where the fiducial was found, so it can be drawn and checked. */
+  const [markerOutline, setMarkerOutline] = useState<readonly Point[]>([]);
+  /** The proposal's normalized-to-millimetres matrix, for the live readout. */
+  const [homography, setHomography] = useState<readonly number[] | null>(null);
   const [measurement, setMeasurement] = useState<Measurement | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const markerFieldId = useId();
+  const photoFieldId = useId();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  /** The picture itself — the one box corner coordinates may be measured against. */
+  const photoRef = useRef<HTMLImageElement>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -108,8 +287,13 @@ export function MeasureScreen({ image, onUseSize, onBack }: MeasureScreenProps):
    * this screen is reached from a flow that is already holding a full-size
    * photo.
    */
-  const photoUrl = useMemo(() => URL.createObjectURL(image), [image]);
-  useEffect(() => () => URL.revokeObjectURL(photoUrl), [photoUrl]);
+  const photoUrl = useMemo(() => (photo === null ? null : URL.createObjectURL(photo)), [photo]);
+  useEffect(
+    () => () => {
+      if (photoUrl !== null) URL.revokeObjectURL(photoUrl);
+    },
+    [photoUrl],
+  );
 
   useEffect(() => {
     void fetchScanMarkers()
@@ -134,6 +318,82 @@ export function MeasureScreen({ image, onUseSize, onBack }: MeasureScreenProps):
    */
   const matchedSize = measurement?.matched_size ?? null;
 
+  /**
+   * Take (or retake) the photograph this screen measures.
+   *
+   * Every measurement-shaped piece of state is cleared with it: corners
+   * tapped on the last photo mean nothing on this one, and a measurement
+   * carried over would be a number on screen that no longer describes what
+   * is under it. The fallback decision goes too — a retake deserves a fresh
+   * attempt at automatic detection.
+   */
+  function choosePhoto(event: ChangeEvent<HTMLInputElement>): void {
+    const file = event.target.files?.[0];
+    // Cleared before anything else: a browser does not fire `change` again
+    // for the same file re-chosen, so a retake of the very photo that just
+    // failed would be unreachable without this.
+    if (fileInputRef.current !== null) fileInputRef.current.value = '';
+    if (file === undefined) return;
+    setPhoto(file);
+    setTileCorners([]);
+    setMarkerCorners([]);
+    setTapMarker(false);
+    setMeasurement(null);
+    setFailure(null);
+  }
+
+  /**
+   * Ask the server where the tile is, and open on its answer.
+   *
+   * **A starting shape, and the copy never says more than that.** On real
+   * showroom photographs the detector is wrong more often than right — tiles
+   * are laid against neighbours of near-identical tone, so a tile's boundary
+   * is no more contrasty than its own veining — and `detected` coming back
+   * `true` has been observed on quads that were not the tile. So the
+   * instruction is always "drag each corner onto the tile's corner", never
+   * "we found it", and every corner is moved by a person before anything is
+   * measured.
+   *
+   * A refusal is not surfaced: the fallback is the default quad, which is what
+   * the staff member would be dragging anyway.
+   */
+  useEffect(() => {
+    if (photo === null || markerId === '') return;
+    let current = true;
+    void Promise.resolve()
+      .then(() => {
+        if (current && mountedRef.current) setProposing(true);
+      })
+      .then(async () => proposeTile(photo, markerId))
+      .then((proposal) => {
+        if (!current || !mountedRef.current) return;
+        setTileCorners(proposal.corners);
+        setMarkerOutline(proposal.marker);
+        setHomography(proposal.homography);
+      })
+      .catch(() => {
+        if (!current || !mountedRef.current) return;
+        setTileCorners(DEFAULT_QUAD);
+        setMarkerOutline([]);
+        setHomography(null);
+      })
+      .finally(() => {
+        if (current && mountedRef.current) setProposing(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [photo, markerId]);
+
+  /**
+   * The size the corners currently describe, updated as they move.
+   *
+   * Recomputed on every render rather than stored: it is derived from the
+   * corners and the matrix, and a copy in state is a second thing that can be
+   * stale while a finger is mid-drag.
+   */
+  const preview = previewSize(homography, tileCorners);
+
   /** Which quad the next tap belongs to. */
   const collecting = tapMarker ? markerCorners : tileCorners;
   const complete = tapMarker
@@ -142,41 +402,61 @@ export function MeasureScreen({ image, onUseSize, onBack }: MeasureScreenProps):
 
   function instruction(): string {
     if (markers !== null && markers.length === 0) return NO_MARKERS;
+    if (photo === null) return TAKE_A_PHOTO;
+    if (proposing) return PROPOSING;
     if (tapMarker && markerCorners.length < QUAD_CORNERS) return TAP_THE_MARKER;
-    if (tileCorners.length < QUAD_CORNERS) return TAP_THE_TILE;
-    return READY_TO_MEASURE;
+    return DRAG_THE_CORNERS;
   }
 
-  /**
-   * Record one tap, in normalized image coordinates.
-   *
-   * Normalized rather than absolute pixels, which is AD-11's rule for the scan
-   * crop and holds for the same reason: this was tapped against a displayed
-   * image whose on-screen size is a property of the phone, not of the upload.
-   *
-   * A fifth tap starts that quad over rather than being ignored. Ignoring it
-   * would leave a staff member who mis-tapped with no way out but Back, and
-   * the corners are cheap to re-collect.
-   */
-  function tap(event: MouseEvent<HTMLButtonElement>): void {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    if (bounds.width === 0 || bounds.height === 0) return;
-    const point = {
-      x: (event.clientX - bounds.left) / bounds.width,
-      y: (event.clientY - bounds.top) / bounds.height,
-    };
-    const next = collecting.length >= QUAD_CORNERS ? [point] : [...collecting, point];
+  function moveCorner(index: number, point: Point): void {
+    const next = collecting.map((corner, i) => (i === index ? point : corner));
     if (tapMarker) setMarkerCorners(next);
     else setTileCorners(next);
     setMeasurement(null);
+  }
+
+  /**
+   * Grab the nearest corner and start moving it.
+   *
+   * **Tap and drag are one gesture, not two.** A tap moves the nearest corner
+   * to where the finger landed and a drag keeps moving it — which is what
+   * makes a corner correctable rather than re-collectable. It also means a
+   * corner behind a fingertip can be placed by tapping just beside it and
+   * sliding, instead of being invisible under the thumb that is placing it.
+   *
+   * While the marker's corners are being collected by hand the quad may be
+   * shorter than four; a tap then appends rather than moves, because there is
+   * nothing yet to move.
+   */
+  function grab(event: PointerEvent<HTMLDivElement>): void {
+    const point = at(photoRef.current, event.clientX, event.clientY);
+    if (point === null) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    if (collecting.length < QUAD_CORNERS) {
+      const next = [...collecting, point];
+      if (tapMarker) setMarkerCorners(next);
+      else setTileCorners(next);
+      setMeasurement(null);
+      return;
+    }
+    const index = nearestTo(point, collecting);
+    setDragging(index);
+    moveCorner(index, point);
+  }
+
+  function drag(event: PointerEvent<HTMLDivElement>): void {
+    if (dragging === null) return;
+    const point = at(photoRef.current, event.clientX, event.clientY);
+    if (point !== null) moveCorner(dragging, point);
   }
 
   async function measure(): Promise<void> {
     setBusy(true);
     setFailure(null);
     try {
+      if (photo === null) return;
       const answer = await measureTile(
-        image,
+        photo,
         markerId,
         tileCorners,
         // Present only once the automatic path has actually failed — their
@@ -232,26 +512,101 @@ export function MeasureScreen({ image, onUseSize, onBack }: MeasureScreenProps):
       </div>
 
       <p className={styles.instruction}>{instruction()}</p>
+      {markerOutline.length === QUAD_CORNERS && (
+        // Everything is scaled by the marker: a detector that locked onto
+        // something else produces millimetres wrong by that ratio, and nothing
+        // else on this screen would show it.
+        <p className={styles.markerNote}>
+          The blue outline is the marker the measurement is scaled by. Retake if it is not on the
+          printed square.
+        </p>
+      )}
+      {preview !== null && (
+        <p className={styles.preview}>
+          {`Currently ${String(Math.round(preview.short))} × ${String(Math.round(preview.long))} mm`}
+        </p>
+      )}
+      {tapMarker && markerCorners.length < QUAD_CORNERS && (
+        <p className={styles.progress}>
+          {`${String(markerCorners.length)} of ${String(QUAD_CORNERS)} marker corners tapped.`}
+        </p>
+      )}
 
-      <button className={styles.canvas} type="button" onClick={tap}>
-        <img className={styles.photo} src={photoUrl} alt="The tile being measured" />
-        {tileCorners.map((corner, index) => (
-          <span
-            className={styles.corner}
-            // Corners have no identity of their own and are only ever appended
-            // or cleared as a set, so the position is the key.
-            key={`tile-${String(index)}`}
-            style={{ left: `${String(corner.x * 100)}%`, top: `${String(corner.y * 100)}%` }}
-          />
-        ))}
-        {markerCorners.map((corner, index) => (
-          <span
-            className={styles.markerCorner}
-            key={`marker-${String(index)}`}
-            style={{ left: `${String(corner.x * 100)}%`, top: `${String(corner.y * 100)}%` }}
-          />
-        ))}
-      </button>
+      {/* `capture="environment"` hands the job to the phone's own camera app,
+          which is the right tool here and not a shortcut: it returns a
+          full-resolution, autofocused, properly exposed frame, where a
+          `getUserMedia` viewfinder returns whatever stream the engine chose.
+          Measurement is the one thing in this product that genuinely needs
+          the sensor's pixels — `api.measure` refuses a marker under 60px —
+          and unlike scanning it happens once in a while rather than
+          repeatedly, so the extra tap costs nothing worth keeping. */}
+      <input
+        accept="image/*"
+        capture="environment"
+        className={styles.fileInput}
+        id={photoFieldId}
+        ref={fileInputRef}
+        type="file"
+        onChange={choosePhoto}
+      />
+
+      {photoUrl === null ? (
+        <p className={styles.placeholder}>The photo you take will appear here.</p>
+      ) : (
+        <div
+          aria-label="The tile being measured"
+          className={styles.canvas}
+          role="application"
+          onPointerDown={grab}
+          onPointerMove={drag}
+          onPointerUp={() => setDragging(null)}
+          onPointerCancel={() => setDragging(null)}
+        >
+          <img alt="" className={styles.photo} ref={photoRef} src={photoUrl} />
+          {tileCorners.length > 2 && (
+            <svg
+              aria-hidden="true"
+              className={styles.outline}
+              preserveAspectRatio="none"
+              viewBox="0 0 100 100"
+            >
+              <polygon
+                className={styles.outlineShape}
+                points={asPoints(inPerimeterOrder(tileCorners))}
+              />
+            </svg>
+          )}
+          {markerOutline.length === QUAD_CORNERS && (
+            <svg
+              aria-hidden="true"
+              className={styles.outline}
+              preserveAspectRatio="none"
+              viewBox="0 0 100 100"
+            >
+              <polygon
+                className={styles.markerShape}
+                points={asPoints(markerOutline)}
+              />
+            </svg>
+          )}
+          {tileCorners.map((corner, index) => (
+            <span
+              className={styles.corner}
+              // Corners have no identity of their own and are only ever
+              // appended or cleared as a set, so the position is the key.
+              key={`tile-${String(index)}`}
+              style={{ left: `${String(corner.x * 100)}%`, top: `${String(corner.y * 100)}%` }}
+            />
+          ))}
+          {markerCorners.map((corner, index) => (
+            <span
+              className={styles.markerCorner}
+              key={`marker-${String(index)}`}
+              style={{ left: `${String(corner.x * 100)}%`, top: `${String(corner.y * 100)}%` }}
+            />
+          ))}
+        </div>
+      )}
 
       {failure !== null && (
         <p className={styles.failure} role="alert">
@@ -278,7 +633,18 @@ export function MeasureScreen({ image, onUseSize, onBack }: MeasureScreenProps):
       )}
 
       <div className={styles.actions}>
-        {matchedSize === null ? (
+        {photo === null ? (
+          // The one accent control until a photograph exists — there is
+          // nothing else worth pressing, and DESIGN.md allows one per screen.
+          <button
+            className={styles.measure}
+            type="button"
+            disabled={markerId === ''}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Take a photo
+          </button>
+        ) : matchedSize === null ? (
           <button
             className={styles.measure}
             type="button"
@@ -297,6 +663,34 @@ export function MeasureScreen({ image, onUseSize, onBack }: MeasureScreenProps):
             onClick={() => onUseSize(matchedSize)}
           >
             Use {matchedSize}
+          </button>
+        )}
+        {tapMarker && markerCorners.length > 0 && (
+          // Takes back the last corner rather than clearing all four. A
+          // mis-tap is one corner, and starting over for it is what makes
+          // people accept a corner they know is slightly wrong.
+          <button
+            className={styles.back}
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              const kept = collecting.slice(0, -1);
+              if (tapMarker) setMarkerCorners(kept);
+              else setTileCorners(kept);
+              setMeasurement(null);
+            }}
+          >
+            Undo corner
+          </button>
+        )}
+        {photo !== null && (
+          <button
+            className={styles.back}
+            type="button"
+            disabled={busy}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Retake
           </button>
         )}
         <button className={styles.back} type="button" onClick={onBack} disabled={busy}>

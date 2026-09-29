@@ -20,15 +20,18 @@ import cv2
 import numpy as np
 import pytest
 from api.measure import (
+    FALLBACK_TILE_MM,
     MIN_MARKER_EDGE_PIXELS,
+    MIN_TILE_EDGE_MM,
     DegenerateQuad,
     MarkerTooSmall,
     NotRectangular,
     detect_marker,
     measure_tile,
     order_corners,
+    propose_tile_quad,
 )
-from shared_schema.marker import ArucoDictionary, match_size
+from shared_schema.marker import QUAD_CORNERS, ArucoDictionary, match_size
 
 #: ISO/IEC 7810 ID-1 — a bank card, to the tenth of a millimetre.
 CARD_WIDTH_MM = 85.60
@@ -328,3 +331,103 @@ class TestFiducialDetection:
         """
         blank = np.full((400, 400, 3), 255, dtype=np.uint8)
         assert detect_marker(blank, ArucoDictionary.DICT_4X4_50, 0) is None
+
+
+class TestProposingTheTileQuad:
+    """`propose_tile_quad` — a starting shape for the corners, never an answer.
+
+    The detector behind it is unreliable by measurement, not by suspicion: on
+    real showroom photographs it found nothing usable on 5 of 5, because tiles
+    are laid against neighbours of near-identical tone and the gradient across
+    a tile's boundary is no stronger than the variation within its own surface.
+    So what these tests pin is the *contract* the screen depends on — always
+    four corners, always in the marker's plane, and honest about which it gave.
+    """
+
+    def scene(self, *, with_tile: bool) -> tuple[np.ndarray, np.ndarray]:
+        """A frame with the fiducial on it, optionally on a contrasting tile."""
+        homography = homography_for("head-on")
+        frame = np.full((900, 1600, 3), 205, np.uint8)
+        if with_tile:
+            quad = project(homography, TILE_MM).astype(np.int32)
+            cv2.fillPoly(frame, [quad], (70, 70, 70))
+
+        family = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        printed = cv2.aruco.generateImageMarker(family, 0, 240)
+        corners_mm = np.array(
+            [[250, 120], [250 + 100, 120], [250 + 100, 120 + 100], [250, 120 + 100]],
+            dtype=np.float32,
+        )
+        card = project(homography, corners_mm).astype(np.float32)
+        warped = cv2.warpPerspective(
+            cv2.cvtColor(printed, cv2.COLOR_GRAY2BGR),
+            cv2.getPerspectiveTransform(
+                np.array([[0, 0], [240, 0], [240, 240], [0, 240]], np.float32), card
+            ),
+            (1600, 900),
+            borderMode=cv2.BORDER_TRANSPARENT,
+            dst=frame.copy(),
+        )
+        return warped, card.astype(np.float64)
+
+    def test_always_answers_four_corners(self) -> None:
+        """The screen draws draggable handles and has nothing to draw without them."""
+        frame, card = self.scene(with_tile=False)
+
+        quad, _ = propose_tile_quad(frame, card, 100.0, 100.0)
+
+        assert quad.shape == (QUAD_CORNERS, 2)
+        assert np.all(np.isfinite(quad))
+
+    def test_a_blank_surround_falls_back_and_says_so(self) -> None:
+        """`detected` is the difference between "we found your tile" and "here
+        is a box to drag", and only one of those is usually true."""
+        frame, card = self.scene(with_tile=False)
+
+        _, detected = propose_tile_quad(frame, card, 100.0, 100.0)
+
+        assert detected is False
+
+    def test_the_fallback_is_a_tile_sized_square_in_the_marker_s_plane(self) -> None:
+        """So a drag moves a corner along the tile rather than across the screen.
+
+        Measured back through `measure_tile`, which is the same transform the
+        real measurement uses — a fallback drawn in screen space would come
+        back as something other than the square it was meant to be.
+        """
+        frame, card = self.scene(with_tile=False)
+
+        quad, detected = propose_tile_quad(frame, card, 100.0, 100.0)
+
+        assert detected is False
+        short_mm, long_mm = measure_tile(card, 100.0, 100.0, quad, marker_oriented=True)
+        assert short_mm == pytest.approx(FALLBACK_TILE_MM, rel=0.02)
+        assert long_mm == pytest.approx(FALLBACK_TILE_MM, rel=0.02)
+
+    def test_a_proposal_is_never_smaller_than_a_tile_can_be(self) -> None:
+        """Whatever comes back, it is a shape somebody can sensibly drag.
+
+        The marker's own square and the paper around it are the candidates a
+        naive search returns first; both are far under `MIN_TILE_EDGE_MM`.
+        """
+        for with_tile in (True, False):
+            frame, card = self.scene(with_tile=with_tile)
+            quad, _ = propose_tile_quad(frame, card, 100.0, 100.0)
+            short_mm, _ = measure_tile(card, 100.0, 100.0, quad, marker_oriented=True)
+            assert short_mm >= MIN_TILE_EDGE_MM * 0.95
+
+    def test_the_proposal_contains_the_marker(self) -> None:
+        """The marker is lying **on** the tile, so any honest proposal holds it.
+
+        This is the constraint that makes the search tractable at all: without
+        it the largest quadrilateral in a showroom photo is the floor.
+        """
+        frame, card = self.scene(with_tile=True)
+
+        quad, _ = propose_tile_quad(frame, card, 100.0, 100.0)
+
+        centre = card.mean(axis=0)
+        inside = cv2.pointPolygonTest(
+            order_corners(quad).astype(np.float32), (float(centre[0]), float(centre[1])), False
+        )
+        assert inside >= 0

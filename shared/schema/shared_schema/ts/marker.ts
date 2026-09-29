@@ -92,6 +92,66 @@ export interface Measurement {
   auto_detected: boolean;
 }
 
+/**
+ * Where the tile's four corners probably are — a starting point, not an answer.
+ *
+ * Always four, even when nothing was found: the screen draws draggable
+ * handles, and a shape to adjust beats an empty frame. `detected` says which
+ * you got, because "we found your tile" and "here is a box to drag" are
+ * different claims and on real showroom photos the second is the common one.
+ */
+export interface TileProposal {
+  /** Normalized 0–1 against the submitted image, in perimeter order. */
+  corners: Point[];
+  detected: boolean;
+  /**
+   * Where the fiducial was found, normalized the same way.
+   *
+   * Drawn on the photo so a person can check it: everything downstream is
+   * scaled by this quadrilateral, so a detector that locked onto something
+   * other than the printed square produces millimetres that are wrong by that
+   * ratio, with nothing else on screen to show it.
+   */
+  marker: Point[];
+  /**
+   * The 3×3 homography taking a normalized image point to millimetres in the
+   * marker's plane, row-major — nine numbers.
+   *
+   * Used for the live readout while a corner is being dragged. A *preview*:
+   * `POST /scans/measure` is the only thing that produces a measurement
+   * anybody acts on, and it recomputes from the corners it is sent.
+   */
+  homography: number[];
+}
+
+/** Narrow an unknown response body to a `TileProposal`. */
+export function isTileProposal(value: unknown): value is TileProposal {
+  if (!isPlainObject(value)) return false;
+  const keys = Object.keys(value).sort();
+  if (keys.join(',') !== 'corners,detected,homography,marker') return false;
+  if (typeof value['detected'] !== 'boolean') return false;
+
+  const isQuad = (quad: unknown): boolean =>
+    Array.isArray(quad) &&
+    quad.length === 4 &&
+    quad.every(
+      (c: unknown) =>
+        isPlainObject(c) &&
+        Object.keys(c).length === 2 &&
+        isFiniteNumber(c['x']) &&
+        isFiniteNumber(c['y']),
+    );
+
+  const homography = value['homography'];
+  return (
+    isQuad(value['corners']) &&
+    isQuad(value['marker']) &&
+    Array.isArray(homography) &&
+    homography.length === 9 &&
+    homography.every((n: unknown) => typeof n === 'number' && Number.isFinite(n))
+  );
+}
+
 const REQUIRED_NUMBER_KEYS = ['width_mm', 'height_mm'] as const;
 const TIMESTAMP_KEYS = ['created_at', 'updated_at'] as const;
 

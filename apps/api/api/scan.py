@@ -58,7 +58,14 @@ import shared_vision
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
 from psycopg.types.json import Jsonb
 from shared_schema.errors import ApiError
-from shared_schema.marker import QUAD_CORNERS, Marker, Measurement, match_size
+from shared_schema.marker import (
+    QUAD_CORNERS,
+    Marker,
+    Measurement,
+    Point,
+    TileProposal,
+    match_size,
+)
 from shared_schema.scan import (
     HISTORY_PAGE_SIZE,
     ScanCandidate,
@@ -569,6 +576,92 @@ def _corner_array(xs: list[float], ys: list[float], width: int, height: int) -> 
         )
     return np.array(
         [[x * width, y * height] for x, y in zip(xs, ys, strict=True)], dtype=np.float64
+    )
+
+
+@router.post("/scans/propose", response_model=TileProposal)
+def propose_tile(
+    response: Response,
+    user: Annotated[User, Depends(require_claimed_user)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    marker_id: Annotated[UUID, Form()],
+    image: Annotated[UploadFile, File()],
+) -> TileProposal:
+    """Where the tile's corners probably are, so the staff member starts from a shape.
+
+    **A convenience, and the response says how much of one.** `detected` is
+    `False` whenever the fallback rectangle came back, and on real showroom
+    photographs that is the common case: tiles are laid against neighbours of
+    near-identical tone, and the gradient across a tile's boundary measures no
+    stronger than the variation within its own surface. Nothing here is wired
+    into a measurement — the corners the staff member confirms are what
+    `POST /scans/measure` receives, and they are free to move every one.
+
+    **The marker has to be found first**, because the proposal is made in the
+    marker's plane: that is what turns "find a quadrilateral" — which picks the
+    floor every time — into "find a tile-sized rectangle, in millimetres,
+    containing the marker". A Marker with no fiducial, or a fiducial that is
+    not in the frame, is `422 marker_not_detected`, and the screen falls back
+    to the corners being placed by hand.
+
+    `require_claimed_user`, like every other route on this surface: proposing
+    is part of measuring, and measuring is part of scanning.
+    """
+    marker = find_marker(conn, marker_id)
+    if marker is None:
+        raise _refusal(
+            UNKNOWN_MARKER, UNKNOWN_MARKER_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    if marker.aruco_dictionary is None or marker.aruco_id is None:
+        raise _refusal(
+            MARKER_NOT_DETECTED, NOT_DETECTED_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+
+    data = _read_upload(image)
+    try:
+        accepted = shared_vision.intake_image(data, max_pixels=shared_vision.UPLOAD_MAX_PIXELS)
+    except shared_vision.ImageTooLarge as oversized:
+        raise _refusal(IMAGE_TOO_LARGE, TOO_LARGE, status.HTTP_413_CONTENT_TOO_LARGE) from oversized
+    except shared_vision.UnreadableImage as unreadable:
+        raise _refusal(
+            UNREADABLE_IMAGE, NOT_AN_IMAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        ) from unreadable
+
+    rgb = np.asarray(accepted.image.convert("RGB"))
+    detected_marker = measure.detect_marker(rgb, marker.aruco_dictionary, marker.aruco_id)
+    if detected_marker is None:
+        raise _refusal(
+            MARKER_NOT_DETECTED, NOT_DETECTED_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+
+    # BGR, because `propose_tile_quad` works in Lab and OpenCV's conversion
+    # reads its input as BGR. `detect_marker` takes RGB and converts its own.
+    quad, detected = measure.propose_tile_quad(
+        rgb[:, :, ::-1], detected_marker, marker.width_mm, marker.height_mm
+    )
+
+    width, height = accepted.image.size
+
+    def normalized(points: Any) -> list[Point]:
+        # AD-11's rule: the screen lays these over a picture whose on-screen
+        # size is a property of the phone, not of the upload.
+        return [
+            Point(x=min(max(float(x) / width, 0.0), 1.0), y=min(max(float(y) / height, 0.0), 1.0))
+            for x, y in points
+        ]
+
+    response.headers.update(NO_STORE)
+    return TileProposal(
+        corners=normalized(measure.order_corners(quad)),
+        detected=detected,
+        # The detector's own corner order, not `order_corners` — this is drawn
+        # for a person to recognise the printed square by, and re-ordering it
+        # would only make the outline disagree with the one the measurement
+        # actually uses.
+        marker=normalized(detected_marker),
+        homography=measure.normalized_to_millimetres(
+            detected_marker, marker.width_mm, marker.height_mm, width, height
+        ),
     )
 
 

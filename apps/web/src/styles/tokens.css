@@ -263,6 +263,12 @@
   /* The live viewfinder fills the phone but never the whole viewport: room
    * is left for the app bar, the tab bar and the error line beneath it. */
   --viewfinder-max-height: 72dvh;
+  /* The Measure screen's photograph. Smaller than the viewfinder's because
+   * that screen carries a picker, an instruction and three buttons under the
+   * picture, and every one of the four corners has to be tappable without
+   * scrolling — a corner tapped after scrolling is a corner tapped in the
+   * wrong place. */
+  --measure-photo-max-height: 46dvh;
 
   /* Reading measures for whole screens: the admin surfaces' content width on
    * a wide desktop, and the single scan-flow column centred on one. */

@@ -205,23 +205,12 @@ export function ScanScreen({
   /** The last frame submitted, kept for "Try again" and "Crop this photo". */
   const [lastImage, setLastImage] = useState<Blob | null>(null);
   /**
-   * The same frame, kept for **measuring** rather than matching.
+   * The same photograph, kept whole and at `MEASURE_MAX_EDGE`, for measuring.
    *
-   * A second blob rather than reusing `lastImage`, because the two want
-   * opposite things from one photograph:
-   *
-   * * Matching wants the tile and nothing else, so the shutter takes the
-   *   centre square at full sensor resolution and spends a ~1024px budget on
-   *   it. `shared/vision` resizes to 224 either way, so nothing is lost.
-   * * Measuring wants the **whole frame at as many pixels as the server can
-   *   use**. The marker is laid beside the pattern, so a centre-square crop
-   *   can cut it out entirely — and `api.measure` refuses a marker under 60px
-   *   because below that one pixel of corner error outweighs the gap between
-   *   two catalogue Sizes. At the matching budget a card filling a fifth of
-   *   the frame is already marginal; cropped first, it is gone.
-   *
-   * So this one is uncropped and capped at `MEASURE_MAX_EDGE`. `null` until a
-   * frame has been taken, and never used for a submission.
+   * One shutter press, two frames. Matching wants the centre square at the
+   * ~1024px budget; measuring wants the whole frame at as many pixels as the
+   * server can use, because the marker is often outside the centre square and
+   * is refused below 60px. Neither is a crop of the other.
    */
   const [measureImage, setMeasureImage] = useState<Blob | null>(null);
   /**
@@ -418,11 +407,9 @@ export function ScanScreen({
     setFileError(null);
     setSubmitting(true);
     try {
-      // Both frames, so `App` can hand the measuring one to Measure from
-      // Results. Passed as an argument rather than read from `measureImage`:
-      // the caller has just set that state and a `useState` write is not
-      // visible to this closure until the next render, so reading it here
-      // would send the *previous* photo — or `null` on the first capture.
+      // Both, so Measure can open on the whole frame while matching keeps the
+      // centre square. Passed rather than read back from state: a `useState`
+      // write is not visible to this closure until the next render.
       await onCaptured(image, forMeasuring);
     } catch (failure) {
       if (failure instanceof ApiRequestError && failure.code === UNKNOWN_SIZE) {
@@ -454,10 +441,6 @@ export function ScanScreen({
       const captured = computeCentreSquare(video.videoWidth, video.videoHeight);
       const { width, height } = computeDownscaledDimensions(captured.width, captured.height);
       blob = await downscaleToBlob(video, width, height, captured);
-      // The measuring frame, from the *same* shutter press: whole frame, no
-      // centre-square crop, and the server's own decode cap rather than the
-      // matching budget. Encoded here because the video frame is gone by the
-      // time Measure is pressed — there is nothing to go back to.
       const whole = computeDownscaledDimensions(
         video.videoWidth,
         video.videoHeight,
@@ -499,10 +482,6 @@ export function ScanScreen({
     try {
       const { width, height } = computeDownscaledDimensions(bitmap.width, bitmap.height);
       blob = await downscaleToBlob(bitmap, width, height);
-      // As above, and before the `finally` closes the bitmap. This path never
-      // crops, so the only difference from the matching frame is the cap —
-      // which is the whole of why a marker is found in a chosen photo and was
-      // not in a captured one.
       const whole = computeDownscaledDimensions(bitmap.width, bitmap.height, MEASURE_MAX_EDGE);
       measuring = await downscaleToBlob(bitmap, whole.width, whole.height);
     } catch {
