@@ -141,7 +141,7 @@ def test_the_route_table_holds_no_registration_path() -> None:
     assert offenders == [], "FR-1: accounts are provisioned by an Administrator"
 
 
-def test_the_route_table_is_the_nineteen_routes_the_product_serves() -> None:
+def test_the_route_table_is_the_twentythree_routes_the_product_serves() -> None:
     # Stated positively as well as negatively: a route table listed in full
     # makes an addition a visible diff rather than something a word-match has
     # to anticipate.
@@ -319,6 +319,17 @@ def test_the_route_table_is_the_nineteen_routes_the_product_serves() -> None:
         "/scans/count",
         "/scans/sizes",
         "/tiles/{tile_id}/images/{image_id}",
+        # Marker measurement's four. `/admin/markers` and its member are the
+        # Administrator's register — a ruler is not a Tile, so they are a
+        # collection of their own rather than anything under `/admin/tiles`,
+        # and nothing here brings a *user* into existence either. The two under
+        # `/scans` are the staff-facing halves, reachable by exactly whoever can
+        # submit a scan: `/scans/sizes`' own precedent, and for its reason —
+        # both exist to configure one control on the Scan screen.
+        "/admin/markers",
+        "/admin/markers/{marker_id}",
+        "/scans/markers",
+        "/scans/measure",
     }
 
 

@@ -1,4 +1,4 @@
-import { ArrowsClockwise, CaretDown, CaretUp, Crop } from '@phosphor-icons/react';
+import { ArrowsClockwise, CaretDown, CaretUp, Crop, Ruler } from '@phosphor-icons/react';
 import { useState } from 'react';
 import type { JSX } from 'react';
 
@@ -60,6 +60,10 @@ const BEST_MATCH = 'Best match';
 const RETAKE = 'Retake';
 const SCAN_AGAIN = 'Scan again';
 const ADJUST_CROP = 'Adjust crop';
+/** Distinct from the Scan screen's own control so no name is in the document
+ *  twice, and a phrase rather than a word for the reason the home panel's quick
+ *  links are phrases. */
+const MEASURE_TILE = 'Measure the tile';
 const HOW_TO_VERIFY = 'Tap a candidate to view its reference image full-screen.';
 const HIDE_OTHERS = 'Hide other matches';
 
@@ -86,12 +90,23 @@ interface ResultsScreenProps {
    * is rendered.
    */
   onAdjustCrop?: (() => void) | undefined;
+  /**
+   * Measure the tile in that frame against a registered Marker.
+   *
+   * Offered here because this is where the ambiguity it resolves becomes
+   * visible: `45X90` and `60X30` are both 2:1 rectangles, so three candidates
+   * that disagree about Size is exactly the moment a ruler is worth reaching
+   * for. Omitted when no frame is held, and then no control is rendered —
+   * `onAdjustCrop`'s own arrangement.
+   */
+  onMeasure?: (() => void) | undefined;
 }
 
 export function ResultsScreen({
   candidates,
   onBack,
   onAdjustCrop,
+  onMeasure,
 }: ResultsScreenProps): JSX.Element {
   /** The Candidate whose reference image is open full-screen, or `null`. */
   const [viewing, setViewing] = useState<ScanCandidate | null>(null);
@@ -103,6 +118,14 @@ export function ResultsScreen({
       <button className={styles.adjust} type="button" onClick={onAdjustCrop}>
         <Crop className={styles.buttonIcon} aria-hidden="true" />
         {ADJUST_CROP}
+      </button>
+    );
+
+  const measure =
+    onMeasure === undefined ? null : (
+      <button className={styles.measure} type="button" onClick={onMeasure}>
+        <Ruler className={styles.buttonIcon} aria-hidden="true" />
+        {MEASURE_TILE}
       </button>
     );
 
@@ -123,6 +146,7 @@ export function ResultsScreen({
             {RETAKE}
           </button>
           {adjust}
+          {measure}
         </div>
       </section>
     );
@@ -178,6 +202,7 @@ export function ResultsScreen({
           {SCAN_AGAIN}
         </button>
         {adjust}
+        {measure}
       </div>
       {viewing !== null && (
         <ImageViewer

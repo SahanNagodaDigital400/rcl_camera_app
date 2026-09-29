@@ -32,6 +32,15 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  DUPLICATE_MARKER_NAME,
+  INVALID_CORNERS,
+  INVALID_MARKER_DIMENSION,
+  INVALID_MARKER_FIDUCIAL,
+  INVALID_MARKER_NAME,
+  MARKER_NOT_DETECTED,
+  MARKER_NOT_FOUND,
+  MEASUREMENT_REFUSED,
+  UNKNOWN_MARKER,
   ACCOUNT_LOCKED,
   ADMINISTRATOR_REQUIRED,
   CODE_ALREADY_EXISTS,
@@ -185,9 +194,30 @@ const PYTHON: Record<string, { file: string; name: string }> = {
   // Story 3.3's — the same router, gating the cropped region's quality.
   // Story 3.6's — the same router, gating the per-user submission rate.
   scan_rate_limited: { file: 'scan.py', name: 'SCAN_RATE_LIMITED' },
+  // Marker measurement's. Five belong to the Administrator's surface and live
+  // in its own router module; four belong to the staff-facing measurement and
+  // live beside the scan they configure.
+  invalid_marker_name: { file: 'markers.py', name: 'INVALID_MARKER_NAME' },
+  invalid_marker_dimension: { file: 'markers.py', name: 'INVALID_MARKER_DIMENSION' },
+  invalid_marker_fiducial: { file: 'markers.py', name: 'INVALID_MARKER_FIDUCIAL' },
+  duplicate_marker_name: { file: 'markers.py', name: 'DUPLICATE_MARKER_NAME' },
+  marker_not_found: { file: 'markers.py', name: 'MARKER_NOT_FOUND' },
+  unknown_marker: { file: 'scan.py', name: 'UNKNOWN_MARKER' },
+  invalid_corners: { file: 'scan.py', name: 'INVALID_CORNERS' },
+  marker_not_detected: { file: 'scan.py', name: 'MARKER_NOT_DETECTED' },
+  measurement_refused: { file: 'scan.py', name: 'MEASUREMENT_REFUSED' },
 };
 
 const TYPESCRIPT: Record<string, string> = {
+  invalid_marker_name: INVALID_MARKER_NAME,
+  invalid_marker_dimension: INVALID_MARKER_DIMENSION,
+  invalid_marker_fiducial: INVALID_MARKER_FIDUCIAL,
+  duplicate_marker_name: DUPLICATE_MARKER_NAME,
+  marker_not_found: MARKER_NOT_FOUND,
+  unknown_marker: UNKNOWN_MARKER,
+  invalid_corners: INVALID_CORNERS,
+  marker_not_detected: MARKER_NOT_DETECTED,
+  measurement_refused: MEASUREMENT_REFUSED,
   unauthorized: UNAUTHORIZED,
   administrator_required: ADMINISTRATOR_REQUIRED,
   password_change_required: PASSWORD_CHANGE_REQUIRED,
@@ -282,7 +312,14 @@ describe('the envelope codes are one contract in two languages', () => {
     // no message constant does: the value is exactly the constant's own name,
     // lowercased. `CODE_UNIQUE_INDEX = "tile_code_key"` and the refusal
     // sentences are not codes and do not match.
-    const routers = ['auth.py', 'catalogue.py', 'dependencies.py', 'scan.py', 'users.py'];
+    const routers = [
+      'auth.py',
+      'catalogue.py',
+      'dependencies.py',
+      'markers.py',
+      'scan.py',
+      'users.py',
+    ];
     const declared = routers.flatMap((file) =>
       [...read(join(API, file)).matchAll(/^([A-Z_][A-Z0-9_]*)\s*=\s*"([a-z0-9_]+)"/gm)]
         .filter((match) => match[1]?.toLowerCase() === match[2])
@@ -392,6 +429,7 @@ const CREATE_USER_SCREEN = 'CreateUserScreen.tsx';
 const EDIT_USER_SCREEN = 'EditUserScreen.tsx';
 const ADD_TILE_SCREEN = 'AddTileScreen.tsx';
 const BULK_UPLOAD_SCREEN = 'BulkUploadScreen.tsx';
+const MARKER_FORM_SCREEN = 'MarkerFormScreen.tsx';
 
 /**
  * Where a bound's Python twin lives, when it is not in `apps/api/api`.
@@ -526,6 +564,26 @@ const BOUNDS: {
     screen: BULK_UPLOAD_SCREEN,
     python: { file: 'tile.py', name: 'MAX_IMAGE_BYTES', root: SHARED_SCHEMA },
     typescript: 'MAX_IMAGE_BYTES',
+  },
+  // Marker measurement's form. Three mirrored bounds, and the two dimension
+  // ones matter more than a `maxLength` usually does: they are what every
+  // measurement taken with the card is scaled by, so a drift here is the
+  // screen accepting a card the server will refuse — or, worse, refusing a
+  // real card an Administrator is holding.
+  {
+    screen: MARKER_FORM_SCREEN,
+    python: { file: 'marker.py', name: 'MAX_MARKER_NAME_LENGTH', root: SHARED_SCHEMA },
+    typescript: 'MAX_MARKER_NAME_LENGTH',
+  },
+  {
+    screen: MARKER_FORM_SCREEN,
+    python: { file: 'marker.py', name: 'MIN_MARKER_EDGE_MM', root: SHARED_SCHEMA },
+    typescript: 'MIN_MARKER_EDGE_MM',
+  },
+  {
+    screen: MARKER_FORM_SCREEN,
+    python: { file: 'marker.py', name: 'MAX_MARKER_EDGE_MM', root: SHARED_SCHEMA },
+    typescript: 'MAX_MARKER_EDGE_MM',
   },
 ];
 

@@ -125,6 +125,15 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   // this renders: nothing can be fetched to explain the row, so the label and
   // the entry's own `details` are the whole record.
   catalogue_tile_removed: 'Tile removed',
+  // Marker measurement's three. "Marker", never "ruler" — the second is how
+  // this feature is explained, the first is what the domain calls it, and a
+  // label is one of the places a nickname would settle in. Same subject-verb
+  // shape as the pair above, and the removal reads as the end of a trail for
+  // the same reason: a removed Marker is a hard delete, so the entry's own
+  // `details` — its name and its printed dimensions — are the whole record.
+  marker_added: 'Marker added',
+  marker_edited: 'Marker edited',
+  marker_removed: 'Marker removed',
   // Story 3.7's pair. The label names what deviated, never a verdict
   // ("Suspicious login") — the flag is informational (EXPERIENCE.md:76). The
   // word "Flagged" itself lives once, in the `flagIndicator` span rendered

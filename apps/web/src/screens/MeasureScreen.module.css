@@ -1,0 +1,203 @@
+/* Measure — tap a tile's corners against a marker of known size, and get
+ * millimetres.
+ *
+ * Rendered *inside* the shell, like Crop: the app bar is above it and
+ * `AppShell`'s `<main>` is around it.
+ *
+ * **The photo is the control surface.** Everything the staff member does here
+ * is a tap on the image, so the image gets the height and the instructions sit
+ * under it rather than beside it — a phone in a showroom is held in one hand,
+ * and a two-column layout would push the picture below the fold.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target
+ * floor and the accent focus ring are already on `button` in global.css and
+ * are deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: var(--measure-content);
+  margin-inline: auto;
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+/* What to tap, right now. One sentence, replaced as the phase changes rather
+ * than a list of steps with one highlighted — the second is more to read at
+ * the moment there is least attention to spare. */
+.instruction {
+  max-width: var(--measure-prose);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--color-text);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  color: var(--color-text);
+}
+
+.select {
+  padding: var(--space-3);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* The photo, and the tap target. `position: relative` so the corner markers
+ * below can be placed against it in percentages — which is what keeps a tap
+ * meaningful at any rendered size, exactly as the crop rectangle is normalized
+ * rather than stored in pixels. */
+.canvas {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-height: var(--viewfinder-max-height);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  padding: 0;
+  overflow: hidden;
+  cursor: crosshair;
+}
+
+.photo {
+  display: block;
+  width: 100%;
+  max-height: var(--viewfinder-max-height);
+  object-fit: contain;
+}
+
+/* One tapped corner. Centred on the tap by a half-width translate, so the dot
+ * sits where the finger went rather than down and to the right of it. */
+.corner {
+  position: absolute;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+  margin-left: calc(var(--icon-size-sm) / -2);
+  margin-top: calc(var(--icon-size-sm) / -2);
+  border: var(--crop-border-width) solid var(--color-accent);
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  pointer-events: none;
+}
+
+/* The marker's corners, in the brand primary rather than the accent, so the
+ * two quads are never confused while both are on screen. */
+.markerCorner {
+  position: absolute;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+  margin-left: calc(var(--icon-size-sm) / -2);
+  margin-top: calc(var(--icon-size-sm) / -2);
+  border: var(--crop-border-width) solid var(--color-primary);
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  pointer-events: none;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* The single primary action: accent fill, navy foreground. Never white on
+ * orange — 2.63:1, the one contrast pair DESIGN.md bans. */
+.measure {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.measure:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
+
+/* DESIGN.md's secondary button — navy outline, navy text, transparent fill. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* The measurement, once there is one. */
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-card);
+}
+
+/* The millimetres, in the mono face — a number read against a tape measure. */
+.millimetres {
+  font-family: var(--font-mono);
+  font-size: var(--type-code-size);
+  font-weight: var(--type-code-weight);
+  line-height: var(--type-code-line);
+  color: var(--color-muted-text);
+}
+
+.matched {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: var(--color-text);
+}
+
+/* How the marker was located — detected, or tapped. Surfaced because a tapped
+ * measurement is only as good as the taps, and the staff member is the only
+ * one who knows how carefully they placed them. */
+.method {
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  color: var(--color-muted-text);
+}
+
+/* The rejection colour every other screen uses for the API's own sentence. */
+.failure {
+  max-width: var(--measure-prose);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--color-destructive);
+}

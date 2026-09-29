@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from shared_schema.errors import ApiError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api import audit, auth, catalogue, scan, users
+from api import audit, auth, catalogue, markers, scan, users
 from api.db import lifespan
 
 #: Stable, machine-readable codes for the HTTP statuses routing produces. A
@@ -187,6 +187,20 @@ def create_app() -> FastAPI:
     # JSON: `GET /admin/tiles/{tile_id}/images/{image_id}` proxies image
     # bytes, which is what AD-9 requires in place of a storage URL.
     app.include_router(catalogue.router)
+    # Marker measurement's Administrator half, under the same `/admin/`
+    # boundary and therefore under the same guard. A fifth router rather than a
+    # widening of `catalogue`, for the reason `catalogue` is not a widening of
+    # `users`: a Marker is a ruler, not a Tile — it names no Tile, no Size and
+    # no Category, and there is no foreign key in either direction. The two
+    # collections share an authorization boundary and nothing else.
+    #
+    # The staff-facing halves of the same feature are *not* here: `GET
+    # /scans/markers` and `POST /scans/measure` live on `scan.router` below,
+    # because measuring is part of scanning and every authenticated role may do
+    # it. Splitting them across two routers is what keeps
+    # `tests/test_admin_authorization.py`'s route-table guard meaningful in
+    # both directions.
+    app.include_router(markers.router)
     # Story 3.2's crop-only submission path. Not under `/admin/`: Scan is
     # reachable by every authenticated role, so this router declares
     # `require_claimed_user` rather than `require_administrator`, and

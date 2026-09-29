@@ -5,6 +5,18 @@ description = "Rocell Tile Scanner API — FastAPI service"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.141,<0.142",
+    # AGENTS.md:36 — flagged and adopted deliberately. `cv2.aruco` is the
+    # fiducial detector Story "marker measurement" needs, and the *headless*
+    # contrib build is the one that belongs on a server: the GUI wheels pull
+    # Qt and a windowing stack this service can never use. `aruco` ships only
+    # in `contrib`, so the plain `opencv-python` wheel cannot serve this.
+    #
+    # **Deliberately not a `shared/vision` dependency.** Marker measurement is
+    # geometry over the *uncropped* frame and never touches the embedding, so
+    # putting it there would widen AD-1's one shared module — the one thing
+    # this repo may not fork — for code neither pipeline calls. It lives in
+    # `api.measure` instead, and no re-index follows from changing it.
+    "opencv-contrib-python-headless>=4.10",
     # The same driver `infra` already uses, plus its connection pool. One
     # driver for the whole product: two would mean two sets of type
     # adaptation rules over the same columns.

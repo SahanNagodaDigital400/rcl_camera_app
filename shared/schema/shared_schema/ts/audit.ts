@@ -68,6 +68,9 @@ export type AuditAction =
   | 'catalogue_tile_added'
   | 'catalogue_tile_edited'
   | 'catalogue_tile_removed'
+  | 'marker_added'
+  | 'marker_edited'
+  | 'marker_removed'
   | 'login_anomaly_flagged'
   | 'scan_volume_anomaly_flagged';
 
@@ -92,6 +95,9 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   'catalogue_tile_added',
   'catalogue_tile_edited',
   'catalogue_tile_removed',
+  'marker_added',
+  'marker_edited',
+  'marker_removed',
   'login_anomaly_flagged',
   'scan_volume_anomaly_flagged',
 ];

@@ -52,11 +52,13 @@ from collections.abc import Iterable
 from typing import Annotated, Any
 from uuid import UUID
 
+import numpy as np
 import psycopg
 import shared_vision
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
 from psycopg.types.json import Jsonb
 from shared_schema.errors import ApiError
+from shared_schema.marker import QUAD_CORNERS, Marker, Measurement, match_size
 from shared_schema.scan import (
     HISTORY_PAGE_SIZE,
     ScanCandidate,
@@ -65,7 +67,7 @@ from shared_schema.scan import (
 )
 from shared_schema.user import User
 
-from api import anomaly, audit, scan_throttle
+from api import anomaly, audit, measure, scan_throttle
 from api.audit import AuditAction
 from api.catalogue import (
     IMAGE_TOO_LARGE,
@@ -79,6 +81,7 @@ from api.catalogue import (
 )
 from api.db import get_connection
 from api.dependencies import NO_STORE, require_claimed_user
+from api.markers import find_marker, list_markers
 
 #: `api.scan_throttle`'s own explicit-`rocell.`-prefix naming, so a deployment
 #: can filter or raise the level of every `rocell.*` logger with one rule.
@@ -112,10 +115,29 @@ INVALID_RECT_MESSAGE = "That crop selection is not valid. Adjust it and try agai
 #: on the write path. This one is well-formed and simply names nothing.
 UNKNOWN_SIZE = "unknown_size"
 
+#: Marker measurement's four refusals. Separate codes rather than one
+#: `measurement_failed`, because the screen renders the API's own sentence and
+#: the four are different instructions to the person holding the phone: pick a
+#: registered marker, tap four corners, move closer so the card is bigger, lay
+#: the card flat on the tile.
+UNKNOWN_MARKER = "unknown_marker"
+INVALID_CORNERS = "invalid_corners"
+MARKER_NOT_DETECTED = "marker_not_detected"
+MEASUREMENT_REFUSED = "measurement_refused"
+
 #: Worded for a staff member who has just watched their own picker offer this
 #: size — which is only reachable if the catalogue changed underneath them, so
 #: the instruction is to look again rather than to retype anything.
 UNKNOWN_SIZE_MESSAGE = "That size is not in the catalogue. Pick another, or scan all sizes."
+
+UNKNOWN_MARKER_MESSAGE = "That marker is not registered. Pick another from the list."
+INVALID_CORNERS_MESSAGE = (
+    f"A measurement needs exactly {QUAD_CORNERS} corners, each inside the image."
+)
+NOT_DETECTED_MESSAGE = (
+    "The marker was not found in the photo. Tap its four corners instead, "
+    "or retake the photo with the whole marker visible."
+)
 
 # --- The match floor ------------------------------------------------------------
 
@@ -490,6 +512,185 @@ def read_scan_sizes(
     """
     response.headers.update(NO_STORE)
     return indexed_sizes(conn)
+
+
+@router.get("/scans/markers", response_model=list[Marker])
+def read_scan_markers(
+    response: Response,
+    user: Annotated[User, Depends(require_claimed_user)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> list[Marker]:
+    """The Markers a measurement may be taken with, by name.
+
+    **The same rows `GET /admin/markers` serves, through the same reader**
+    (`api.markers.list_markers`) — one owner for the table, so the two surfaces
+    cannot drift on ordering or on what a Marker is once a column is added.
+
+    **Readable by every claimed account, writable by none of them.** Staff pick
+    a ruler here; only an Administrator registers one, under `/admin/markers`.
+    That split is the whole control on this feature: the dimensions scale every
+    measurement taken with the card, and a `54mm` typed as `540mm` is wrong by
+    a factor of ten with nothing downstream able to see it.
+
+    `[]` when no Marker has been registered. The screen renders that as the
+    Measure control simply not appearing — there is nothing to measure with,
+    and the Size picker still works exactly as it did.
+
+    Nothing is recorded: `AuditAction` has no member for a read (FR-20 covers
+    changes), and an entry per rendered picker would bury the entries that
+    matter.
+    """
+    response.headers.update(NO_STORE)
+    return list_markers(conn)
+
+
+def _corner_array(xs: list[float], ys: list[float], width: int, height: int) -> np.ndarray:
+    """Two lists of normalized coordinates as a pixel-space quad, or a refusal.
+
+    Normalized `0.0`-`1.0` on the wire and pixels here, which is AD-11's rule
+    for the scan crop and holds for the same reason: the browser collected
+    these against a displayed image whose on-screen size is a property of the
+    phone, not of the upload. Absolute pixels would silently mean different
+    things on two devices.
+
+    Sent as two repeated form fields rather than one packed string, because the
+    alternative is a parser: a `"x,y,x,y,..."` field has to be split, counted
+    and floated by hand, and every one of those steps is a way to accept
+    something that is not four corners. FastAPI does the counting and the
+    floating; this only has to check the shape and the range.
+    """
+    if len(xs) != QUAD_CORNERS or len(ys) != QUAD_CORNERS:
+        raise _refusal(
+            INVALID_CORNERS, INVALID_CORNERS_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    if any(not math.isfinite(value) or not 0.0 <= value <= 1.0 for value in (*xs, *ys)):
+        raise _refusal(
+            INVALID_CORNERS, INVALID_CORNERS_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    return np.array(
+        [[x * width, y * height] for x, y in zip(xs, ys, strict=True)], dtype=np.float64
+    )
+
+
+@router.post("/scans/measure", response_model=Measurement)
+def measure_scan(
+    response: Response,
+    user: Annotated[User, Depends(require_claimed_user)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    marker_id: Annotated[UUID, Form()],
+    tile_x: Annotated[list[float], Form()],
+    tile_y: Annotated[list[float], Form()],
+    image: Annotated[UploadFile, File()],
+    marker_x: Annotated[list[float] | None, Form()] = None,
+    marker_y: Annotated[list[float] | None, Form()] = None,
+) -> Measurement:
+    """Measure a tile against a registered Marker lying on it.
+
+    **This answers a suggestion, and the Scan screen treats it as one.** The
+    `matched_size` below pre-fills the Size picker; only what the staff member
+    then confirms reaches `POST /scans` as AD-19's hard pre-filter. That
+    indirection is the whole safety argument: AD-19 states that a
+    *mis*-declared Size makes the true Tile unreachable rather than merely
+    lower-ranked, and a marker that slipped out of plane produces exactly such
+    a mis-declaration — confidently, and with no error anywhere.
+
+    **The uncropped frame, not the scan crop.** The marker is beside the
+    pattern, so the rectangle `CropScreen` computes for matching would usually
+    cut it out. The same image is submitted twice — here whole, and to
+    `POST /scans` with its crop — rather than this endpoint returning something
+    the scan then has to trust.
+
+    **Two paths to the marker's corners, and the caller chooses by what it
+    sends.** With `marker_x`/`marker_y` the corners were tapped, and their
+    order is recovered by `measure.order_corners`. Without them the Marker must
+    declare a fiducial, which is detected in the frame; a Marker with no
+    fiducial and no tapped corners is `422 marker_not_detected`, and so is a
+    fiducial that is genuinely absent — which is the signal the screen turns
+    into "tap the corners instead".
+
+    **No embedding, so no `_inference_lock`** (AD-16). This is homography
+    arithmetic over an already-decoded frame; it costs milliseconds and holds
+    nothing other scans queue behind.
+
+    **Deliberately not counted against Story 3.6's scan rate limit.** That
+    budget exists to bound catalogue exfiltration through a compromised
+    account, and a measurement returns two numbers and no catalogue data at
+    all — spending a scan on one would make the honest use of this feature cost
+    a staff member their matches. It is bounded instead by the same
+    `UPLOAD_MAX_PIXELS` intake ceiling the scan path uses. **Known gap:** that
+    leaves the decode itself unthrottled per account, which is a smaller
+    version of what Story 3.6 bounds and should get its own limiter before this
+    is exposed beyond internal staff.
+
+    `422` for every refusal, each with its own code and the sentence that says
+    what to do about it — the marker is not registered, the corners are not
+    four points inside the image, the fiducial was not found, the geometry
+    does not measure as a rectangle.
+    """
+    marker = find_marker(conn, marker_id)
+    if marker is None:
+        raise _refusal(
+            UNKNOWN_MARKER, UNKNOWN_MARKER_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+
+    data = _read_upload(image)
+    try:
+        accepted = shared_vision.intake_image(data, max_pixels=shared_vision.UPLOAD_MAX_PIXELS)
+    except shared_vision.ImageTooLarge as oversized:
+        raise _refusal(IMAGE_TOO_LARGE, TOO_LARGE, status.HTTP_413_CONTENT_TOO_LARGE) from oversized
+    except shared_vision.UnreadableImage as unreadable:
+        raise _refusal(
+            UNREADABLE_IMAGE, NOT_AN_IMAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        ) from unreadable
+
+    width, height = accepted.image.size
+    tile_corners = _corner_array(tile_x, tile_y, width, height)
+
+    if marker_x is not None or marker_y is not None:
+        marker_corners = _corner_array(marker_x or [], marker_y or [], width, height)
+        oriented = False
+    elif marker.aruco_dictionary is None or marker.aruco_id is None:
+        # A plain object — a bank card, a badge — with nothing to detect. The
+        # manual path is the only one it has, and the caller did not use it.
+        raise _refusal(
+            MARKER_NOT_DETECTED, NOT_DETECTED_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    else:
+        detected = measure.detect_marker(
+            np.asarray(accepted.image.convert("RGB")), marker.aruco_dictionary, marker.aruco_id
+        )
+        if detected is None:
+            raise _refusal(
+                MARKER_NOT_DETECTED, NOT_DETECTED_MESSAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+            )
+        marker_corners, oriented = detected, True
+
+    try:
+        short_mm, long_mm = measure.measure_tile(
+            marker_corners,
+            marker.width_mm,
+            marker.height_mm,
+            tile_corners,
+            marker_oriented=oriented,
+        )
+    except measure.MeasurementRefused as refused:
+        # Every subclass carries the sentence that says what to do about it —
+        # move closer, lay the card flat, tap the corners in order — and the
+        # screen renders the API's own words (EXPERIENCE.md:87).
+        raise _refusal(
+            MEASUREMENT_REFUSED, str(refused), status.HTTP_422_UNPROCESSABLE_CONTENT
+        ) from refused
+
+    response.headers.update(NO_STORE)
+    return Measurement(
+        short_mm=short_mm,
+        long_mm=long_mm,
+        # Compared against the Sizes the *index* can actually answer for, not
+        # against `tile_size` — suggesting a Size with no indexed Tile behind
+        # it would pre-fill a filter that can only ever return nothing.
+        matched_size=match_size(short_mm, long_mm, indexed_sizes(conn)),
+        auto_detected=oriented,
+    )
 
 
 # --- `GET /scans` — a caller's own scan history (Story 3.5) -------------------

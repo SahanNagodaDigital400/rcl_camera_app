@@ -151,6 +151,22 @@ class AuditAction(StrEnum):
     # and a reader following a Tile through the log needs the last thing that
     # happened to it to be readable as the end of the trail.
     CATALOGUE_TILE_REMOVED = "catalogue_tile_removed"
+    # Marker measurement's three. A Marker is a ruler, not catalogue data, so
+    # these are members of their own rather than `catalogue_tile_*` with a kind
+    # in `details` — the two collections share an authorization boundary and
+    # nothing else, and a reader filtering the log for catalogue changes must
+    # not be handed edits to a bank card's dimensions.
+    #
+    # `details` carries the Marker's name and its printed dimensions as a
+    # snapshot, never a foreign key (AD-10). The dimensions are the point: a
+    # Marker silently re-measured from 85.6mm to 856mm scales every
+    # measurement taken with it by ten, and the log is the only place that
+    # would show when that happened. Removal is a hard delete, so the removed
+    # entry has to carry what it named — `CATALOGUE_TILE_REMOVED`'s argument,
+    # unchanged.
+    MARKER_ADDED = "marker_added"
+    MARKER_EDITED = "marker_edited"
+    MARKER_REMOVED = "marker_removed"
     # Story 3.7 / FR-22, Epic 3's first pair that names an anomaly rather than
     # an ordinary action. The flag *is* these two members — no new column, no
     # `UPDATE` of any existing row (AD-4, `test_nothing_mutates_the_audit_table`

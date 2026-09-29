@@ -14,6 +14,8 @@
  * same reason.
  */
 import { isErrorEnvelope } from '@rocell/schema/errors';
+import { isMarker, isMeasurement } from '@rocell/schema/marker';
+import type { Marker, Measurement, Point } from '@rocell/schema/marker';
 import { isScanCandidate } from '@rocell/schema/scan';
 import type { ScanCandidate } from '@rocell/schema/scan';
 
@@ -288,6 +290,39 @@ export const UNKNOWN_SIZE = 'unknown_size';
  * The Code *is* the tile's identity (AD-18), so this is a real conflict and
  * not a near-miss to be resolved by adding a suffix.
  */
+/**
+ * Marker measurement's nine refusals.
+ *
+ * Five are the Administrator's, from `apps/api/api/markers.py`: a name, a
+ * dimension or a fiducial declaration that breaks
+ * `shared_schema.marker`'s rules, a duplicate name, an id that names nothing.
+ * Four are the staff member's, from `api.scan`: the marker they picked is no
+ * longer registered, the corners are not four points inside the image, the
+ * fiducial was not found in the photo, or the geometry does not measure as a
+ * rectangle.
+ *
+ * `marker_not_detected` is the one the Measure screen *acts* on rather than
+ * only rendering: it is the signal to offer the manual corner-tap fallback,
+ * because the card may simply be creased, glared out or absent from the frame.
+ */
+export const INVALID_MARKER_NAME = 'invalid_marker_name';
+
+export const INVALID_MARKER_DIMENSION = 'invalid_marker_dimension';
+
+export const INVALID_MARKER_FIDUCIAL = 'invalid_marker_fiducial';
+
+export const DUPLICATE_MARKER_NAME = 'duplicate_marker_name';
+
+export const MARKER_NOT_FOUND = 'marker_not_found';
+
+export const UNKNOWN_MARKER = 'unknown_marker';
+
+export const INVALID_CORNERS = 'invalid_corners';
+
+export const MARKER_NOT_DETECTED = 'marker_not_detected';
+
+export const MEASUREMENT_REFUSED = 'measurement_refused';
+
 export const CODE_ALREADY_EXISTS = 'code_already_exists';
 
 /**
@@ -832,5 +867,78 @@ export async function fetchScanSizes(): Promise<string[]> {
   if (Array.isArray(body) && body.every((entry) => typeof entry === 'string')) {
     return body as string[];
   }
+  throw new ApiRequestError(MALFORMED_RESPONSE, 'The server returned an unexpected response.', 200);
+}
+
+/**
+ * The Markers a measurement may be taken with — `GET /scans/markers`.
+ *
+ * The same rows the Administrator's `GET /admin/markers` serves, readable by
+ * every claimed account. `[]` when none is registered, which `ScanScreen`
+ * renders as no Measure control at all: there is nothing to measure with, and
+ * the Size picker still works exactly as it did.
+ *
+ * Narrowed like every other body this module returns. A Marker carrying half a
+ * fiducial declaration, or a `NaN` dimension, is a malformed response rather
+ * than a measurement that silently scales by a factor of ten.
+ */
+export async function fetchScanMarkers(): Promise<Marker[]> {
+  const body = await apiRequest('/scans/markers');
+  if (Array.isArray(body) && body.every(isMarker)) return body as Marker[];
+  throw new ApiRequestError(MALFORMED_RESPONSE, 'The server returned an unexpected response.', 200);
+}
+
+/**
+ * Measure a tile against a Marker lying on it — `POST /scans/measure`.
+ *
+ * **The whole frame, never the scan crop.** The marker sits beside the
+ * pattern, so the rectangle `CropScreen` computes for matching would usually
+ * cut it out. The same image is submitted twice — whole here, cropped to
+ * `POST /scans` — rather than this call returning something the scan has to
+ * trust.
+ *
+ * `markerCorners` is the manual fallback. Omitted, the server detects the
+ * Marker's declared fiducial and answers `marker_not_detected` when it cannot
+ * find it; supplied, those four tapped corners are used instead and no
+ * detection runs. A Marker with no fiducial has only the second path.
+ *
+ * Corners travel as repeated `tile_x`/`tile_y` fields rather than one packed
+ * string, so FastAPI does the counting and the floating — a `"x,y,x,y"` field
+ * would need a parser on both ends, and every step of one is a way to accept
+ * something that is not four corners. They are normalized `0`–`1` against the
+ * image's own pixels (AD-11's rule for the scan crop, for its reason).
+ *
+ * `UPLOAD_TIMEOUT_MS`, like `submitScan`: the request carries a photo, and the
+ * 15s default is sized for a JSON round trip.
+ */
+export async function measureTile(
+  image: Blob,
+  markerId: string,
+  tileCorners: readonly Point[],
+  markerCorners: readonly Point[] | null = null,
+): Promise<Measurement> {
+  const body = new FormData();
+  body.append('image', image, 'measure.jpg');
+  body.append('marker_id', markerId);
+  for (const corner of tileCorners) {
+    body.append('tile_x', String(corner.x));
+    body.append('tile_y', String(corner.y));
+  }
+  // Omitted entirely when the fiducial is to be detected, rather than sent
+  // empty: the fields are optional server-side, and their presence is what
+  // selects the manual path.
+  if (markerCorners !== null) {
+    for (const corner of markerCorners) {
+      body.append('marker_x', String(corner.x));
+      body.append('marker_y', String(corner.y));
+    }
+  }
+
+  const answer = await apiRequest('/scans/measure', {
+    method: 'POST',
+    body,
+    timeoutMs: UPLOAD_TIMEOUT_MS,
+  });
+  if (isMeasurement(answer)) return answer;
   throw new ApiRequestError(MALFORMED_RESPONSE, 'The server returned an unexpected response.', 200);
 }

@@ -3,6 +3,7 @@ import {
   CaretRight,
   ClockCounterClockwise,
   ListBullets,
+  Ruler,
   Scan,
   SquaresFour,
   Users,
@@ -29,11 +30,15 @@ import { EditUserScreen } from './screens/EditUserScreen';
 import { ForcedPasswordChangeScreen } from './screens/ForcedPasswordChangeScreen';
 import { HistoryScreen } from './screens/HistoryScreen';
 import { LoginScreen } from './screens/LoginScreen';
+import { MarkerFormScreen } from './screens/MarkerFormScreen';
+import { MarkerListScreen } from './screens/MarkerListScreen';
+import { MeasureScreen } from './screens/MeasureScreen';
 import { ResultsScreen } from './screens/ResultsScreen';
 import { ScanScreen } from './screens/ScanScreen';
 import { UserListScreen } from './screens/UserListScreen';
 import type { ScanCandidate } from '@rocell/schema/scan';
 import type { Tile } from '@rocell/schema/tile';
+import type { Marker } from '@rocell/schema/marker';
 import type { Role, User } from '@rocell/schema/user';
 
 /** Shown when signing out fails as something other than an `ApiRequestError`. */
@@ -100,7 +105,10 @@ type Section =
   | 'catalogue'
   | 'add-tile'
   | 'edit-tile'
-  | 'bulk-upload';
+  | 'bulk-upload'
+  | 'markers'
+  | 'marker-form'
+  | 'measure';
 
 /**
  * Which of the seventeen screens the session state selects.
@@ -131,7 +139,10 @@ type Screen =
   | 'catalogue'
   | 'add-tile'
   | 'edit-tile'
-  | 'bulk-upload';
+  | 'bulk-upload'
+  | 'markers'
+  | 'marker-form'
+  | 'measure';
 
 /**
  * Whether `role` can reach `section` at all.
@@ -153,7 +164,14 @@ function reachableBy(section: Section, role: Role | null): boolean {
     section === 'catalogue' ||
     section === 'add-tile' ||
     section === 'edit-tile' ||
-    section === 'bulk-upload'
+    section === 'bulk-upload' ||
+    // Registering a ruler is Administrator-only: the dimensions typed on that
+    // form scale every measurement every staff member takes with the card, and
+    // a `54mm` typed as `540mm` is wrong by a factor of ten with nothing
+    // downstream able to see it. `'measure'` itself is **not** here — every
+    // claimed account measures, exactly as every claimed account scans.
+    section === 'markers' ||
+    section === 'marker-form'
   ) {
     return role === 'admin';
   }
@@ -168,6 +186,8 @@ function currentScreen(
   editingTile: Tile | null,
   capturedImage: Blob | null,
   candidates: ScanCandidate[] | null,
+  editingMarker: Marker | null,
+  addingMarker: boolean,
 ): Screen {
   if (status === 'loading') return 'loading';
   if (status === 'signed-out' || user === null) return 'login';
@@ -234,6 +254,21 @@ function currentScreen(
     return editingTile === null ? 'catalogue' : 'edit-tile';
   }
   if (section === 'bulk-upload') return reachableBy(section, user.role) ? 'bulk-upload' : 'shell';
+  if (section === 'markers') return reachableBy(section, user.role) ? 'markers' : 'shell';
+  if (section === 'marker-form') {
+    // `'edit-tile'`'s arrangement: a form section that names neither a Marker
+    // to correct nor an intention to register one answers the **list**, which
+    // is where both presses were made and where they can be made again.
+    if (!reachableBy(section, user.role)) return 'shell';
+    return editingMarker === null && !addingMarker ? 'markers' : 'marker-form';
+  }
+  if (section === 'measure') {
+    // `'crop'`'s own precondition, for its reason: `showMeasure` sets the
+    // image and the section in one render, so this branch with nothing
+    // captured means a stale section outlived the photo it belonged to — and a
+    // screen with nothing to measure answers the surface that produces one.
+    return capturedImage === null ? 'scan' : 'measure';
+  }
   if (section === 'create-user') return reachableBy(section, user.role) ? 'create-user' : 'shell';
   if (section === 'edit-user') {
     // The row being edited is part of what makes this section renderable, so it
@@ -359,6 +394,26 @@ function Gate(): JSX.Element {
    * because on a shared shop-floor handset even a Code fragment is catalogue
    * data the next person did not type.
    */
+  /**
+   * The Marker being corrected, or `null`.
+   *
+   * `editingTile`'s twin, for its reason: `MarkerListScreen` is unmounted the
+   * moment Edit is pressed — this gate swaps the surface rather than stacking
+   * one — so the row has to outlive it here. Cleared by `showSection` on every
+   * move, so a later `'marker-form'` section can never open pre-filled with a
+   * ruler the Administrator looked at minutes ago, which on this surface would
+   * be one card's dimensions under another card's name.
+   */
+  const [editingMarker, setEditingMarker] = useState<Marker | null>(null);
+  /**
+   * Whether the form was opened to register a *new* Marker.
+   *
+   * Held separately from `editingMarker` because `null` cannot say it: an
+   * empty form and "no Marker chosen" are the same value and different
+   * intentions, and `currentScreen` has to tell them apart to know whether to
+   * render the form or fall back to the list.
+   */
+  const [addingMarker, setAddingMarker] = useState(false);
   const [catalogueQuery, setCatalogueQuery] = useState('');
   const [lastStatus, setLastStatus] = useState<SessionStatus>(status);
   const [lastRole, setLastRole] = useState<Role | null>(user?.role ?? null);
@@ -457,6 +512,11 @@ function Gate(): JSX.Element {
       // instead of the fix.
       setCapturedImage(null);
       setCandidates(null);
+      // The Marker selections go with the account rows above, for their
+      // reason: a demotion is the moment the Markers register stops being
+      // this person's to write.
+      setEditingMarker(null);
+      setAddingMarker(false);
       // And the search, for the reason the sign-out reconciler above clears it:
       // a fragment of a Code is catalogue data, and a demotion is the moment
       // the Catalogue stops being this person's to read. Leaving it in state
@@ -475,6 +535,8 @@ function Gate(): JSX.Element {
     editingTile,
     capturedImage,
     candidates,
+    editingMarker,
+    addingMarker,
   );
   const previous = useRef<Screen>('loading');
 
@@ -589,6 +651,12 @@ function Gate(): JSX.Element {
     // looked at minutes ago — which on this surface would be an edit form
     // pre-filled with one tile's Code under another tile's picture.
     setEditingTile(null);
+    // The Marker being corrected belongs to its form and to nothing else,
+    // exactly as the row and the tile above do. Both are cleared, because
+    // "register a new one" is as much a property of that one visit to the form
+    // as the row being corrected is.
+    setEditingMarker(null);
+    setAddingMarker(false);
     // The captured image belongs to Crop and to nothing else, exactly as the
     // row and the tile above do. Cleared on every move away from it, so a
     // later `'crop'` section can never render an image from a scan the user
@@ -652,6 +720,37 @@ function Gate(): JSX.Element {
     setCropOrigin(origin);
     setCapturedImage(image);
     setSection('crop');
+  }
+
+  function showMeasure(image: Blob): void {
+    // The image first, then the section — `showCrop`'s reason, unchanged:
+    // `currentScreen` reads both, and setting the section first would give it
+    // one render with `'measure'` and nothing captured, which it answers with
+    // Scan, so the screen would flicker straight back.
+    setSignOutError(null);
+    setEditing(null);
+    setEditingTile(null);
+    setEditingMarker(null);
+    setAddingMarker(false);
+    // **The candidates stay.** Measuring is a detour taken *from* a scan that
+    // has already answered, and Back returns to the viewfinder with the size
+    // picker pre-filled — throwing the match away would make measuring cost
+    // the result that prompted it.
+    setCapturedImage(image);
+    setSection('measure');
+  }
+
+  function showMarkerForm(marker: Marker | null): void {
+    // The selection first, then the section — `showEditTile`'s reason:
+    // `currentScreen` reads both, and setting the section first would give it
+    // one render with `'marker-form'` and nothing chosen, which it answers
+    // with the list, so the form would flicker back to where Edit was pressed.
+    setSignOutError(null);
+    setEditing(null);
+    setEditingTile(null);
+    setEditingMarker(marker);
+    setAddingMarker(marker === null);
+    setSection('marker-form');
   }
 
   function showResults(result: ScanCandidate[], image: Blob): void {
@@ -740,6 +839,7 @@ function Gate(): JSX.Element {
             showResults(result, image);
           }}
           onCrop={(image) => showCrop(image, 'scan')}
+          onMeasure={(image) => showMeasure(image)}
           declaredSize={declaredSize}
           onDeclareSize={setDeclaredSize}
         />
@@ -809,6 +909,13 @@ function Gate(): JSX.Element {
           onAdjustCrop={
             capturedImage === null ? undefined : () => showCrop(capturedImage, 'results')
           }
+          // Marker measurement, on the same frame. Reached from here as well
+          // as from the Scan screen's failure prompt, because this is where
+          // the ambiguity it resolves is visible: `45X90` and `60X30` are both
+          // 2:1, so candidates that disagree about Size are the moment a ruler
+          // is worth reaching for. `showMeasure` keeps the candidates, so Back
+          // returns to them.
+          onMeasure={capturedImage === null ? undefined : () => showMeasure(capturedImage)}
         />
       </AppShell>
     );
@@ -968,6 +1075,74 @@ function Gate(): JSX.Element {
     );
   }
 
+  if (screen === 'markers') {
+    // Inside the shell, in place of the home panel. Back goes **home**, not to
+    // the Catalogue: a Marker is a ruler, not catalogue data, and this screen
+    // is reached from the home panel's quick links beside "Manage users".
+    return (
+      <AppShell {...frame('home')}>
+        {signOutFailure}
+        <MarkerListScreen
+          onBack={() => showSection('home')}
+          onAdd={() => showMarkerForm(null)}
+          onEdit={(marker) => showMarkerForm(marker)}
+        />
+      </AppShell>
+    );
+  }
+
+  if (screen === 'marker-form') {
+    // Back and Saved both return to the list, which refetches on mount — so a
+    // registration is on screen the moment it lands, exactly as a bulk upload
+    // is on the Catalogue.
+    return (
+      <AppShell {...frame('home')}>
+        {signOutFailure}
+        <MarkerFormScreen
+          marker={editingMarker}
+          onSaved={() => showSection('markers')}
+          onCancel={() => showSection('markers')}
+        />
+      </AppShell>
+    );
+  }
+
+  if (screen === 'measure' && capturedImage !== null) {
+    // **The false branch is what is unreachable**: `currentScreen` already
+    // answers `'scan'` for a `'measure'` section with nothing captured, so
+    // this condition never fails at runtime. It is written anyway because it
+    // is what narrows `capturedImage` for the prop below — removing it as
+    // redundant breaks the build, exactly as on the `'crop'` branch.
+    return (
+      <AppShell {...frame('scan')}>
+        {signOutFailure}
+        <MeasureScreen
+          image={capturedImage}
+          // The measured Size lands in the picker the staff member is about to
+          // submit with — a *suggestion*, which they can change or clear
+          // before scanning (AD-19). Nothing here reaches `POST /scans`
+          // except through that control.
+          onUseSize={(size) => {
+            setDeclaredSize(size);
+            showSection('scan');
+          }}
+          // Back to whatever this was reached from — `CropScreen`'s
+          // `CropOrigin` problem, answered from state rather than with a
+          // second flag: a measurement taken *from* a result must not throw
+          // that result away, and `showSection('results')` would, because it
+          // clears the candidates on every move. `showResults` puts them back
+          // with the frame, which is what makes Back a return rather than a
+          // rescan.
+          onBack={() =>
+            candidates === null || capturedImage === null
+              ? showSection('scan')
+              : showResults(candidates, capturedImage)
+          }
+        />
+      </AppShell>
+    );
+  }
+
   if (screen === 'edit-user' && editing !== null) {
     // `editing !== null` is unreachable at runtime — `currentScreen` already
     // answers `'users'` for an `'edit-user'` section with no row — and it is here
@@ -1111,6 +1286,19 @@ function Gate(): JSX.Element {
               >
                 <ListBullets className={styles.quickIcon} aria-hidden="true" />
                 <span className={styles.quickLabel}>Review the audit log</span>
+                <CaretRight className={styles.quickCaret} aria-hidden="true" />
+              </button>
+              {/* The Markers register. A phrase, not a word, exactly as the
+                  three above are: nav entries are looked up by their own
+                  names, and no destination may be in the document twice
+                  under one. */}
+              <button
+                className={styles.markers}
+                type="button"
+                onClick={() => showSection('markers')}
+              >
+                <Ruler className={styles.quickIcon} aria-hidden="true" />
+                <span className={styles.quickLabel}>Manage measuring markers</span>
                 <CaretRight className={styles.quickCaret} aria-hidden="true" />
               </button>
             </>

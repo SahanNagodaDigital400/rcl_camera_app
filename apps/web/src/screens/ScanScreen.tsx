@@ -1,4 +1,4 @@
-import { ArrowsClockwise, Camera, Crop, Image, X } from '@phosphor-icons/react';
+import { ArrowsClockwise, Camera, Crop, Image, Ruler, X } from '@phosphor-icons/react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { ChangeEvent, JSX } from 'react';
 
@@ -151,6 +151,16 @@ interface ScanScreenProps {
   /** Open the optional crop editor on the frame just captured. */
   onCrop: (image: Blob) => void;
   /**
+   * Measure the captured photo against a registered Marker.
+   *
+   * Offered beside "Crop this photo", on the same prompt and for the same
+   * reason: both are what to reach for when a scan has not settled it. Size is
+   * the one attribute a photo cannot carry — `45X90` and `60X30` are both 2:1
+   * rectangles, so neither the pattern nor its shape separates them — and a
+   * marker of known size lying on the tile is what supplies it.
+   */
+  onMeasure: (image: Blob) => void;
+  /**
    * The Size the next scan declares, or `null` for "All sizes".
    *
    * **Held by `App`, not by this screen, and deliberately not by the
@@ -176,6 +186,7 @@ interface ScanScreenProps {
 export function ScanScreen({
   onCaptured,
   onCrop,
+  onMeasure,
   declaredSize,
   onDeclareSize,
 }: ScanScreenProps): JSX.Element {
@@ -580,6 +591,14 @@ export function ScanScreen({
                 >
                   <Crop className={styles.secondaryIcon} aria-hidden="true" />
                   Crop this photo
+                </button>
+                <button
+                  className={styles.secondary}
+                  type="button"
+                  onClick={() => onMeasure(lastImage)}
+                >
+                  <Ruler className={styles.secondaryIcon} aria-hidden="true" />
+                  Measure the tile
                 </button>
               </div>
             )}

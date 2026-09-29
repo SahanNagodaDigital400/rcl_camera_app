@@ -118,6 +118,14 @@ The reference set comes from a Google Drive tree with real inconsistencies. The 
 
 **Always show size and category alongside the file name.** Where the file name is only a short code (`1Jk`), the folder-derived size and category is what makes it readable — but the file name is still the tile's identity, not a label on a shared product.
 
+**Size is recoverable from a photo only with a physical reference in frame — never from the pixels alone.** Marker measurement (`shared/schema/shared_schema/marker.py`, `apps/api/api/measure.py`, `apps/api/api/markers.py`) is the one exception to the rule above, and it is narrow:
+
+- A **Marker** is an object of known printed size (an ArUco card, an ID badge, a bank card) that staff lay *flat on the tile* before photographing it. A homography from its four corners to its known millimetres scales the rest of the frame. Marker and tile must be the same plane — a card propped out of plane gives a confident wrong answer, which is why a tile that does not rectify as a rectangle is refused.
+- **Markers are Administrator-managed reference data, not catalogue data.** They name no Tile, Size or Category and there is no foreign key in either direction. A `size_id` on a marker would be a second identity model of the kind AD-18 retired.
+- **A measurement is a suggestion, never a filter.** It pre-fills the Scan screen's existing Size picker; only what staff then confirm reaches `POST /scans` as AD-19's hard pre-filter. Never wire `POST /scans/measure` into the search path — a mis-measured size makes the true tile *unreachable*, not merely lower-ranked.
+- **It does not make the three candidates one.** Finish is still unrecoverable (`MONO COLOUR GLOSSY` and `MONO COLOUR MATT` are identical at any scale), and `45X90` vs `60X30` is the only confusion measurement actually breaks — worth about 10% of scans. The rule above stands unchanged.
+- Measurement is geometry over the **uncropped** frame and lives in `apps/api`, deliberately **not** in `shared/vision`: it never embeds anything, neither pipeline calls it, and a change to it implies no re-index.
+
 ## Security
 
 Non-negotiable requirements — see `AGENTS.md` Policy for the full list (password hashing, server-side authz, session handling, upload validation, audit log, secrets). Do not relax any of them for convenience during development. If a task seems to require breaking one, stop and raise it rather than working around it.

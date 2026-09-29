@@ -1,0 +1,212 @@
+/* Markers — the physical scale references an Administrator has registered.
+ *
+ * Rendered *inside* the shell, like Users and the Catalogue: the app bar is
+ * above it and `AppShell`'s `<main>` is around it, so there is no full-height
+ * centring and no chrome-less panel here.
+ *
+ * **A card list at every width, not a table.** Users reflows a `<table>` into
+ * cards below the breakpoint because it has six columns worth of account
+ * status; a Marker is a name, two numbers and an optional fiducial, which is
+ * one line of content that never needed columns. One layout is one layout to
+ * keep honest.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target
+ * floor and the accent focus ring are already on `button` in global.css and
+ * are deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: var(--measure-content);
+  margin-inline: auto;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+/* What a Marker is *for*, in one sentence. This screen is the only place the
+ * relationship between a registered ruler and a measured tile is stated, and
+ * an Administrator arriving here for the first time has no other way to learn
+ * that the dimensions are the black square's rather than the paper's. */
+.intro {
+  max-width: var(--measure-prose);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--color-muted-text);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* The single primary action on this screen: accent fill, navy foreground.
+ * Never white on orange — 2.63:1, the one contrast pair DESIGN.md bans. */
+.add {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* DESIGN.md's secondary button — navy outline, navy text, transparent fill.
+ * The default for every non-primary action, and the reason this screen still
+ * has exactly one accent control. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-card);
+}
+
+.rowMain {
+  display: flex;
+  flex: 1 1 var(--measure-form);
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.name {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-line);
+  color: var(--color-text);
+}
+
+/* The printed dimensions, in the mono face the product uses for anything a
+ * reader has to compare against an object in their hand — the same reasoning
+ * that puts a Tile's Code in it. */
+.dimensions {
+  font-family: var(--font-mono);
+  font-size: var(--type-code-size);
+  font-weight: var(--type-code-weight);
+  line-height: var(--type-code-line);
+  color: var(--color-muted-text);
+}
+
+/* Whether this card is detected automatically or has to be tapped. Stated on
+ * every row rather than only on the fiducial ones, because "nothing here"
+ * would read as a rendering failure rather than as a plain object. */
+.fiducial {
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  color: var(--color-muted-text);
+}
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.edit {
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* Destructive, and outlined rather than filled: DESIGN.md gives the filled
+ * destructive treatment to the confirmation dialog's own control, which is
+ * where the irreversible press actually happens. */
+.remove {
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-hairline) solid var(--color-destructive);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-destructive);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.empty {
+  max-width: var(--measure-prose);
+  padding: var(--space-5);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--color-muted-text);
+}
+
+/* The rejection colour every other screen uses for the API's own sentence. */
+.failure {
+  max-width: var(--measure-prose);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--color-destructive);
+}
+
+.loading {
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--color-muted-text);
+}
+
+/* Title beside the toolbar from the breakpoint up; stacked below it. The one
+ * declared breakpoint, mobile-first, `min-width` only. */
+@media (min-width: 768px) {
+  .header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}

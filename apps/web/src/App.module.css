@@ -214,6 +214,28 @@
   cursor: pointer;
 }
 
+/* The door to the Markers register — the physical scale references a
+ * measurement can be taken with. Administrator-only, beside "Manage users"
+ * rather than under the Catalogue: a Marker is a ruler, not catalogue data,
+ * and it names no Tile, Size or Category. Same outlined secondary treatment as
+ * every other quick link, so the panel still has exactly one accent control. */
+.markers {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-4);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  text-align: left;
+  cursor: pointer;
+}
+
 /* The door to the Catalogue (EXPERIENCE.md line 35), the one entry that
  * reaches Add tile, Edit tile and Bulk upload — all three are controls on
  * that surface, and "+ Add Tile"'s accent belongs to it, not to this door. */

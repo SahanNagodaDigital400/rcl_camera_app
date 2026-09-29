@@ -42,6 +42,7 @@ SCAN_VERSION = "20260922T1900_create_scan"
 SCAN_RATE_LIMIT_VERSION = "20260922T2000_create_scan_rate_limit"
 ANOMALY_BASELINE_VERSION = "20260923T1000_create_anomaly_baseline"
 AUDIT_LOG_FLAGGED_INDEX_VERSION = "20260923T1010_add_audit_log_flagged_index"
+MARKER_VERSION = "20260928T1200_create_marker"
 
 #: Every migration in `infra/migrations`, in the order the runner applies
 #: them. Listed once so adding a migration is one edit here rather than a
@@ -58,6 +59,7 @@ ALL_VERSIONS = [
     SCAN_RATE_LIMIT_VERSION,
     ANOMALY_BASELINE_VERSION,
     AUDIT_LOG_FLAGGED_INDEX_VERSION,
+    MARKER_VERSION,
 ]
 
 SEED_EMAIL = "ruwan@rocell.lk"
@@ -519,6 +521,7 @@ def test_the_audit_down_takes_back_the_grants_and_the_membership(
     assert _holds(conn, "login_attempts", "UPDATE")
     assert _is_a_member(conn)
 
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert down(conn) == ANOMALY_BASELINE_VERSION
     assert down(conn) == SCAN_RATE_LIMIT_VERSION
@@ -544,6 +547,7 @@ def test_the_audit_down_takes_back_the_grants_and_the_membership(
         SCAN_RATE_LIMIT_VERSION,
         ANOMALY_BASELINE_VERSION,
         AUDIT_LOG_FLAGGED_INDEX_VERSION,
+        MARKER_VERSION,
     ]
     assert _holds(conn, "users", "SELECT")
     assert _is_a_member(conn)
@@ -760,6 +764,7 @@ def test_the_throttling_pair_round_trips(conn: psycopg.Connection, seed_password
     # audit pair, which sits on top of the throttling pair, so six steps come
     # off before this one. Asserted rather than skipped past: a `down` that
     # reverted more than its own file would show up right here.
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert down(conn) == ANOMALY_BASELINE_VERSION
     assert down(conn) == SCAN_RATE_LIMIT_VERSION
@@ -771,7 +776,7 @@ def test_the_throttling_pair_round_trips(conn: psycopg.Connection, seed_password
     assert down(conn) == LOGIN_THROTTLING_VERSION
     assert table_columns(conn, "login_attempts") == set()
     assert "locked_until" not in table_columns(conn, "users")
-    assert ledger_versions(conn) == ALL_VERSIONS[:-7]
+    assert ledger_versions(conn) == ALL_VERSIONS[:-8]
 
     assert up(conn) == [
         LOGIN_THROTTLING_VERSION,
@@ -781,6 +786,7 @@ def test_the_throttling_pair_round_trips(conn: psycopg.Connection, seed_password
         SCAN_RATE_LIMIT_VERSION,
         ANOMALY_BASELINE_VERSION,
         AUDIT_LOG_FLAGGED_INDEX_VERSION,
+        MARKER_VERSION,
     ]
     assert "locked_until" in table_columns(conn, "users")
     assert table_columns(conn, "login_attempts") != set()
@@ -807,6 +813,7 @@ def test_the_scan_rate_limit_pair_round_trips(conn: psycopg.Connection, seed_pas
 
     # Two Story 3.7 migrations now sit on top of this one and must come off
     # first — the flagged index and the anomaly baseline table.
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert down(conn) == ANOMALY_BASELINE_VERSION
     assert down(conn) == SCAN_RATE_LIMIT_VERSION
@@ -819,6 +826,7 @@ def test_the_scan_rate_limit_pair_round_trips(conn: psycopg.Connection, seed_pas
         SCAN_RATE_LIMIT_VERSION,
         ANOMALY_BASELINE_VERSION,
         AUDIT_LOG_FLAGGED_INDEX_VERSION,
+        MARKER_VERSION,
     ]
     assert table_columns(conn, "scan_rate_limit") == {
         "user_id",
@@ -851,13 +859,18 @@ def test_the_anomaly_baseline_pair_round_trips(
     # The flagged index sits on top of this table's migration (by timestamp,
     # not by a real dependency — it names `audit_log`, not `anomaly_baseline`)
     # and must come off first.
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert down(conn) == ANOMALY_BASELINE_VERSION
     assert table_columns(conn, "anomaly_baseline") == set()
     # `scan_rate_limit` itself survives this one step.
     assert table_columns(conn, "scan_rate_limit") != set()
 
-    assert up(conn) == [ANOMALY_BASELINE_VERSION, AUDIT_LOG_FLAGGED_INDEX_VERSION]
+    assert up(conn) == [
+        ANOMALY_BASELINE_VERSION,
+        AUDIT_LOG_FLAGGED_INDEX_VERSION,
+        MARKER_VERSION,
+    ]
     assert table_columns(conn, "anomaly_baseline") == {
         "user_id",
         "signal",
@@ -939,12 +952,13 @@ def test_the_flagged_index_pair_round_trips(conn: psycopg.Connection, seed_passw
 
     assert _has_index()
 
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert not _has_index()
     # `audit_log` itself survives this one step.
     assert table_columns(conn, "audit_log") != set()
 
-    assert up(conn) == [AUDIT_LOG_FLAGGED_INDEX_VERSION]
+    assert up(conn) == [AUDIT_LOG_FLAGGED_INDEX_VERSION, MARKER_VERSION]
     assert _has_index()
 
 
@@ -1001,6 +1015,7 @@ def test_down_reverts_one_step(conn: psycopg.Connection, seed_password: str) -> 
     # audit pair, and the throttling objects below them are untouched by any
     # of the six steps — proof each step really is one file and not
     # "everything on top".
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert table_columns(conn, "scan_rate_limit") != set()
 
@@ -1110,6 +1125,7 @@ def test_down_leaves_a_claimed_administrator_alone(
         ("admin",),
     )
 
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert down(conn) == ANOMALY_BASELINE_VERSION
     assert down(conn) == SCAN_RATE_LIMIT_VERSION
@@ -1134,6 +1150,7 @@ def test_down_leaves_an_administrator_who_has_signed_in_alone(
     up(conn)
     conn.execute("UPDATE users SET last_login_at = now() WHERE role = %s", ("admin",))
 
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert down(conn) == ANOMALY_BASELINE_VERSION
     assert down(conn) == SCAN_RATE_LIMIT_VERSION
@@ -1157,6 +1174,7 @@ def test_down_leaves_an_administrator_who_set_their_own_password_alone(
         ("admin",),
     )
 
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert down(conn) == ANOMALY_BASELINE_VERSION
     assert down(conn) == SCAN_RATE_LIMIT_VERSION
@@ -1180,6 +1198,7 @@ def test_down_leaves_staff_accounts_alone(conn: psycopg.Connection, seed_passwor
         ("Nimal Silva", "nimal@rocell.lk", "$argon2id$placeholder", "staff"),
     )
 
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert down(conn) == ANOMALY_BASELINE_VERSION
     assert down(conn) == SCAN_RATE_LIMIT_VERSION
@@ -1204,6 +1223,7 @@ def test_down_leaves_a_second_administrator_alone(
         ("Second Admin", "second@rocell.lk", "$argon2id$placeholder", "admin"),
     )
 
+    assert down(conn) == MARKER_VERSION
     assert down(conn) == AUDIT_LOG_FLAGGED_INDEX_VERSION
     assert down(conn) == ANOMALY_BASELINE_VERSION
     assert down(conn) == SCAN_RATE_LIMIT_VERSION
@@ -1767,6 +1787,9 @@ def test_main_steps_down_with_the_confirmation_flag(
 ) -> None:
     assert migrate.main(["up"]) == 0
     capsys.readouterr()
+
+    assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
+    assert MARKER_VERSION in capsys.readouterr().out
 
     assert migrate.main(["down", migrate.CONFIRM_FLAG]) == 0
     assert AUDIT_LOG_FLAGGED_INDEX_VERSION in capsys.readouterr().out

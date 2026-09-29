@@ -59,6 +59,14 @@ ADMIN_PREFIX = "/admin/"
 #: this constant below, so the path is written down once.
 CREATE_USER = "/admin/users"
 
+#: Marker measurement's collection and member. A fifth collection under the
+#: prefix rather than anything under `/admin/tiles`: a Marker is a ruler, not a
+#: Tile, and the two share this boundary and nothing else. `PATCH` corrects a
+#: mistyped dimension and `DELETE` withdraws a card — the member resource's own
+#: verbs, as `EDIT_USER` carries both for an account.
+MARKERS = "/admin/markers"
+EDIT_MARKER = "/admin/markers/{marker_id}"
+
 #: The member under it, added by Story 1.10: `PATCH` edits one account's name,
 #: email or role (FR-12). A second *path* rather than a third method on the one
 #: above. Story 1.11 hung `DELETE` on the same path — removing an account is the
@@ -551,7 +559,7 @@ def test_the_admin_route_table_is_not_empty() -> None:
     assert _admin_routes(create_app()) != []
 
 
-def test_the_admin_route_table_is_the_fifteen_routes_the_product_serves() -> None:
+def test_the_admin_route_table_is_the_nineteen_routes_the_product_serves() -> None:
     # The stricter half, separated from the vacuity guard above because it is a
     # different claim with a different lifetime: this one is *meant* to fail the
     # moment a story adds a route under `/admin/` — Story 1.9 added
@@ -562,8 +570,19 @@ def test_the_admin_route_table_is_the_fifteen_routes_the_product_serves() -> Non
     # `PATCH /admin/tiles/{tile_id}` and `GET /admin/tiles/lookup`, and Story
     # 2.3 added `DELETE /admin/tiles/{tile_id}`, and Story 2.4 added
     # `POST /admin/tiles/bulk/plan` and `POST /admin/tiles/bulk/row`, and Story
-    # 2.5 added `GET /admin/tiles` — and its failure means "update this list",
-    # not "the guards above stopped guarding".
+    # 2.5 added `GET /admin/tiles` — and marker measurement added the four
+    # `/admin/markers` routes — and its failure means "update this list", not
+    # "the guards above stopped guarding".
+    #
+    # The Markers register is a *fifth* collection under the prefix rather than
+    # anything hanging off `/admin/tiles`: a Marker is a ruler, not a Tile — it
+    # names no Tile, Size or Category and there is no foreign key in either
+    # direction — and the two share this authorization boundary and nothing
+    # else. Its staff-facing halves (`GET /scans/markers`, `POST
+    # /scans/measure`) are deliberately **absent** from this list, and the
+    # vacuity guard above is what holds that: measuring is reachable by every
+    # claimed account, so a route of it appearing here would mean the
+    # Administrator check had been declared on a surface Staff must reach.
     #
     # The comparison is over `f"{method} {path}"`, so the removal is a *twelfth*
     # entry rather than a second method on a path already listed, the bulk
@@ -605,6 +624,10 @@ def test_the_admin_route_table_is_the_fifteen_routes_the_product_serves() -> Non
             f"POST {BULK_PLAN}",
             f"POST {BULK_ROW}",
             f"GET {ADD_TILE}",
+            f"POST {MARKERS}",
+            f"GET {MARKERS}",
+            f"PATCH {EDIT_MARKER}",
+            f"DELETE {EDIT_MARKER}",
         ]
     )
 

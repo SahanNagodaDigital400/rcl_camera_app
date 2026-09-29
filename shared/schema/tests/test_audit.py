@@ -137,10 +137,11 @@ def test_a_password_digest_has_nowhere_to_go() -> None:
         AuditLogEntry.model_validate(an_entry_body(password_hash="$argon2id$..."))
 
 
-def test_the_vocabulary_is_the_eighteen_actions_the_product_writes() -> None:
+def test_the_vocabulary_is_the_twentyone_actions_the_product_writes() -> None:
     # Thirteen from Epic 1, three from Epic 2's catalogue writes (the add,
-    # Story 2.1; the edit, Story 2.2; the removal, Story 2.3) and two from
-    # Story 3.7's anomaly flags. The name of this test carries the count on
+    # Story 2.1; the edit, Story 2.2; the removal, Story 2.3), two from
+    # Story 3.7's anomaly flags, and three from marker measurement's
+    # Administrator surface. The name of this test carries the count on
     # purpose: an addition has to be a deliberate edit here, not a set that
     # quietly grew.
     assert {member.value for member in AuditAction} == {
@@ -162,6 +163,13 @@ def test_the_vocabulary_is_the_eighteen_actions_the_product_writes() -> None:
         "catalogue_tile_removed",
         "login_anomaly_flagged",
         "scan_volume_anomaly_flagged",
+        # A Marker is a ruler, not catalogue data — so these are members of
+        # their own rather than `catalogue_tile_*` carrying a kind. A reader
+        # filtering the log for catalogue changes must not be handed edits to
+        # a bank card's dimensions.
+        "marker_added",
+        "marker_edited",
+        "marker_removed",
     }
 
 

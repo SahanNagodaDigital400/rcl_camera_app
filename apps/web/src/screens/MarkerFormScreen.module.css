@@ -1,0 +1,160 @@
+/* Register / Edit marker — the one form that decides what every measurement
+ * taken with a card is scaled by.
+ *
+ * Rendered *inside* the shell, like Create user and Add tile: the app bar is
+ * above it and `AppShell`'s `<main>` is around it.
+ *
+ * Every value here comes from src/styles/tokens.css. The 44px touch-target
+ * floor and the accent focus ring are already on `button` in global.css and
+ * are deliberately not restated. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: var(--measure-form);
+  margin-inline: auto;
+}
+
+.title {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  color: var(--color-text);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  color: var(--color-text);
+}
+
+.input {
+  padding: var(--space-3);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+/* What this field means in physical terms. The dimension hint is the one that
+ * carries real risk — measuring the paper instead of the black square scales
+ * every result by the quiet zone's width, silently. */
+.hint {
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  color: var(--color-muted-text);
+}
+
+/* The two dimension fields side by side from the breakpoint up: they are one
+ * measurement in two boxes and reading them apart invites transposing them. */
+.pair {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.fiducialGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.legend {
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  color: var(--color-text);
+}
+
+.select {
+  padding: var(--space-3);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* The single primary action: accent fill, navy foreground. Never white on
+ * orange — 2.63:1, the one contrast pair DESIGN.md bans. */
+.submit {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.submit:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
+
+/* DESIGN.md's secondary button — navy outline, navy text, transparent fill. */
+.back {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+/* The rejection colour every other screen uses for the API's own sentence. */
+.failure {
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--color-destructive);
+}
+
+/* The one declared breakpoint, mobile-first, `min-width` only. */
+@media (min-width: 768px) {
+  .pair {
+    flex-direction: row;
+  }
+
+  .pair > .field {
+    flex: 1 1 0;
+  }
+}

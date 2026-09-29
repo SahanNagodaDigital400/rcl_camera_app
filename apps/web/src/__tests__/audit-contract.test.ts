@@ -48,13 +48,14 @@ function anEntry(overrides: Record<string, unknown> = {}): Record<string, unknow
 }
 
 describe('the shared AuditAction', () => {
-  it('is the eighteen actions the product writes', () => {
+  it('is the twenty-one actions the product writes', () => {
     // Thirteen from Epic 1, three from Epic 2's catalogue writes (the add,
-    // Story 2.1; the edit, Story 2.2; the removal, Story 2.3) and two from
-    // Story 3.7's anomaly flags. The count is in the name on purpose: an
+    // Story 2.1; the edit, Story 2.2; the removal, Story 2.3), two from
+    // Story 3.7's anomaly flags, and three from marker measurement's
+    // Administrator surface. The count is in the name on purpose: an
     // addition has to be a deliberate edit here and in the Python twin, not a
     // set that quietly grew.
-    expect(AUDIT_ACTIONS).toHaveLength(18);
+    expect(AUDIT_ACTIONS).toHaveLength(21);
     expect(new Set(AUDIT_ACTIONS)).toEqual(
       new Set<AuditAction>([
         'login_succeeded',
@@ -75,6 +76,11 @@ describe('the shared AuditAction', () => {
         'catalogue_tile_removed',
         'login_anomaly_flagged',
         'scan_volume_anomaly_flagged',
+        // A Marker is a ruler, not catalogue data, so these are members of
+        // their own rather than `catalogue_tile_*` carrying a kind.
+        'marker_added',
+        'marker_edited',
+        'marker_removed',
       ]),
     );
   });
