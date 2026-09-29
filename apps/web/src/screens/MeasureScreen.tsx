@@ -1,11 +1,13 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, JSX, PointerEvent } from 'react';
 
+import { matchSize } from '@rocell/schema/marker';
 import type { Marker, Measurement, Point } from '@rocell/schema/marker';
 
 import {
   ApiRequestError,
   fetchScanMarkers,
+  fetchScanSizes,
   MARKER_NOT_DETECTED,
   measureTile,
   proposeTile,
@@ -143,6 +145,11 @@ function nearestTo(point: Point, corners: readonly Point[]): number {
   return best;
 }
 
+/** The longer of two lengths, never zero, so a ratio against it is safe. */
+function longerOf(a: number, b: number): number {
+  return Math.max(a, b) === 0 ? 1 : Math.max(a, b);
+}
+
 /**
  * Apply a row-major 3x3 homography to a normalized point.
  *
@@ -171,7 +178,7 @@ function toMillimetres(h: readonly number[], point: Point): Point | null {
 function previewSize(
   homography: readonly number[] | null,
   corners: readonly Point[],
-): { short: number; long: number } | null {
+): { short: number; long: number; rectangular: boolean } | null {
   if (homography === null || homography.length !== 9 || corners.length !== QUAD_CORNERS) {
     return null;
   }
@@ -187,7 +194,38 @@ function previewSize(
   const horizontal = (edge(0, 1) + edge(2, 3)) / 2;
   const vertical = (edge(1, 2) + edge(3, 0)) / 2;
   if (!Number.isFinite(horizontal) || !Number.isFinite(vertical)) return null;
-  return { short: Math.min(horizontal, vertical), long: Math.max(horizontal, vertical) };
+
+  /**
+   * Whether this still measures as a rectangle once perspective is undone.
+   *
+   * A tile *is* one, so in the marker's plane its opposite edges and its two
+   * diagonals must come back equal. They will not be exactly equal — a dragged
+   * corner, a marker a millimetre out of plane — so it is a tolerance, and it
+   * mirrors `api.measure.RECTANGULARITY_TOLERANCE`.
+   *
+   * **A warning, not a refusal.** The server used to reject on this, which
+   * stopped a measurement the staff member could see was right. They have the
+   * outline and the millimetres in front of them; what this adds is a nudge
+   * that the marker may not be flat, which no number would show.
+   */
+  const diagonal = (a: number, b: number): number => {
+    const from = points[a];
+    const to = points[b];
+    if (from === undefined || to === undefined) return 0;
+    return Math.hypot(to.x - from.x, to.y - from.y);
+  };
+  const pairs: [number, number][] = [
+    [edge(0, 1), edge(2, 3)],
+    [edge(1, 2), edge(3, 0)],
+    [diagonal(0, 2), diagonal(1, 3)],
+  ];
+  const rectangular = pairs.every(([a, b]) => Math.abs(a - b) / longerOf(a, b) <= 0.2);
+
+  return {
+    short: Math.min(horizontal, vertical),
+    long: Math.max(horizontal, vertical),
+    rectangular,
+  };
 }
 
 /**
@@ -242,6 +280,16 @@ export function MeasureScreen({
    */
   const [photo, setPhoto] = useState<Blob | null>(initialImage);
   const [markers, setMarkers] = useState<readonly Marker[] | null>(null);
+  /**
+   * The Sizes the index can actually answer for.
+   *
+   * Read here because the match is made here: the homography and the corners
+   * are both already in hand, so there is nothing a second upload would add
+   * except a round trip on a showroom connection. `[]` while it loads and on
+   * a failure, which shows the millimetres with no Size suggested — the
+   * truthful answer when nothing is known to match against.
+   */
+  const [sizes, setSizes] = useState<readonly string[]>([]);
   const [markerId, setMarkerId] = useState('');
   const [tileCorners, setTileCorners] = useState<readonly Point[]>([]);
   const [markerCorners, setMarkerCorners] = useState<readonly Point[]>([]);
@@ -296,6 +344,16 @@ export function MeasureScreen({
   );
 
   useEffect(() => {
+    void fetchScanSizes()
+      .then((available) => {
+        if (mountedRef.current) setSizes(available);
+      })
+      .catch(() => {
+        // See `sizes`: no list means no suggestion, never a rejection.
+      });
+  }, []);
+
+  useEffect(() => {
     void fetchScanMarkers()
       .then((available) => {
         if (!mountedRef.current) return;
@@ -309,14 +367,6 @@ export function MeasureScreen({
       });
   }, []);
 
-  /**
-   * The Size this measurement supports, or `null`.
-   *
-   * Read into a local so the compiler can narrow it for the handler below —
-   * `measurement.matched_size` is state, and TypeScript cannot prove a state
-   * field is still non-null inside a closure that runs later.
-   */
-  const matchedSize = measurement?.matched_size ?? null;
 
   /**
    * Take (or retake) the photograph this screen measures.
@@ -393,6 +443,23 @@ export function MeasureScreen({
    * stale while a finger is mid-drag.
    */
   const preview = previewSize(homography, tileCorners);
+
+  /**
+   * The Size the corners currently support, or `null`.
+   *
+   * **Matched here, not on the server.** The homography arrived with the
+   * proposal and the corners are on this screen, so the millimetres are
+   * already known — uploading the photograph a second time to have the same
+   * arithmetic done again is a round trip that adds nothing. `matchSize` is
+   * the twin of `shared_schema.marker.match_size`, rule for rule, so the
+   * answer is the one the server would have given.
+   *
+   * The fallback path — a marker the detector could not find, whose corners
+   * were tapped — has no homography, and there `measurement` holds what
+   * `POST /scans/measure` worked out instead.
+   */
+  const matchedSize =
+    preview !== null ? matchSize(preview.short, preview.long, sizes) : measurement?.matched_size ?? null;
 
   /** Which quad the next tap belongs to. */
   const collecting = tapMarker ? markerCorners : tileCorners;
@@ -614,21 +681,39 @@ export function MeasureScreen({
         </p>
       )}
 
-      {measurement !== null && (
+      {(preview !== null || measurement !== null) && (
         <div className={styles.result}>
-          <span className={styles.millimetres}>
-            {Math.round(measurement.short_mm)} × {Math.round(measurement.long_mm)} mm
-          </span>
+          {preview === null && measurement !== null && (
+            // The fallback path has no homography, so there is no live
+            // readout above the photo — the server's millimetres are the only
+            // ones, and they belong on screen just as much.
+            <span className={styles.millimetres}>
+              {`${String(Math.round(measurement.short_mm))} × ${String(
+                Math.round(measurement.long_mm),
+              )} mm`}
+            </span>
+          )}
           <span className={styles.matched}>
-            {measurement.matched_size === null
+            {matchedSize === null
               ? 'No catalogue size matches this measurement'
-              : `Matches ${measurement.matched_size}`}
+              : `Matches ${matchedSize}`}
           </span>
-          <span className={styles.method}>
-            {measurement.auto_detected
-              ? 'Marker found automatically.'
-              : 'Measured from the corners you tapped.'}
-          </span>
+          {measurement !== null && !measurement.auto_detected && (
+            // A tapped measurement is only as good as the taps, and the staff
+            // member is the only one who knows how carefully they placed them.
+            <span className={styles.method}>Measured from the corners you tapped.</span>
+          )}
+          {preview !== null && !preview.rectangular && (
+            // **A warning, not a refusal.** This used to be a server rejection,
+            // which stopped a measurement the staff member could see was right.
+            // What it adds over the millimetres is the one thing no number
+            // shows: that the marker may not be lying flat, which silently
+            // scales everything.
+            <span className={styles.method}>
+              These corners do not measure as a rectangle — check the marker is flat on the tile
+              and each corner is on the tile’s own corner.
+            </span>
+          )}
         </div>
       )}
 
@@ -644,7 +729,13 @@ export function MeasureScreen({
           >
             Take a photo
           </button>
-        ) : matchedSize === null ? (
+        ) : matchedSize === null && homography === null ? (
+          // **The only path that still uploads.** With no homography the
+          // marker was not detected, so its corners are being tapped and the
+          // server has to solve the geometry. Everything else is finished
+          // here: the matrix came with the proposal and the corners are on
+          // this screen, so a second upload would only repeat arithmetic that
+          // is already done — over a showroom connection, on every adjustment.
           <button
             className={styles.measure}
             type="button"
@@ -653,7 +744,7 @@ export function MeasureScreen({
           >
             {busy ? 'Measuring…' : 'Measure'}
           </button>
-        ) : (
+        ) : matchedSize === null ? null : (
           // Once there is a Size, taking it to the scan is the primary act —
           // and the only accent control on the screen, so the two never
           // compete for the one orange action DESIGN.md allows.

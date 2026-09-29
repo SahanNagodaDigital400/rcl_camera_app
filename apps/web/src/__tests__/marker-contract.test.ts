@@ -16,6 +16,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ARUCO_DICTIONARIES,
+  matchSize,
+  sizeDimensionsMm,
+  SIZE_MATCH_TOLERANCE,
   ARUCO_DICTIONARY_SIZES,
   isArucoDictionary,
   isMarker,
@@ -197,5 +200,68 @@ describe('the shared Measurement', () => {
 
   it.each([null, undefined, '60X30', 42])('rejects %p', (value) => {
     expect(isMeasurement(value)).toBe(false);
+  });
+});
+
+describe('the size match, now made on the client', () => {
+  // The measurement is finished on the screen, so this is the rule that
+  // decides which Size a staff member is offered. It is the twin of
+  // `shared_schema.marker.match_size` and `size_dimensions_mm`, and the cases
+  // below are the same ones `shared/schema/tests/test_marker.py` asserts —
+  // change one side and this file is where the two stop agreeing.
+  const CATALOGUE = ['30X90', '40X40', '45X90', '60X30'];
+
+  it.each([
+    ['45X90', [450, 900]],
+    ['60X30', [300, 600]],
+    ['40X40', [400, 400]],
+    ['30X90', [300, 900]],
+  ])('reads %s as millimetres, short edge first', (size, expected) => {
+    expect(sizeDimensionsMm(size as string)).toEqual(expected);
+  });
+
+  it('is short-edge-first however it was written', () => {
+    expect(sizeDimensionsMm('60X30')).toEqual(sizeDimensionsMm('30X60'));
+  });
+
+  it.each(['POLISH', '', '45x90cm', '45', '0X90', '45-90'])(
+    'answers null rather than guessing at %p',
+    (unreadable) => {
+      expect(sizeDimensionsMm(unreadable)).toBeNull();
+    },
+  );
+
+  it('separates the pair that only millimetres can separate', () => {
+    // `45X90` and `60X30` are both 2:1, so no shape reasoning tells them
+    // apart. This is the entire justification for measuring at all.
+    expect(matchSize(300, 600, CATALOGUE)).toBe('60X30');
+    expect(matchSize(450, 900, CATALOGUE)).toBe('45X90');
+  });
+
+  it('requires both edges to agree', () => {
+    expect(matchSize(300, 900, CATALOGUE)).toBe('30X90');
+    expect(matchSize(400, 400, CATALOGUE)).toBe('40X40');
+  });
+
+  it('matches nothing rather than the nearest thing', () => {
+    // A wrong Size makes the true Tile unreachable under AD-19, not merely
+    // lower-ranked — so "closest anyway" is a wrong answer wearing a right
+    // answer's clothes.
+    expect(matchSize(800, 1600, CATALOGUE)).toBeNull();
+    expect(matchSize(50, 100, CATALOGUE)).toBeNull();
+    expect(matchSize(300, 600, [])).toBeNull();
+  });
+
+  it('keeps the band narrower than the gap it has to resolve', () => {
+    // The Python twin asserts exactly this, for the same reason: `45X90` and
+    // `60X30` are 1.5x apart and splitting them tolerates about 18%.
+    expect(SIZE_MATCH_TOLERANCE).toBeLessThan(0.18);
+    expect(matchSize(300, 600, ['45X90'])).toBeNull();
+    expect(matchSize(450, 900, ['60X30'])).toBeNull();
+  });
+
+  it('skips a size it cannot read rather than failing', () => {
+    expect(matchSize(300, 600, ['POLISH', '60X30'])).toBe('60X30');
+    expect(matchSize(300, 600, ['POLISH'])).toBeNull();
   });
 });

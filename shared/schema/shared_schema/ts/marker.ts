@@ -152,6 +152,71 @@ export function isTileProposal(value: unknown): value is TileProposal {
   );
 }
 
+/**
+ * How far a measured edge may sit from a catalogue Size and still be called it.
+ *
+ * The twin of `SIZE_MATCH_TOLERANCE` in `shared_schema/marker.py`, and it has
+ * to stay the twin: since the measurement is taken on the client, this is the
+ * number that decides which Size a staff member is offered. The reasoning is
+ * the Python side's — `45X90` (450x900) against `60X30` (600x300) are exactly
+ * 1.5x apart, splitting them at the geometric mean tolerates about 18%, and
+ * 15% keeps a margin under that while absorbing the error of a dragged corner.
+ */
+export const SIZE_MATCH_TOLERANCE = 0.15;
+
+/** `<W>X<H>` as the catalogue stores it. Both groups are centimetres. */
+const SIZE_PATTERN = /^(\d{1,3})X(\d{1,3})$/;
+
+/**
+ * `'45X90'` → `[450, 900]` in millimetres, short edge first, or `null`.
+ *
+ * `null` rather than a guess, mirroring `size_dimensions_mm`: nothing
+ * guarantees a future Size spells its dimensions the way the ones in the real
+ * tree do, and a Size this cannot read simply never matches — the millimetres
+ * are still shown.
+ */
+export function sizeDimensionsMm(size: string): [number, number] | null {
+  const found = SIZE_PATTERN.exec(size.trim().toUpperCase());
+  if (found === null) return null;
+  const first = Number(found[1]);
+  const second = Number(found[2]);
+  if (first <= 0 || second <= 0) return null;
+  const [short, long] = first <= second ? [first, second] : [second, first];
+  return [short * 10, long * 10];
+}
+
+/**
+ * The catalogue Size a measurement supports, or `null` when none is close.
+ *
+ * `match_size`'s twin, rule for rule. **Both** edges must land within
+ * tolerance, which is what makes the check shape-aware for free: a 600x300
+ * measurement cannot match `45X90` however the tolerance is set, because 300
+ * is nowhere near 450. Among those that fit, the closest wins.
+ *
+ * `null` is a first-class answer and is never "the nearest Size anyway" — a
+ * wrong Size makes the true Tile unreachable under AD-19, not merely
+ * lower-ranked.
+ */
+export function matchSize(
+  shortMm: number,
+  longMm: number,
+  sizes: readonly string[],
+  tolerance: number = SIZE_MATCH_TOLERANCE,
+): string | null {
+  let best: { error: number; size: string } | null = null;
+  for (const size of sizes) {
+    const dimensions = sizeDimensionsMm(size);
+    if (dimensions === null) continue;
+    const [candidateShort, candidateLong] = dimensions;
+    const shortError = Math.abs(shortMm - candidateShort) / candidateShort;
+    const longError = Math.abs(longMm - candidateLong) / candidateLong;
+    if (shortError > tolerance || longError > tolerance) continue;
+    const combined = shortError + longError;
+    if (best === null || combined < best.error) best = { error: combined, size };
+  }
+  return best === null ? null : best.size;
+}
+
 const REQUIRED_NUMBER_KEYS = ['width_mm', 'height_mm'] as const;
 const TIMESTAMP_KEYS = ['created_at', 'updated_at'] as const;
 

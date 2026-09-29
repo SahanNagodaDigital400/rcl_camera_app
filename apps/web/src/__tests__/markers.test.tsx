@@ -291,10 +291,10 @@ async function waitForCorners(container: HTMLElement): Promise<void> {
 /** The quad the server proposes, normalized — deliberately *not* the tile. */
 const PROPOSAL = {
   corners: [
-    { x: 0.2, y: 0.2 },
-    { x: 0.8, y: 0.2 },
-    { x: 0.8, y: 0.8 },
-    { x: 0.2, y: 0.8 },
+    { x: 0.2, y: 0.35 },
+    { x: 0.8, y: 0.35 },
+    { x: 0.8, y: 0.65 },
+    { x: 0.2, y: 0.65 },
   ],
   detected: true,
   marker: [
@@ -364,6 +364,7 @@ describe('measuring a tile', () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
@@ -389,6 +390,7 @@ describe('measuring a tile', () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
@@ -408,6 +410,7 @@ describe('measuring a tile', () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
@@ -417,13 +420,14 @@ describe('measuring a tile', () => {
     await waitForCorners(container);
 
     // 0.2–0.8 of the unit square, scaled by 1000 mm, is 600 × 600.
-    expect(screen.getByText('Currently 600 × 600 mm')).toBeTruthy();
+    expect(screen.getByText('Currently 300 × 600 mm')).toBeTruthy();
 
     // Pull the top-left corner out to the origin and the readout follows —
-    // which is the whole point of it being there.
-    dragCorner([84, 64], [0, 0]);
+    // which is the whole point of it being there. 0.2, 0.35 of a 400x300 box
+    // is (80, 105).
+    dragCorner([84, 109], [0, 0]);
 
-    expect(screen.queryByText('Currently 600 × 600 mm')).toBeNull();
+    expect(screen.queryByText('Currently 300 × 600 mm')).toBeNull();
     expect(screen.getByText(/^Currently \d+ × \d+ mm$/)).toBeTruthy();
   });
 
@@ -459,6 +463,7 @@ describe('measuring a tile', () => {
     });
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
@@ -483,6 +488,7 @@ describe('measuring a tile', () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
       'POST /api/scans/propose': [
         refusal('marker_not_detected', 'The marker was not found in the photo.', 422),
       ],
@@ -502,6 +508,7 @@ describe('measuring a tile', () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
@@ -526,6 +533,7 @@ describe('measuring a tile', () => {
     const used: string[] = [];
     const { calls } = stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
       'POST /api/scans/measure': [{ status: 200, body: MEASURED }],
     });
@@ -534,24 +542,79 @@ describe('measuring a tile', () => {
       <MeasureScreen initialImage={photo()} onUseSize={(size) => used.push(size)} onBack={noop} />,
     );
     await waitForCorners(container);
-    fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
 
-    expect(await screen.findByText('301 × 598 mm')).toBeTruthy();
-    expect(screen.getByText('Matches 60X30')).toBeTruthy();
+    // **No press, and no second upload.** The homography came with the
+    // proposal and the corners are on this screen, so the millimetres and the
+    // Size are already known — and the quad is 0.2–0.8 by 0.35–0.65 of a unit
+    // square scaled by 1000 mm, which is 600 × 300.
+    await waitFor(() => {
+      expect(screen.getByText('Matches 60X30')).toBeTruthy();
+    });
+    expect(screen.getByText('Currently 300 × 600 mm')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Measure' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Use 60X30' }));
 
     // The Size leaves through the callback and nowhere else — nothing here
-    // submits a scan (AD-19).
+    // submits a scan (AD-19), and nothing re-uploaded the photograph.
     expect(used).toEqual(['60X30']);
     expect(calls.every(([url]) => !url.endsWith('/scans'))).toBe(true);
+    expect(calls.every(([url]) => !url.endsWith('/scans/measure'))).toBe(true);
+  });
+
+  it('suggests nothing when the measurement fits no catalogue size', async () => {
+    // Never "the nearest size anyway" — a wrong Size makes the true Tile
+    // unreachable under AD-19, not merely lower-ranked.
+    layOutTheCanvas();
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['40X40'] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+    });
+
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+    await waitForCorners(container);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No catalogue size matches/)).toBeTruthy();
+    });
+    // The millimetres are still reported; only the suggestion is withheld.
+    expect(screen.getByText('Currently 300 × 600 mm')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Use / })).toBeNull();
+  });
+
+  it('warns when the corners do not measure as a rectangle', async () => {
+    // A warning rather than a refusal: the server used to reject on this and
+    // stop a measurement the staff member could see was right. What it adds
+    // over the millimetres is the one thing no number shows — that the marker
+    // may not be lying flat, which silently scales everything.
+    layOutTheCanvas();
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30'] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+    });
+
+    const { container } = render(
+      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
+    );
+    await waitForCorners(container);
+    expect(screen.queryByText(/do not measure as a rectangle/)).toBeNull();
+
+    // Pull one corner far out of square.
+    dragCorner([84, 108], [0, 290]);
+
+    expect(screen.getByText(/do not measure as a rectangle/)).toBeTruthy();
   });
 
   it('treats a missing fiducial as a fallback, not a failure', async () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
-      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
+      'POST /api/scans/propose': [refusal('marker_not_detected', 'Not found.', 422)],
       'POST /api/scans/measure': [
         refusal(
           'marker_not_detected',
@@ -592,7 +655,8 @@ describe('measuring a tile', () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
-      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
+      'POST /api/scans/propose': [refusal('marker_not_detected', 'Not found.', 422)],
       'POST /api/scans/measure': [
         {
           status: 200,
@@ -618,7 +682,8 @@ describe('measuring a tile', () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
-      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
+      'POST /api/scans/propose': [refusal('marker_not_detected', 'Not found.', 422)],
       'POST /api/scans/measure': [
         refusal(
           'measurement_refused',
@@ -639,7 +704,10 @@ describe('measuring a tile', () => {
 
   it('asks for a photograph when there is no frame to inherit', async () => {
     layOutTheCanvas();
-    stubFetch({ 'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }] });
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
+    });
 
     render(<MeasureScreen initialImage={null} onUseSize={noop} onBack={noop} />);
     await screen.findByRole('option', { name: /Rocell marker card/ });
