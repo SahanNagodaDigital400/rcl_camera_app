@@ -155,3 +155,22 @@ export async function downscaleToBlob(
     );
   });
 }
+
+/**
+ * The whole frame at `MEASURE_MAX_EDGE` — the frame a measurement is taken on.
+ *
+ * Both screens that can start a measurement call this one function, so the
+ * bytes `POST /scans/propose` receives are identical whether the shutter was
+ * pressed on Scan or on Measure, and whether the source was the live camera or
+ * a chosen file. That matters more than it looks: the marker's corners are
+ * located in these pixels and everything downstream is scaled by them, so two
+ * capture paths that differ by a crop or a rotation are two different rulers.
+ */
+export async function toMeasuringFrame(
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+): Promise<Blob> {
+  const whole = computeDownscaledDimensions(width, height, MEASURE_MAX_EDGE);
+  return downscaleToBlob(source, whole.width, whole.height);
+}

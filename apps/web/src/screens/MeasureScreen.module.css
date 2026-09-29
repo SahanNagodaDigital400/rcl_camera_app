@@ -239,21 +239,158 @@
   color: var(--color-muted-text);
 }
 
-/* Before a photograph exists: what to do, where the photo will appear. A
- * bordered placeholder rather than nothing, so the screen does not reflow by
- * the height of a photo the moment one is taken. */
-.placeholder {
+/* Before a photograph exists: the viewfinder.
+ *
+ * **The scan's camera surface, framed rather than full-bleed.** `ScanScreen`
+ * bleeds its viewfinder to the window edges because the camera is the whole of
+ * that screen; here it sits under a title and a marker picker and above the
+ * instruction, so it stays a panel. What it does not change is the capture:
+ * the same stream, the same canvas encode, the same bytes on the wire. */
+.viewfinder {
+  position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: var(--space-8) var(--space-5);
-  border: var(--border-hairline) dashed var(--color-border);
+  aspect-ratio: 1 / 1;
+  max-height: var(--measure-photo-max-height);
   border-radius: var(--radius-md);
-  background: var(--color-surface);
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  overflow: hidden;
+}
+
+.video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Why the camera is not showing — denied, or still being asked about. */
+.denied {
+  max-width: var(--measure-prose);
+  padding: var(--space-6) var(--space-5) calc(var(--touch-target-min) + var(--space-10));
+  color: var(--color-primary-foreground);
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
-  color: var(--color-muted-text);
   text-align: center;
+}
+
+.explanation {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  max-width: var(--measure-prose);
+  padding: var(--space-6) var(--space-5) calc(var(--touch-target-min) + var(--space-10));
+}
+
+.explanationIcon {
+  width: var(--icon-size-lg);
+  height: var(--icon-size-lg);
+  color: var(--color-on-primary-muted);
+}
+
+.lede {
+  color: var(--color-primary-foreground);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  text-align: center;
+}
+
+/* Overlaid on the viewfinder's bottom edge, so the shutter and the fallback
+ * are in the same place here as they are on Scan. */
+.controls {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4) var(--space-5);
+  background: var(--viewfinder-controls-gradient);
+}
+
+.controlsSpacer {
+  min-width: 0;
+}
+
+/* The accent control on the camera surface: "Enable camera" before a grant,
+ * the shutter after one, and never both at once — which is what keeps this
+ * screen to the one orange action DESIGN.md allows. */
+.primary {
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}
+
+.primary:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: progress;
+}
+
+.shutter {
+  justify-self: center;
+  width: var(--shutter-size);
+  height: var(--shutter-size);
+  padding: 0;
+  box-shadow: var(--elevation-card);
+}
+
+.shutterIcon {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.shutterLabel {
+  composes: visuallyHidden from global;
+}
+
+.uploadField {
+  justify-self: start;
+  min-width: 0;
+}
+
+.uploadLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-height: var(--touch-target-min);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-hairline) solid var(--color-on-primary-muted);
+  border-radius: var(--radius-sm);
+  background: var(--color-viewfinder-copy-bg);
+  color: var(--color-primary-foreground);
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-caption-line);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The input is visually hidden, so the ring has to be drawn on the label it
+ * labels or a keyboard has no idea where it is. */
+.uploadField:has(.fileInput:focus-visible) .uploadLabel {
+  outline: var(--focus-ring-width) solid var(--color-primary-foreground);
+  outline-offset: var(--space-1);
+}
+
+.uploadIcon {
+  flex: none;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
 }
 
 .fileInput {

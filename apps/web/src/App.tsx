@@ -354,22 +354,6 @@ function Gate(): JSX.Element {
    * those are one scan's data and stale after it, while this is a standing
    * declaration about the tiles in front of the person holding the phone.
    */
-  /**
-   * The scan's photograph, kept whole for measuring.
-   *
-   * **One shutter press serves both**, which is a measured trade rather than a
-   * convenience: a 106mm marker stuck on the tile costs about 17 points of
-   * top-1 matching accuracy (83.3% against 100% on 60 catalogue tiles),
-   * because `shared/vision` centre-crops 224px and the marker sits inside
-   * that. Asking for a second, marker-free photograph recovers those points
-   * and costs a capture on every measurement; the product's choice is the
-   * single capture, with Measure's own Retake there for when a frame is not
-   * good enough to measure from.
-   *
-   * Not `capturedImage`: that one is the centre square at the matching budget,
-   * and the marker is frequently outside it or too small in it to detect.
-   */
-  const [measureFrame, setMeasureFrame] = useState<Blob | null>(null);
   const [declaredSize, setDeclaredSize] = useState<string | null>(null);
   /**
    * Which surface opened the crop editor. `'results'` keeps the candidates
@@ -526,7 +510,6 @@ function Gate(): JSX.Element {
       // is what keeps a future role-gated surface from inheriting a gap
       // instead of the fix.
       setCapturedImage(null);
-      setMeasureFrame(null);
       setCandidates(null);
       // The Marker selections go with the account rows above, for their
       // reason: a demotion is the moment the Markers register stops being
@@ -679,7 +662,6 @@ function Gate(): JSX.Element {
     // already left — which on this surface would be Crop opening on somebody
     // else's photo taken minutes ago.
     setCapturedImage(null);
-    setMeasureFrame(null);
     // The match belongs to Results and to nothing else, the same reason one
     // step further along: a later `'results'` section can never render a
     // scan's Candidates after the user has already left them.
@@ -854,10 +836,7 @@ function Gate(): JSX.Element {
           // request and `showResults` lands once it resolves. A rejection
           // propagates back to `ScanScreen`, which renders it beside a live
           // viewfinder — the retake is the shutter, and the crop is offered.
-          onCaptured={async (image, forMeasuring) => {
-            // Held before the request, so a scan that is then refused still
-            // leaves a frame to measure from.
-            setMeasureFrame(forMeasuring);
+          onCaptured={async (image) => {
             const result = await submitScan(image, FULL_FRAME, declaredSize);
             showResults(result, image);
           }}
@@ -940,11 +919,6 @@ function Gate(): JSX.Element {
           // 2:1, so candidates that disagree about Size are the moment a ruler
           // is worth reaching for. `showMeasure` keeps the candidates, so Back
           // returns to them.
-          // **The measuring frame, never `capturedImage`.** That one is the
-          // centre square at the matching budget, and a marker laid beside
-          // the pattern is often cropped out of it entirely — and what
-          // survives is too few pixels for `api.measure`'s 60px floor.
-          onMeasure={() => showMeasure()}
         />
       </AppShell>
     );
@@ -1141,9 +1115,6 @@ function Gate(): JSX.Element {
       <AppShell {...frame('scan')}>
         {signOutFailure}
         <MeasureScreen
-          // The scan's own photograph, whole. Measure opens on it rather than
-          // asking for another; Retake is there when it is not good enough.
-          initialImage={measureFrame}
           // The measured Size lands in the picker the staff member is about to
           // submit with — a *suggestion*, which they can change or clear
           // before scanning (AD-19). Nothing here reaches `POST /scans`

@@ -1,14 +1,15 @@
 import { ArrowsClockwise, Camera, Crop, Image, Ruler, X } from '@phosphor-icons/react';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { ChangeEvent, JSX } from 'react';
 
 import { ApiRequestError, fetchScanSizes, UNKNOWN_SIZE } from '../api/client';
 import {
   computeCentreSquare,
-  MEASURE_MAX_EDGE,
   computeDownscaledDimensions,
   downscaleToBlob,
+  toMeasuringFrame,
 } from '../scan/downscaleImage';
+import { useRearCamera } from '../scan/useRearCamera';
 import styles from './ScanScreen.module.css';
 
 /**
@@ -100,45 +101,6 @@ const SUBMIT_FAILURE = 'Could not submit the scan. Try again.';
 
 const MATCHING = 'Matching…';
 
-/**
- * Whether the Permissions API is there to be asked. Decided synchronously so
- * the first render already knows whether to show the explanation or a short
- * "checking" wait — no flash of one before the other.
- */
-function canQueryPermission(): boolean {
-  return typeof navigator.permissions?.query === 'function';
-}
-
-/**
- * Whether the browser has already granted camera access, so `getUserMedia`
- * would open the viewfinder without a prompt. `false` whenever the answer is
- * anything else — `'prompt'`, `'denied'`, an unsupported name, a browser
- * without the API — because in every one of those cases the right move is to
- * explain and wait for a tap.
- */
-async function cameraAlreadyGranted(): Promise<boolean> {
-  try {
-    // `'camera'` is a real permission name in every current engine but is
-    // still missing from TypeScript's `PermissionName` union.
-    const status = await navigator.permissions.query({ name: 'camera' as PermissionName });
-    return status.state === 'granted';
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Where this screen is between "never asked" and "the viewfinder is live."
- *
- * `'checking'` is the arrival wait while the Permissions API answers;
- * `'starting'` is the already-granted case, the request being made on
- * arrival — neither flashes the explanation before the viewfinder.
- * `'requesting'` is the same wait after a tap, and disables the one button
- * that could fire a second concurrent `getUserMedia` call while the first is
- * resolving.
- */
-type CameraState = 'unrequested' | 'checking' | 'starting' | 'requesting' | 'granted' | 'denied';
-
 /** The picker's "declare nothing" option. Not a Size, so it is not a string. */
 export const ALL_SIZES = '';
 
@@ -196,9 +158,10 @@ export function ScanScreen({
   declaredSize,
   onDeclareSize,
 }: ScanScreenProps): JSX.Element {
-  const [cameraState, setCameraState] = useState<CameraState>(() =>
-    canQueryPermission() ? 'checking' : 'unrequested',
-  );
+  // The camera itself — the same hook `MeasureScreen` holds, so both screens
+  // open the same stream under the same constraints and encode through the
+  // same canvas. See `useRearCamera` for why that is one implementation.
+  const { cameraState, attachVideo, enableCamera, videoElement } = useRearCamera();
   const [fileError, setFileError] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -223,128 +186,29 @@ export function ScanScreen({
    * would be in the way of the one thing this screen is for.
    */
   const [sizes, setSizes] = useState<readonly string[]>([]);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // `true` while this screen is in the document, so a `getUserMedia` call
-  // still in flight when it leaves knows, once it resolves, that storing its
-  // stream and flipping state would both be pointless.
+  // `true` while this screen is in the document, so the Sizes read still in
+  // flight when it leaves knows, once it resolves, that setting state would be
+  // a warning for a picker nobody is looking at.
   const mountedRef = useRef(true);
-  // One camera request at a time: StrictMode runs the mount effect twice and
-  // a fast double tap fires the button twice, and either would otherwise open
-  // two streams and keep the hardware light on for the one nobody holds.
-  const requestingRef = useRef(false);
   const fileId = useId();
   const sizeId = useId();
   const sizeHintId = useId();
 
-  /**
-   * Ask the browser for the rear camera, and remember the answer.
-   *
-   * Called from exactly two places: the "Enable camera" tap on a first visit
-   * (via `enableCamera`, which also shows the wait), and the mount effect
-   * below once the Permissions API has said access is already granted. Never
-   * from anywhere else, so the explanation always precedes the browser's own
-   * prompt the first time it can appear.
-   */
-  const requestCamera = useCallback(async (): Promise<void> => {
-    if (requestingRef.current) return;
-    requestingRef.current = true;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        // **A resolution is asked for, and that is not a refinement.** A bare
-        // `facingMode` constraint lets the engine pick, and several pick
-        // 640x480 — on which the shutter's centre square is 480x480, a marker
-        // filling a sixth of the frame is ~77px, and `api.measure` refuses it
-        // under 60. That is the "marker is too small" a real showroom photo
-        // hits while the same tile measures fine from a gallery file, which
-        // carries the sensor's own resolution.
-        //
-        // `ideal` rather than `min`, so a device that cannot reach it still
-        // opens the viewfinder rather than failing the whole request — the
-        // one thing worse than a low-resolution scan is no camera at all.
-        // Both axes carry the same number because a phone held upright
-        // reports the stream portrait, and asking for a landscape shape would
-        // have the engine pick the closest mode to the wrong aspect.
-        //
-        // Matching is unaffected in every way but sharpness: the centre
-        // square is still taken at the sensor's resolution and still spends
-        // the same ~1024px budget, so nothing about `shared/vision` or the
-        // index changes — the pixels going into it are simply better.
-        video: {
-          facingMode: 'environment',
-          width: { ideal: 1920 },
-          height: { ideal: 1920 },
-        },
-        audio: false,
-      });
-      if (!mountedRef.current) {
-        // The screen was left while the permission prompt was still up.
-        // Nothing downstream will ever read `streamRef` again, so the only
-        // thing left to do is turn the hardware light back off.
-        stream.getTracks().forEach((track) => track.stop());
-        return;
-      }
-      streamRef.current = stream;
-      setCameraState('granted');
-    } catch {
-      // Whatever the reason — denied, no camera present, an insecure origin —
-      // the fallback is the same, and EXPERIENCE.md draws no distinction
-      // between "denied" and "denied previously" either.
-      if (mountedRef.current) setCameraState('denied');
-    } finally {
-      requestingRef.current = false;
-    }
-  }, []);
-
-  /** The first-visit tap: show the wait, then ask. */
-  function enableCamera(): void {
-    setCameraState('requesting');
-    void requestCamera();
-  }
-
-  /**
-   * On arrival, ask the browser whether camera access is already granted and
-   * start the camera if so; on the way out, stop every track.
-   *
-   * The Permissions API is the external system this effect synchronises
-   * with; every state change here happens in its answer's `then`, never
-   * synchronously in the effect body. A `'prompt'` or `'denied'` answer — or
-   * no API at all — leaves the explanation and its tap in place.
-   *
-   * A `MediaStream` keeps the camera's hardware light on until its tracks are
-   * stopped explicitly — letting React garbage-collect the object does
-   * nothing for the physical LED. The cleanup fires on Back, on a submission
-   * handing off to Results, and on a sign-out, because all three unmount
-   * this component the same way.
-   */
+  // `mountedRef` is this screen's own, for the Sizes read below.
   useEffect(() => {
     mountedRef.current = true;
-    if (canQueryPermission()) {
-      void cameraAlreadyGranted().then((granted) => {
-        if (!mountedRef.current) return;
-        if (granted) {
-          setCameraState('starting');
-          void requestCamera();
-        } else {
-          setCameraState('unrequested');
-        }
-      });
-    }
-
     return () => {
       mountedRef.current = false;
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
     };
-  }, [requestCamera]);
+  }, []);
 
   /**
    * Read the Sizes this catalogue can be filtered by, once, on arrival.
    *
-   * `mountedRef` is checked in the `then`, `requestCamera`'s own reason: the
-   * screen can be left while the request is in flight, and setting state
-   * afterward would be a warning for a picker nobody is looking at.
+   * `mountedRef` is checked in the `then` for the usual reason: the screen can
+   * be left while the read is in flight, and setting state afterward would be
+   * a warning for a picker nobody is looking at.
    *
    * A rejection leaves `sizes` empty and renders no picker — see its own
    * declaration above. `void` rather than a floating promise so the intent is
@@ -359,22 +223,6 @@ export function ScanScreen({
         // Deliberately swallowed. See `sizes`.
       });
   }, []);
-
-  /**
-   * Bind the stream to the `<video>` element only once it exists.
-   *
-   * `<video>` renders exclusively in the `'granted'` branch below, so the
-   * element is not yet mounted at the moment `enableCamera`'s `await`
-   * resolves — assigning `srcObject` there would hit a still-`null` ref and
-   * silently no-op. Running the assignment from an effect keyed on
-   * `cameraState` guarantees it happens after the render that mounts the
-   * element instead.
-   */
-  useEffect(() => {
-    if (cameraState === 'granted' && videoRef.current !== null) {
-      videoRef.current.srcObject = streamRef.current;
-    }
-  }, [cameraState]);
 
   /**
    * Submit one frame. On success `App` moves to Results and this screen
@@ -423,7 +271,7 @@ export function ScanScreen({
   }
 
   async function capture(): Promise<void> {
-    const video = videoRef.current;
+    const video = videoElement();
     if (video === null) return;
     // A tap that lands before the stream's first frame has decoded would
     // otherwise draw and encode a 0×0 canvas.
@@ -441,12 +289,7 @@ export function ScanScreen({
       const captured = computeCentreSquare(video.videoWidth, video.videoHeight);
       const { width, height } = computeDownscaledDimensions(captured.width, captured.height);
       blob = await downscaleToBlob(video, width, height, captured);
-      const whole = computeDownscaledDimensions(
-        video.videoWidth,
-        video.videoHeight,
-        MEASURE_MAX_EDGE,
-      );
-      measuring = await downscaleToBlob(video, whole.width, whole.height);
+      measuring = await toMeasuringFrame(video, video.videoWidth, video.videoHeight);
     } catch {
       setFileError(PROCESS_FAILURE);
       return;
@@ -482,8 +325,7 @@ export function ScanScreen({
     try {
       const { width, height } = computeDownscaledDimensions(bitmap.width, bitmap.height);
       blob = await downscaleToBlob(bitmap, width, height);
-      const whole = computeDownscaledDimensions(bitmap.width, bitmap.height, MEASURE_MAX_EDGE);
-      measuring = await downscaleToBlob(bitmap, whole.width, whole.height);
+      measuring = await toMeasuringFrame(bitmap, bitmap.width, bitmap.height);
     } catch {
       setFileError(PROCESS_FAILURE);
       return;
@@ -515,7 +357,7 @@ export function ScanScreen({
           <>
             <video
               className={styles.video}
-              ref={videoRef}
+              ref={attachVideo}
               autoPlay
               muted
               playsInline
@@ -644,14 +486,6 @@ export function ScanScreen({
                   <Crop className={styles.secondaryIcon} aria-hidden="true" />
                   Crop this photo
                 </button>
-                <button
-                  className={styles.secondary}
-                  type="button"
-                  onClick={onMeasure}
-                >
-                  <Ruler className={styles.secondaryIcon} aria-hidden="true" />
-                  Measure the tile
-                </button>
               </div>
             )}
           </div>
@@ -709,6 +543,29 @@ export function ScanScreen({
           </p>
         </div>
       )}
+
+      {/* **A tool of its own, not a step in the scan.**
+          Measuring needs a marker lying on the tile; matching wants the tile's
+          surface and nothing else. Keeping them separate is what lets each
+          photograph do one job — the scan is taken with a bare tile, and the
+          measurement is taken when a size is actually wanted, which is a
+          minority of scans. It also means the marker never reaches the
+          matcher at all.
+
+          Below the size picker rather than beside the shutter, because that is
+          the reading order of the thing it answers: "I do not know this tile's
+          size" follows "declare the size", and neither is the capture. */}
+      <div className={styles.measureField}>
+        <h2 className={styles.measureTitle}>Don’t know the size?</h2>
+        <p className={styles.measureHint}>
+          Measure the tile against a marker of known size. Takes its own photo — scan with a bare
+          tile.
+        </p>
+        <button className={styles.measureLink} type="button" onClick={onMeasure}>
+          <Ruler className={styles.secondaryIcon} aria-hidden="true" />
+          Measure a tile
+        </button>
+      </div>
     </section>
   );
 }

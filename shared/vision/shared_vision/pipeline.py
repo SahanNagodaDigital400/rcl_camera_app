@@ -190,8 +190,26 @@ def load_image(
     # the profile silently, which is the bug this replaced.
     img.draft(None, (DECODE_MAX_EDGE, DECODE_MAX_EDGE))
 
-    img = _to_srgb(img)
+    # **Orientation first, and the order is the whole point.** `_to_srgb`'s
+    # colour-managed path goes through `ImageCms.profileToProfile`, which builds
+    # its output with `Image.new` and therefore returns an image whose `.info`
+    # is empty -- the EXIF goes with it. Transposing afterwards read an
+    # orientation tag that was no longer there, so every photograph carrying an
+    # ICC profile (which is every phone photograph) was left lying on its side,
+    # silently and only when the phone was not held in the sensor's own
+    # orientation.
+    #
+    # It did not look like a decode bug. It looked like a marker outline drawn
+    # narrow and tall over an upright photo, because the browser honours the
+    # same tag this dropped and the two then disagreed about which way the
+    # picture was up.
+    #
+    # Transposing first is free of the trade the other order implies: a
+    # transpose preserves mode and `icc_profile`, so a CMYK press file reaches
+    # the colour transform exactly as before, and it clears the orientation tag
+    # behind itself so nothing downstream can apply it twice.
     img = ImageOps.exif_transpose(img)
+    img = _to_srgb(img)
 
     if max(img.size) > DECODE_MAX_EDGE:
         scale = DECODE_MAX_EDGE / max(img.size)

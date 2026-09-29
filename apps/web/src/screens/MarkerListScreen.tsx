@@ -182,7 +182,8 @@ export function MarkerListScreen({ onBack, onAdd, onEdit }: MarkerListScreenProp
       <p className={styles.intro}>
         A marker is an object of known size laid on a tile before it is photographed, so a scan can
         measure the tile. Measure the printed black square itself, not the paper around it, and type
-        the size in millimetres.
+        the size in millimetres. Tell staff to place it near a corner of the tile — a marker in the
+        middle costs about 17 points of matching accuracy, and one in a corner costs nothing.
       </p>
 
       {failure !== null && (

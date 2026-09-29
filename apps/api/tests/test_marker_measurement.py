@@ -20,12 +20,14 @@ import cv2
 import numpy as np
 import pytest
 from api.measure import (
+    ADAPTIVE_THRESHOLD_MAX_WINDOW,
     FALLBACK_TILE_MM,
     MIN_MARKER_EDGE_PIXELS,
     MIN_TILE_EDGE_MM,
     DegenerateQuad,
     MarkerTooSmall,
     NotRectangular,
+    _detector_parameters,
     detect_marker,
     measure_tile,
     order_corners,
@@ -431,3 +433,67 @@ class TestProposingTheTileQuad:
             order_corners(quad).astype(np.float32), (float(centre[0]), float(centre[1])), False
         )
         assert inside >= 0
+
+
+class TestDetectionOnADarkTile:
+    """The detector's threshold window, pinned to what real photographs need.
+
+    OpenCV's default caps the adaptive-threshold window at 23 pixels. A staff
+    member photographs a ~100mm card on a tile with a 12 Mpixel camera, which
+    puts the marker at roughly 300 pixels — and a window an order of magnitude
+    smaller than the marker never sees the edge between it and its background.
+
+    On a pale tile that does not matter: the marker's black stands clear at any
+    window size. On a dark one it is the difference between working and not,
+    and the failure is silent — the marker is simply never found, which the
+    screen reports as "not found in the photo" with nothing to say why.
+    """
+
+    def a_marker_on(self, background: int, frame: int = 2400) -> np.ndarray:
+        """A printed marker on a background of the given brightness.
+
+        Sized the way a real photograph sizes it — about a tenth of the frame
+        — because the bug is a *ratio* between the marker and the threshold
+        window, and a marker drawn small enough would pass at any setting.
+        """
+        family = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+        side = frame // 8
+        generator = np.random.default_rng(4)
+        scene = np.clip(generator.normal(background, 6, (frame, frame)), 0, 255).astype(np.uint8)
+        printed = cv2.aruco.generateImageMarker(family, 0, side)
+        # The real card's dark is a printed grey, not ink black.
+        printed = np.clip(printed.astype(np.int16) * 0.78 + 46, 0, 255).astype(np.uint8)
+        top = left = (frame - side) // 2
+        edge = max(1, side // 16)
+        scene[top - edge : top + side + edge, left - edge : left + side + edge] = 250
+        scene[top : top + side, left : left + side] = printed
+        return cv2.cvtColor(scene, cv2.COLOR_GRAY2RGB)
+
+    def test_a_marker_on_a_dark_tile_is_found(self) -> None:
+        """The case that failed in the showroom: a dark wood-effect plank.
+
+        Measured on the real photograph, the marker's dark squares read ~58
+        against a tile of ~98 — forty levels apart, and invisible to a 23px
+        window.
+        """
+        found = detect_marker(
+            self.a_marker_on(background=98), ArucoDictionary.DICT_APRILTAG_36H11, 0
+        )
+
+        assert found is not None
+
+    @pytest.mark.parametrize("background", [40, 98, 150, 205, 245])
+    def test_every_tile_tone_still_works(self, background: int) -> None:
+        """Widening the window must not cost the tones that already worked."""
+        found = detect_marker(
+            self.a_marker_on(background=background), ArucoDictionary.DICT_APRILTAG_36H11, 0
+        )
+
+        assert found is not None, f"a marker on a background of {background} was not found"
+
+    def test_the_window_reaches_past_opencv_s_default(self) -> None:
+        """Read from the module, so lowering it back fails here rather than in
+        a showroom. OpenCV's own default is 23.
+        """
+        assert ADAPTIVE_THRESHOLD_MAX_WINDOW > 23
+        assert _detector_parameters().adaptiveThreshWinSizeMax == ADAPTIVE_THRESHOLD_MAX_WINDOW

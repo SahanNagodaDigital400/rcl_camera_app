@@ -1,3 +1,4 @@
+import { Camera, Image as ImageIcon } from '@phosphor-icons/react';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, JSX, PointerEvent } from 'react';
 
@@ -12,6 +13,8 @@ import {
   measureTile,
   proposeTile,
 } from '../api/client';
+import { toMeasuringFrame } from '../scan/downscaleImage';
+import { useRearCamera } from '../scan/useRearCamera';
 import styles from './MeasureScreen.module.css';
 
 /**
@@ -55,7 +58,25 @@ import styles from './MeasureScreen.module.css';
 /** How many corners a quad has. Mirrors `shared_schema.marker.QUAD_CORNERS`. */
 const QUAD_CORNERS = 4;
 
-const TAKE_A_PHOTO = 'Lay the marker flat on the tile and take a photo of both.';
+/**
+ * **The centre, and that is a measured choice rather than the obvious one.**
+ *
+ * An earlier version of this sentence said "near a corner", on the strength of
+ * an experiment that composited the marker onto reference images — where the
+ * tile fills the whole frame, so a tile corner is a frame corner and falls
+ * outside the 224px centre crop the embedding sees. Real photographs are not
+ * like that: the tile sits inside a wider frame, the embedded window is the
+ * middle ~88% x 66% of it, and a marker at the tile's corner lands squarely
+ * inside. Placement changed nothing.
+ *
+ * Re-measured against the real framing, the marker costs about **2 points** of
+ * top-1 wherever it is put (24.0% bare against 22.0% with it) — and since this
+ * screen takes its own photograph, it costs nothing at all. The centre is then
+ * simply the better place: the detector has the most margin there, and the
+ * tile's four corners stay clear of it for dragging.
+ */
+const TAKE_A_PHOTO =
+  'Place the marker flat in the centre of the tile and take a photo of both.';
 const DRAG_THE_CORNERS =
   'Drag each corner onto the tile’s corner. Tap anywhere to move the nearest one.';
 const TAP_THE_MARKER =
@@ -65,6 +86,13 @@ const NO_MARKERS =
   'No markers are registered, so there is nothing to measure against. An administrator ' +
   'registers one on the Markers screen.';
 const COULD_NOT_MEASURE = 'The measurement could not be taken.';
+const CAMERA_EXPLANATION =
+  'Measuring needs your camera. Nothing is captured until you tap the shutter.';
+const CAMERA_DENIED = 'Camera access was not granted. You can still choose a photo below.';
+const CAMERA_CHECKING = 'Checking the camera…';
+const CAMERA_STARTING = 'Starting the camera…';
+const DECODE_FAILURE = 'That file is not a readable image. Choose another.';
+const PROCESS_FAILURE = 'Could not process that image. Try again.';
 
 /**
  * The tapped corners in perimeter order — **the server's own ordering**.
@@ -242,13 +270,6 @@ function asPoints(corners: readonly Point[]): string {
 
 interface MeasureScreenProps {
   /**
-   * The scan's own photograph, whole — what this screen opens on.
-   *
-   * One shutter press serves both jobs. `null` when there is no frame to
-   * inherit, and then the screen asks for one.
-   */
-  initialImage: Blob | null;
-  /**
    * Accept the measured Size. `ScanScreen` pre-fills its picker with it; the
    * staff member confirms or changes it before the scan is submitted.
    */
@@ -257,11 +278,7 @@ interface MeasureScreenProps {
   onBack: () => void;
 }
 
-export function MeasureScreen({
-  initialImage,
-  onUseSize,
-  onBack,
-}: MeasureScreenProps): JSX.Element {
+export function MeasureScreen({ onUseSize, onBack }: MeasureScreenProps): JSX.Element {
   /**
    * The photograph being measured — **this screen's own, never the scan's.**
    *
@@ -277,8 +294,18 @@ export function MeasureScreen({
    * So matching wants the surface clean and measuring wants a marker on it,
    * and one shutter press cannot serve both. Scan first with nothing on the
    * tile; place the marker only for this.
+   *
+   * **Taken the way the scan is taken, through `useRearCamera` and the same
+   * canvas encode.** This screen used to open the phone's camera app with
+   * `capture="environment"` and measure the file it handed back. That file
+   * carries its EXIF orientation, and a browser honours that tag while a
+   * server may not — so a photograph taken with the phone turned arrived
+   * upright on screen and on its side at `POST /scans/propose`, and the marker
+   * outline drawn over it was a transposed square. A canvas re-encode has no
+   * EXIF at all: the rotation is in the pixels, and there is no tag left for
+   * the two halves to disagree about.
    */
-  const [photo, setPhoto] = useState<Blob | null>(initialImage);
+  const [photo, setPhoto] = useState<Blob | null>(null);
   const [markers, setMarkers] = useState<readonly Marker[] | null>(null);
   /**
    * The Sizes the index can actually answer for.
@@ -313,6 +340,13 @@ export function MeasureScreen({
   const [measurement, setMeasurement] = useState<Measurement | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Whether a frame is being read off the camera and encoded. */
+  const [capturing, setCapturing] = useState(false);
+
+  // The camera itself — `ScanScreen`'s hook, not a second one. Measuring and
+  // matching photograph the same tile, so they open the same stream under the
+  // same constraints and encode through the same canvas.
+  const { cameraState, attachVideo, enableCamera, videoElement } = useRearCamera();
 
   const markerFieldId = useId();
   const photoFieldId = useId();
@@ -369,27 +403,99 @@ export function MeasureScreen({
 
 
   /**
-   * Take (or retake) the photograph this screen measures.
+   * Hold a new frame, and forget everything the last one meant.
    *
-   * Every measurement-shaped piece of state is cleared with it: corners
-   * tapped on the last photo mean nothing on this one, and a measurement
-   * carried over would be a number on screen that no longer describes what
-   * is under it. The fallback decision goes too — a retake deserves a fresh
-   * attempt at automatic detection.
+   * Corners tapped on the previous photo describe nothing on this one, and a
+   * measurement carried over would be a number on screen that no longer
+   * describes what is under it. The marker outline and the homography go too:
+   * both belong to the proposal for a photograph that is no longer here, and
+   * leaving them would draw the old marker over the new tile until the next
+   * proposal lands. The fallback decision is reset as well — a fresh frame
+   * deserves a fresh attempt at automatic detection.
    */
-  function choosePhoto(event: ChangeEvent<HTMLInputElement>): void {
-    const file = event.target.files?.[0];
-    // Cleared before anything else: a browser does not fire `change` again
-    // for the same file re-chosen, so a retake of the very photo that just
-    // failed would be unreachable without this.
-    if (fileInputRef.current !== null) fileInputRef.current.value = '';
-    if (file === undefined) return;
-    setPhoto(file);
+  function accept(frame: Blob): void {
+    if (!mountedRef.current) return;
+    setPhoto(frame);
     setTileCorners([]);
     setMarkerCorners([]);
+    setMarkerOutline([]);
+    setHomography(null);
     setTapMarker(false);
     setMeasurement(null);
     setFailure(null);
+  }
+
+  /** Back to the viewfinder, holding nothing. */
+  function retake(): void {
+    setPhoto(null);
+    setTileCorners([]);
+    setMarkerCorners([]);
+    setMarkerOutline([]);
+    setHomography(null);
+    setTapMarker(false);
+    setMeasurement(null);
+    setFailure(null);
+  }
+
+  /**
+   * Read the live frame, whole, at `MEASURE_MAX_EDGE`.
+   *
+   * **Whole, where the scan takes the centre square.** That is the one place
+   * the two shutters differ, and it is the reason measuring has a shutter of
+   * its own: `api.measure` locates the marker's corners in the pixels it is
+   * handed and refuses a marker under 60 of them, and a centre square can crop
+   * the marker out of the frame altogether.
+   */
+  async function capture(): Promise<void> {
+    const video = videoElement();
+    if (video === null) return;
+    // A tap that lands before the stream's first frame has decoded would
+    // otherwise draw and encode a 0x0 canvas.
+    if (video.videoWidth === 0 || video.videoHeight === 0) return;
+
+    setFailure(null);
+    setCapturing(true);
+    try {
+      accept(await toMeasuringFrame(video, video.videoWidth, video.videoHeight));
+    } catch {
+      if (mountedRef.current) setFailure(PROCESS_FAILURE);
+    } finally {
+      if (mountedRef.current) setCapturing(false);
+    }
+  }
+
+  /**
+   * Measure a photograph taken somewhere else.
+   *
+   * `imageOrientation: 'from-image'` is doing real work: it reads the file's
+   * own EXIF orientation during the decode, so the bitmap is upright before
+   * anything is drawn from it and the re-encoded frame carries no tag for the
+   * server to interpret differently. This is the same decode `ScanScreen`'s
+   * upload path runs, for the same reason.
+   */
+  async function choosePhoto(event: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.[0];
+    // Cleared before anything else: a browser does not fire `change` again
+    // for the same file re-chosen, so a retry of the very photo that just
+    // failed would be unreachable without this.
+    if (fileInputRef.current !== null) fileInputRef.current.value = '';
+    if (file === undefined) return;
+
+    setFailure(null);
+    let bitmap: ImageBitmap;
+    try {
+      bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    } catch {
+      if (mountedRef.current) setFailure(DECODE_FAILURE);
+      return;
+    }
+    try {
+      accept(await toMeasuringFrame(bitmap, bitmap.width, bitmap.height));
+    } catch {
+      if (mountedRef.current) setFailure(PROCESS_FAILURE);
+    } finally {
+      bitmap.close();
+    }
   }
 
   /**
@@ -599,26 +705,81 @@ export function MeasureScreen({
         </p>
       )}
 
-      {/* `capture="environment"` hands the job to the phone's own camera app,
-          which is the right tool here and not a shortcut: it returns a
-          full-resolution, autofocused, properly exposed frame, where a
-          `getUserMedia` viewfinder returns whatever stream the engine chose.
-          Measurement is the one thing in this product that genuinely needs
-          the sensor's pixels — `api.measure` refuses a marker under 60px —
-          and unlike scanning it happens once in a while rather than
-          repeatedly, so the extra tap costs nothing worth keeping. */}
-      <input
-        accept="image/*"
-        capture="environment"
-        className={styles.fileInput}
-        id={photoFieldId}
-        ref={fileInputRef}
-        type="file"
-        onChange={choosePhoto}
-      />
-
       {photoUrl === null ? (
-        <p className={styles.placeholder}>The photo you take will appear here.</p>
+        /* The same viewfinder the scan is taken through, and deliberately not
+           `capture="environment"`. The camera app returns its own file with
+           the EXIF orientation left in, and a measurement is geometry over
+           those pixels: the browser rotates by that tag and the server need
+           not, which is how an upright photograph came to be measured on its
+           side. The shutter here encodes through a canvas, so the frame that
+           reaches `POST /scans/propose` is oriented exactly as the frame on
+           screen. */
+        <div className={styles.viewfinder} aria-busy={capturing}>
+          {cameraState === 'granted' ? (
+            <video
+              autoPlay
+              className={styles.video}
+              data-testid="measure-viewfinder-video"
+              muted
+              playsInline
+              ref={attachVideo}
+            />
+          ) : cameraState === 'denied' ? (
+            <p className={styles.denied}>{CAMERA_DENIED}</p>
+          ) : cameraState === 'checking' || cameraState === 'starting' ? (
+            <p className={styles.denied} role="status">
+              {cameraState === 'checking' ? CAMERA_CHECKING : CAMERA_STARTING}
+            </p>
+          ) : (
+            <div className={styles.explanation}>
+              <Camera className={styles.explanationIcon} aria-hidden="true" />
+              <p className={styles.lede}>{CAMERA_EXPLANATION}</p>
+              <button
+                className={styles.primary}
+                type="button"
+                onClick={enableCamera}
+                disabled={cameraState === 'requesting'}
+              >
+                Enable camera
+              </button>
+            </div>
+          )}
+
+          {/* Three columns, not `space-between`: the shutter stays optically
+              centred and the fallback can never collide with it, whatever the
+              label's rendered width. */}
+          <div className={styles.controls}>
+            <div className={styles.uploadField}>
+              <label className={styles.uploadLabel} htmlFor={photoFieldId}>
+                <ImageIcon className={styles.uploadIcon} aria-hidden="true" />
+                Choose a photo
+              </label>
+              <input
+                accept="image/*"
+                className={styles.fileInput}
+                disabled={capturing || markerId === ''}
+                id={photoFieldId}
+                ref={fileInputRef}
+                type="file"
+                onChange={(event) => void choosePhoto(event)}
+              />
+            </div>
+
+            {cameraState === 'granted' && (
+              <button
+                className={`${styles.primary} ${styles.shutter}`}
+                type="button"
+                onClick={() => void capture()}
+                disabled={capturing || markerId === ''}
+              >
+                <Camera className={styles.shutterIcon} aria-hidden="true" />
+                <span className={styles.shutterLabel}>Capture</span>
+              </button>
+            )}
+
+            <div className={styles.controlsSpacer} aria-hidden="true" />
+          </div>
+        </div>
       ) : (
         <div
           aria-label="The tile being measured"
@@ -718,18 +879,9 @@ export function MeasureScreen({
       )}
 
       <div className={styles.actions}>
-        {photo === null ? (
-          // The one accent control until a photograph exists — there is
-          // nothing else worth pressing, and DESIGN.md allows one per screen.
-          <button
-            className={styles.measure}
-            type="button"
-            disabled={markerId === ''}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            Take a photo
-          </button>
-        ) : matchedSize === null && homography === null ? (
+        {photo === null ? // Nothing to press down here until a photograph exists: the shutter
+        // and the fallback both live on the viewfinder, under the thumb.
+        null : matchedSize === null && homography === null ? (
           // **The only path that still uploads.** With no homography the
           // marker was not detected, so its corners are being tapped and the
           // server has to solve the geometry. Everything else is finished
@@ -775,12 +927,11 @@ export function MeasureScreen({
           </button>
         )}
         {photo !== null && (
-          <button
-            className={styles.back}
-            type="button"
-            disabled={busy}
-            onClick={() => fileInputRef.current?.click()}
-          >
+          // Back to the viewfinder rather than straight to a second shutter:
+          // the frame is worth composing, and a retake that fired the camera
+          // immediately would take whatever the phone happened to be pointing
+          // at when the last one was rejected.
+          <button className={styles.back} type="button" disabled={busy} onClick={retake}>
             Retake
           </button>
         )}

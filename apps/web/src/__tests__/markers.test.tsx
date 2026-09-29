@@ -28,14 +28,40 @@ import App from '../App';
 import { MarkerFormScreen } from '../screens/MarkerFormScreen';
 import { MarkerListScreen } from '../screens/MarkerListScreen';
 import { MeasureScreen } from '../screens/MeasureScreen';
-import { ResultsScreen } from '../screens/ResultsScreen';
 import type { Marker } from '@rocell/schema/marker';
 import type { User } from '@rocell/schema/user';
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
+
+/**
+ * The browser pieces the Measure screen's shutter and its upload path need,
+ * neither of which jsdom has: the canvas draw/encode `toMeasuringFrame` goes
+ * through, and the decode that reads a chosen file's EXIF orientation.
+ */
+function stubCapture(): void {
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+    drawImage: vi.fn(),
+  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function toBlob(
+    this: HTMLCanvasElement,
+    callback: BlobCallback,
+  ) {
+    callback(new Blob(['frame'], { type: 'image/jpeg' }));
+  });
+  vi.stubGlobal(
+    'createImageBitmap',
+    vi.fn(() => Promise.resolve({ width: 1200, height: 900, close: vi.fn() })),
+  );
+  Object.defineProperty(URL, 'createObjectURL', {
+    value: vi.fn(() => 'blob:mock-photo'),
+    configurable: true,
+  });
+  Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), configurable: true });
+}
 
 const CARD: Marker = {
   id: '3f8c1e5a-9b2d-4c7e-8a1f-6d0b4e2c9a37',
@@ -109,6 +135,31 @@ const refusal = (code: string, message: string, status: number): Reply => ({
 });
 
 const noop = (): void => undefined;
+
+/**
+ * Hand the Measure screen a photograph, through its upload path.
+ *
+ * It takes its own now — measuring is a tool of its own rather than a step in
+ * the scan — so every test that gets as far as the corners has to supply one.
+ * The upload path rather than the shutter because it needs no camera grant,
+ * and the two converge one line later: both decode to a bitmap and re-encode
+ * through `toMeasuringFrame`, so what lands in `photo` is the same blob either
+ * way. That convergence is the point of the change this replaced — the screen
+ * used to take the camera app's own file, EXIF and all.
+ */
+async function takePhotoInto(container: HTMLElement): Promise<void> {
+  stubCapture();
+  const input = container.querySelector('input[type="file"]');
+  if (input === null) throw new Error('no file input on the Measure screen');
+  const file = new File(['photo'], 'tile.jpg', { type: 'image/jpeg' });
+  Object.defineProperty(input, 'files', { value: [file], configurable: true });
+  fireEvent.change(input);
+  // The decode and the encode are both promises, so the photograph is not in
+  // state when `change` returns.
+  await waitFor(() => {
+    expect(container.querySelector('img')).not.toBeNull();
+  });
+}
 
 
 
@@ -329,7 +380,6 @@ function dragCorner(from: [number, number], to: [number, number]): void {
   fireEvent.pointerUp(el, { pointerId: 1 });
 }
 
-const photo = (): Blob => new Blob(['photo'], { type: 'image/jpeg' });
 
 describe('measuring a tile', () => {
   /**
@@ -368,9 +418,8 @@ describe('measuring a tile', () => {
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
 
     // Four handles, from the proposal, without a single tap.
     await waitFor(() => {
@@ -394,9 +443,8 @@ describe('measuring a tile', () => {
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
     await waitForCorners(container);
 
     const shapes = [...container.querySelectorAll('polygon')].map((p) => p.getAttribute('points'));
@@ -414,9 +462,8 @@ describe('measuring a tile', () => {
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
     await waitForCorners(container);
 
     // 0.2–0.8 of the unit square, scaled by 1000 mm, is 600 × 600.
@@ -467,9 +514,8 @@ describe('measuring a tile', () => {
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
     await waitForCorners(container);
 
     // Tap the picture's own left edge. Against the picture that is x = 0;
@@ -494,9 +540,8 @@ describe('measuring a tile', () => {
       ],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
 
     await waitFor(() => {
       expect(container.querySelectorAll('span[style*="left"]').length).toBeGreaterThanOrEqual(4);
@@ -512,9 +557,8 @@ describe('measuring a tile', () => {
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
     await waitFor(() => {
       expect(container.querySelector('polygon')).toBeTruthy();
     });
@@ -539,8 +583,9 @@ describe('measuring a tile', () => {
     });
 
     const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={(size) => used.push(size)} onBack={noop} />,
+      <MeasureScreen onUseSize={(size) => used.push(size)} onBack={noop} />,
     );
+    await takePhotoInto(container);
     await waitForCorners(container);
 
     // **No press, and no second upload.** The homography came with the
@@ -572,9 +617,8 @@ describe('measuring a tile', () => {
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
     await waitForCorners(container);
 
     await waitFor(() => {
@@ -597,9 +641,8 @@ describe('measuring a tile', () => {
       'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
     await waitForCorners(container);
     expect(screen.queryByText(/do not measure as a rectangle/)).toBeNull();
 
@@ -625,9 +668,8 @@ describe('measuring a tile', () => {
       ],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
     await waitForCorners(container);
     fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
 
@@ -665,9 +707,8 @@ describe('measuring a tile', () => {
       ],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
     await waitForCorners(container);
     fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
 
@@ -693,73 +734,124 @@ describe('measuring a tile', () => {
       ],
     });
 
-    const { container } = render(
-      <MeasureScreen initialImage={photo()} onUseSize={noop} onBack={noop} />,
-    );
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await takePhotoInto(container);
     await waitForCorners(container);
     fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
 
     expect((await screen.findByRole('alert')).textContent).toContain('lie flat on the tile');
   });
 
-  it('asks for a photograph when there is no frame to inherit', async () => {
+  it('asks for its own photograph, with the marker in the centre', async () => {
     layOutTheCanvas();
     stubFetch({
       'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
       'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
     });
 
-    render(<MeasureScreen initialImage={null} onUseSize={noop} onBack={noop} />);
+    render(<MeasureScreen onUseSize={noop} onBack={noop} />);
     await screen.findByRole('option', { name: /Rocell marker card/ });
 
-    expect(screen.getByText(/Lay the marker flat on the tile/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Take a photo' })).toBeTruthy();
+    // **Its own photograph, and the marker in the centre.** Measuring is a
+    // tool of its own now, not a step in the scan — so the marker never
+    // reaches the matcher at all, and the centre is simply where the detector
+    // has the most margin and the tile's corners stay clear for dragging.
+    expect(screen.getByText(/Place the marker flat in the centre of the tile/)).toBeTruthy();
+    expect(screen.getByText('Choose a photo')).toBeTruthy();
     expect(screen.queryByRole('application', { name: /tile being measured/i })).toBeNull();
+  });
+
+  it('captures from the same viewfinder the scan uses, whole and not centre-cropped', async () => {
+    // **The same camera, and a different crop — which is the whole reason
+    // measuring has a shutter of its own.** `ScanScreen` submits the centre
+    // square, because that is all `shared/vision` can use. `api.measure`
+    // locates the marker's corners in the pixels it is handed and refuses a
+    // marker under 60 of them, and a centre square can crop the marker out of
+    // the frame altogether — so this one takes the frame whole.
+    layOutTheCanvas();
+    stubCapture();
+    const drawImage = vi.fn();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage,
+    } as unknown as CanvasRenderingContext2D);
+    const getUserMedia = vi.fn(() =>
+      Promise.resolve({ getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream),
+    );
+    Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia }, configurable: true });
+    Object.defineProperty(navigator, 'permissions', { value: {}, configurable: true });
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+    });
+
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await screen.findByRole('option', { name: /Rocell marker card/ });
+
+    fireEvent.click(screen.getByRole('button', { name: /enable camera/i }));
+    const video = await screen.findByTestId('measure-viewfinder-video');
+    // The same constraints `ScanScreen` asks for, because it is the same hook:
+    // a bare `facingMode` lets an engine pick 640x480, on which a marker
+    // filling a sixth of the frame is under the 60px floor.
+    expect(getUserMedia).toHaveBeenCalledWith({
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1920 } },
+      audio: false,
+    });
+    Object.defineProperty(video, 'videoWidth', { value: 1920, configurable: true });
+    Object.defineProperty(video, 'videoHeight', { value: 1080, configurable: true });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
+
+    await waitFor(() => {
+      expect(container.querySelector('img')).not.toBeNull();
+    });
+    // Five arguments, not nine: no source rectangle, so the whole 1920x1080
+    // frame was read at its own dimensions — under `MEASURE_MAX_EDGE`, so
+    // nothing is scaled away either. The scan's shutter passes
+    // `computeCentreSquare`'s rect and draws with nine.
+    expect(drawImage).toHaveBeenCalledTimes(1);
+    expect(drawImage.mock.calls[0]).toEqual([video, 0, 0, 1920, 1080]);
+  });
+
+  it('takes its photograph the way the scan does, and never as the camera app’s own file', async () => {
+    // **The bug this closes, stated as the thing it broke.** The screen used
+    // to be an `<input capture="environment">`, and the file a camera app
+    // hands back carries its EXIF orientation. A browser rotates by that tag;
+    // a server need not. So a photograph taken with the phone turned was
+    // upright on screen and on its side at `POST /scans/propose`, the marker
+    // outline drawn over it was a transposed square, and the tile proposal was
+    // made in a frame nobody was looking at. Nothing failed anywhere visible.
+    //
+    // Re-encoding through a canvas is what removes the disagreement: the
+    // rotation ends up in the pixels and there is no tag left to interpret.
+    // Asserting the decode's own flag is asserting exactly that, because
+    // `imageOrientation: 'from-image'` is the step that bakes it in.
+    layOutTheCanvas();
+    stubFetch({
+      'GET /api/scans/markers': [{ status: 200, body: [FIDUCIAL] }],
+      'GET /api/scans/sizes': [{ status: 200, body: ['60X30', '45X90'] }],
+      'POST /api/scans/propose': [{ status: 200, body: PROPOSAL }],
+    });
+
+    const { container } = render(<MeasureScreen onUseSize={noop} onBack={noop} />);
+    await screen.findByRole('option', { name: /Rocell marker card/ });
+
+    const input = container.querySelector('input[type="file"]');
+    expect(input?.getAttribute('capture')).toBeNull();
+
+    await takePhotoInto(container);
+
+    const decode = globalThis.createImageBitmap as unknown as ReturnType<typeof vi.fn>;
+    expect(decode).toHaveBeenCalledWith(expect.anything(), { imageOrientation: 'from-image' });
   });
 
   it('says so when nothing is registered to measure against', async () => {
     layOutTheCanvas();
     stubFetch({ 'GET /api/scans/markers': [{ status: 200, body: [] }] });
 
-    render(<MeasureScreen initialImage={null} onUseSize={noop} onBack={noop} />);
+    render(<MeasureScreen onUseSize={noop} onBack={noop} />);
 
     expect(await screen.findByText(/no markers are registered/i)).toBeTruthy();
-  });
-});
-
-describe('the door to Measure on the Results screen', () => {
-  const CANDIDATE = {
-    tile_id: '7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f',
-    code: 'RP.CMA.0001DJ.SM.0T',
-    size: '60X30',
-    category: 'CREMA MARMOL',
-    image_id: '8d2e3f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60',
-  };
-
-  it('is offered when a frame is held', () => {
-    // This is where the ambiguity a ruler resolves becomes visible: `45X90`
-    // and `60X30` are both 2:1, so candidates disagreeing about Size are the
-    // moment to reach for one.
-    const pressed: string[] = [];
-    render(
-      <ResultsScreen
-        candidates={[CANDIDATE]}
-        onBack={noop}
-        onMeasure={() => pressed.push('measure')}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /Measure the tile/ }));
-
-    expect(pressed).toEqual(['measure']);
-  });
-
-  it('is not offered when no frame is held', () => {
-    // `onAdjustCrop`'s own arrangement: a control that would measure nothing
-    // is not rendered rather than rendered and refused.
-    render(<ResultsScreen candidates={[CANDIDATE]} onBack={noop} />);
-
-    expect(screen.queryByRole('button', { name: /Measure the tile/ })).toBeNull();
   });
 });
 

@@ -209,30 +209,6 @@
   cursor: pointer;
 }
 
-/* Measure the tile — the door to marker measurement, beside Adjust crop and
- * styled exactly as it is. Secondary, never accent: Scan again is this
- * screen's one accent action, and DESIGN.md allows one per screen.
- *
- * It sits *here* rather than only on the Scan screen's failure prompt because
- * this is where the ambiguity it resolves is visible: three candidates that
- * disagree about Size is the moment a staff member has a reason to reach for a
- * ruler. */
-.measure {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  justify-content: center;
-  padding: var(--space-3) var(--space-5);
-  border: var(--border-hairline) solid var(--color-primary);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-primary);
-  font-size: var(--type-label-size);
-  font-weight: var(--type-label-weight);
-  line-height: var(--type-label-line);
-  cursor: pointer;
-}
-
 .buttonIcon {
   flex: none;
   width: var(--icon-size-sm);

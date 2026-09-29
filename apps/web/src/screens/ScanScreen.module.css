@@ -477,3 +477,53 @@
   font-weight: var(--type-caption-weight);
   line-height: var(--type-caption-line);
 }
+
+/* The tile-size tool, at the foot of the screen.
+ *
+ * A bordered block rather than a bare button: it is a separate feature that
+ * happens to live here, not another control on the capture, and the border is
+ * what says so. Secondary throughout — the shutter is this screen's one accent
+ * action, and DESIGN.md allows one per screen. */
+.measureField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  width: 100%;
+  max-width: var(--measure-form);
+  margin-inline: auto;
+  padding: var(--space-4);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.measureTitle {
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  color: var(--color-text);
+}
+
+.measureHint {
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  color: var(--color-muted-text);
+}
+
+.measureLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border: var(--border-hairline) solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  cursor: pointer;
+}

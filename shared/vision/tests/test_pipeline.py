@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import shared_vision
-from PIL import Image
+from PIL import Image, ImageCms
 from shared_vision import pipeline
 
 #: Only the tests that actually run the model. The charter block at the bottom
@@ -147,6 +147,36 @@ def test_load_image_applies_orientation_and_then_strips_every_byte_of_metadata(
     assert out.mode == "RGB"
     assert not dict(out.getexif())
     assert out.info.get("icc_profile") is None
+
+
+def test_load_image_applies_orientation_even_when_the_file_carries_a_colour_profile(
+    tmp_path: Path,
+) -> None:
+    # The test above saves no ICC profile, and for a long time that was the
+    # only orientation this module was tested at. It is not the one it meets:
+    # every phone photograph carries a profile, and the colour-managed path
+    # goes through `ImageCms.profileToProfile`, which returns an image built by
+    # `Image.new` -- empty `.info`, and the EXIF gone with it. Transposing after
+    # that read a tag that was no longer there, so a photograph taken with the
+    # phone turned came back on its side, with nothing anywhere to say so.
+    #
+    # It surfaced as marker measurement: the browser honours the same tag, so
+    # the outline drawn over an upright photo was a transposed square, narrow
+    # and tall, and every normalized corner the server returned addressed a
+    # frame nobody was looking at.
+    path = tmp_path / "phone_photo.jpg"
+    img = Image.new("RGB", (400, 300), (200, 150, 100))
+    exif = Image.Exif()
+    exif[274] = 6  # Orientation: rotate 90 CW on display
+    img.save(
+        path,
+        exif=exif,
+        icc_profile=ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes(),
+    )
+
+    out = pipeline.load_image(path)
+
+    assert out.size == (300, 400)
 
 
 def test_load_image_refuses_a_zero_byte_file(tmp_path: Path) -> None:

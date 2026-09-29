@@ -79,6 +79,47 @@ _OPENCV_DICTIONARIES: Final[dict[ArucoDictionary, int]] = {
 }
 
 
+#: The widest adaptive-threshold window the detector may use, in pixels.
+#:
+#: **OpenCV's default of 23 is far too small for this product's photographs,
+#: and the failure is total rather than gradual.** The detector separates a
+#: marker from its surroundings by thresholding within a moving window; a
+#: window much smaller than the marker sees only marker, or only background,
+#: and never the edge between them. A staff member photographs a ~100mm card
+#: on a tile from about a metre with a 3024px camera, which puts the marker at
+#: roughly 300px — an order of magnitude beyond a 23px window.
+#:
+#: It goes unnoticed on a pale tile, where the marker's black stands clear of
+#: everything around it at any window size. It bites on a dark one: measured on
+#: a real showroom photograph of a dark wood-effect plank, the marker's black
+#: reads ~58 and the tile around it ~98, and at the default the marker is not
+#: found at all. At 103 it is found, and every photograph that already worked
+#: still works — `apps/api/tests/test_marker_measurement.py` holds both halves.
+#:
+#: The cost is about 100ms on a 12 Mpixel frame, because each window size is a
+#: pass over the image. That is why this is a ceiling rather than a single
+#: large window: the small ones still catch the easy cases first.
+ADAPTIVE_THRESHOLD_MAX_WINDOW: Final = 103
+
+#: How far apart the window sizes are. Four passes at 3, 23, 43, 63, 83, 103
+#: rather than the default's three — wide enough to reach the ceiling above
+#: without making detection a linear scan of every odd number in between.
+ADAPTIVE_THRESHOLD_WINDOW_STEP: Final = 20
+
+
+def _detector_parameters() -> cv2.aruco.DetectorParameters:
+    """Detection tuned for a printed card photographed at arm's length.
+
+    Everything else is left at OpenCV's defaults deliberately: they are tuned
+    against a wide corpus, and this product has one measured reason to depart
+    from them — see `ADAPTIVE_THRESHOLD_MAX_WINDOW`.
+    """
+    parameters = cv2.aruco.DetectorParameters()
+    parameters.adaptiveThreshWinSizeMax = ADAPTIVE_THRESHOLD_MAX_WINDOW
+    parameters.adaptiveThreshWinSizeStep = ADAPTIVE_THRESHOLD_WINDOW_STEP
+    return parameters
+
+
 class MeasurementRefused(ValueError):
     """A measurement that could not be trusted. Never a silently wrong number.
 
@@ -129,7 +170,7 @@ def detect_marker(
     grey = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     detector = cv2.aruco.ArucoDetector(
         cv2.aruco.getPredefinedDictionary(_OPENCV_DICTIONARIES[dictionary]),
-        cv2.aruco.DetectorParameters(),
+        _detector_parameters(),
     )
     corners, ids, _ = detector.detectMarkers(grey)
     if ids is None:
