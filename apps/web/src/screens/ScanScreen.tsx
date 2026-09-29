@@ -5,6 +5,7 @@ import type { ChangeEvent, JSX } from 'react';
 import { ApiRequestError, fetchScanSizes, UNKNOWN_SIZE } from '../api/client';
 import {
   computeCentreSquare,
+  MEASURE_MAX_EDGE,
   computeDownscaledDimensions,
   downscaleToBlob,
 } from '../scan/downscaleImage';
@@ -147,7 +148,7 @@ interface ScanScreenProps {
    * showing (which unmounts this screen); rejects with the `ApiRequestError`
    * the request produced, which this screen renders in place.
    */
-  onCaptured: (image: Blob) => Promise<void>;
+  onCaptured: (image: Blob, forMeasuring: Blob) => Promise<void>;
   /** Open the optional crop editor on the frame just captured. */
   onCrop: (image: Blob) => void;
   /**
@@ -158,8 +159,13 @@ interface ScanScreenProps {
    * the one attribute a photo cannot carry — `45X90` and `60X30` are both 2:1
    * rectangles, so neither the pattern nor its shape separates them — and a
    * marker of known size lying on the tile is what supplies it.
+   *
+   * **Takes no frame.** `App` already holds the measuring one — `onCaptured`
+   * handed it over at the shutter press, before the request, so it is there
+   * even when the scan that followed was refused. Passing a frame from here
+   * would offer a second answer to which photograph gets measured.
    */
-  onMeasure: (image: Blob) => void;
+  onMeasure: () => void;
   /**
    * The Size the next scan declares, or `null` for "All sizes".
    *
@@ -199,6 +205,26 @@ export function ScanScreen({
   /** The last frame submitted, kept for "Try again" and "Crop this photo". */
   const [lastImage, setLastImage] = useState<Blob | null>(null);
   /**
+   * The same frame, kept for **measuring** rather than matching.
+   *
+   * A second blob rather than reusing `lastImage`, because the two want
+   * opposite things from one photograph:
+   *
+   * * Matching wants the tile and nothing else, so the shutter takes the
+   *   centre square at full sensor resolution and spends a ~1024px budget on
+   *   it. `shared/vision` resizes to 224 either way, so nothing is lost.
+   * * Measuring wants the **whole frame at as many pixels as the server can
+   *   use**. The marker is laid beside the pattern, so a centre-square crop
+   *   can cut it out entirely — and `api.measure` refuses a marker under 60px
+   *   because below that one pixel of corner error outweighs the gap between
+   *   two catalogue Sizes. At the matching budget a card filling a fifth of
+   *   the frame is already marginal; cropped first, it is gone.
+   *
+   * So this one is uncropped and capped at `MEASURE_MAX_EDGE`. `null` until a
+   * frame has been taken, and never used for a submission.
+   */
+  const [measureImage, setMeasureImage] = useState<Blob | null>(null);
+  /**
    * The Sizes this catalogue can be asked about, commonest first.
    *
    * Empty until the read resolves, and empty for good on a catalogue that has
@@ -237,7 +263,30 @@ export function ScanScreen({
     requestingRef.current = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
+        // **A resolution is asked for, and that is not a refinement.** A bare
+        // `facingMode` constraint lets the engine pick, and several pick
+        // 640x480 — on which the shutter's centre square is 480x480, a marker
+        // filling a sixth of the frame is ~77px, and `api.measure` refuses it
+        // under 60. That is the "marker is too small" a real showroom photo
+        // hits while the same tile measures fine from a gallery file, which
+        // carries the sensor's own resolution.
+        //
+        // `ideal` rather than `min`, so a device that cannot reach it still
+        // opens the viewfinder rather than failing the whole request — the
+        // one thing worse than a low-resolution scan is no camera at all.
+        // Both axes carry the same number because a phone held upright
+        // reports the stream portrait, and asking for a landscape shape would
+        // have the engine pick the closest mode to the wrong aspect.
+        //
+        // Matching is unaffected in every way but sharpness: the centre
+        // square is still taken at the sensor's resolution and still spends
+        // the same ~1024px budget, so nothing about `shared/vision` or the
+        // index changes — the pixels going into it are simply better.
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1920 },
+          height: { ideal: 1920 },
+        },
         audio: false,
       });
       if (!mountedRef.current) {
@@ -363,12 +412,18 @@ export function ScanScreen({
       });
   }
 
-  async function submit(image: Blob): Promise<void> {
+  async function submit(image: Blob, forMeasuring: Blob): Promise<void> {
     setLastImage(image);
+    setMeasureImage(forMeasuring);
     setFileError(null);
     setSubmitting(true);
     try {
-      await onCaptured(image);
+      // Both frames, so `App` can hand the measuring one to Measure from
+      // Results. Passed as an argument rather than read from `measureImage`:
+      // the caller has just set that state and a `useState` write is not
+      // visible to this closure until the next render, so reading it here
+      // would send the *previous* photo — or `null` on the first capture.
+      await onCaptured(image, forMeasuring);
     } catch (failure) {
       if (failure instanceof ApiRequestError && failure.code === UNKNOWN_SIZE) {
         forgetStaleSize();
@@ -390,6 +445,7 @@ export function ScanScreen({
     setFileError(null);
     setCapturing(true);
     let blob: Blob;
+    let measuring: Blob;
     try {
       // The POC's capture: the centre square of the camera's short edge, read
       // straight from the frame's own dimensions rather than from a measured
@@ -398,13 +454,23 @@ export function ScanScreen({
       const captured = computeCentreSquare(video.videoWidth, video.videoHeight);
       const { width, height } = computeDownscaledDimensions(captured.width, captured.height);
       blob = await downscaleToBlob(video, width, height, captured);
+      // The measuring frame, from the *same* shutter press: whole frame, no
+      // centre-square crop, and the server's own decode cap rather than the
+      // matching budget. Encoded here because the video frame is gone by the
+      // time Measure is pressed — there is nothing to go back to.
+      const whole = computeDownscaledDimensions(
+        video.videoWidth,
+        video.videoHeight,
+        MEASURE_MAX_EDGE,
+      );
+      measuring = await downscaleToBlob(video, whole.width, whole.height);
     } catch {
       setFileError(PROCESS_FAILURE);
       return;
     } finally {
       setCapturing(false);
     }
-    await submit(blob);
+    await submit(blob, measuring);
   }
 
   async function chooseFile(event: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -429,16 +495,23 @@ export function ScanScreen({
       return;
     }
     let blob: Blob;
+    let measuring: Blob;
     try {
       const { width, height } = computeDownscaledDimensions(bitmap.width, bitmap.height);
       blob = await downscaleToBlob(bitmap, width, height);
+      // As above, and before the `finally` closes the bitmap. This path never
+      // crops, so the only difference from the matching frame is the cap —
+      // which is the whole of why a marker is found in a chosen photo and was
+      // not in a captured one.
+      const whole = computeDownscaledDimensions(bitmap.width, bitmap.height, MEASURE_MAX_EDGE);
+      measuring = await downscaleToBlob(bitmap, whole.width, whole.height);
     } catch {
       setFileError(PROCESS_FAILURE);
       return;
     } finally {
       bitmap.close();
     }
-    await submit(blob);
+    await submit(blob, measuring);
   }
 
   /** Put the viewfinder back: a message that has been read is in the way. */
@@ -579,7 +652,7 @@ export function ScanScreen({
                   className={styles.secondary}
                   type="button"
                   disabled={submitting}
-                  onClick={() => void submit(lastImage)}
+                  onClick={() => void submit(lastImage, measureImage ?? lastImage)}
                 >
                   <ArrowsClockwise className={styles.secondaryIcon} aria-hidden="true" />
                   Try again
@@ -595,7 +668,7 @@ export function ScanScreen({
                 <button
                   className={styles.secondary}
                   type="button"
-                  onClick={() => onMeasure(lastImage)}
+                  onClick={onMeasure}
                 >
                   <Ruler className={styles.secondaryIcon} aria-hidden="true" />
                   Measure the tile

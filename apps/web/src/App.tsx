@@ -188,6 +188,7 @@ function currentScreen(
   candidates: ScanCandidate[] | null,
   editingMarker: Marker | null,
   addingMarker: boolean,
+  measureFrame: Blob | null,
 ): Screen {
   if (status === 'loading') return 'loading';
   if (status === 'signed-out' || user === null) return 'login';
@@ -263,11 +264,12 @@ function currentScreen(
     return editingMarker === null && !addingMarker ? 'markers' : 'marker-form';
   }
   if (section === 'measure') {
-    // `'crop'`'s own precondition, for its reason: `showMeasure` sets the
-    // image and the section in one render, so this branch with nothing
-    // captured means a stale section outlived the photo it belonged to — and a
-    // screen with nothing to measure answers the surface that produces one.
-    return capturedImage === null ? 'scan' : 'measure';
+    // `'crop'`'s own precondition, for its reason — but read off
+    // `measureFrame` rather than `capturedImage`, because those are two
+    // different photographs of one shutter press and only this one has the
+    // pixels a marker needs. A stale section with no frame behind it answers
+    // the surface that produces one.
+    return measureFrame === null ? 'scan' : 'measure';
   }
   if (section === 'create-user') return reachableBy(section, user.role) ? 'create-user' : 'shell';
   if (section === 'edit-user') {
@@ -355,6 +357,21 @@ function Gate(): JSX.Element {
    * those are one scan's data and stale after it, while this is a standing
    * declaration about the tiles in front of the person holding the phone.
    */
+  /**
+   * The frame kept for **measuring**, as `ScanScreen` produced it.
+   *
+   * `capturedImage`'s twin, and a second blob for the reason that screen
+   * states: matching takes the centre square at a ~1024px budget, which is
+   * everything the embedding can use and not nearly enough for a marker. The
+   * measuring frame is the whole photograph at the server's own decode cap,
+   * and it is what Measure uploads — reached from Results as well as from the
+   * Scan prompt, so it has to outlive the screen that made it.
+   *
+   * Cleared by `showSection` alongside `capturedImage`, for its reason: a
+   * later Measure must never open on a photograph from a scan the user has
+   * already left.
+   */
+  const [measureFrame, setMeasureFrame] = useState<Blob | null>(null);
   const [declaredSize, setDeclaredSize] = useState<string | null>(null);
   /**
    * Which surface opened the crop editor. `'results'` keeps the candidates
@@ -511,6 +528,7 @@ function Gate(): JSX.Element {
       // is what keeps a future role-gated surface from inheriting a gap
       // instead of the fix.
       setCapturedImage(null);
+      setMeasureFrame(null);
       setCandidates(null);
       // The Marker selections go with the account rows above, for their
       // reason: a demotion is the moment the Markers register stops being
@@ -537,6 +555,7 @@ function Gate(): JSX.Element {
     candidates,
     editingMarker,
     addingMarker,
+    measureFrame,
   );
   const previous = useRef<Screen>('loading');
 
@@ -663,6 +682,7 @@ function Gate(): JSX.Element {
     // already left — which on this surface would be Crop opening on somebody
     // else's photo taken minutes ago.
     setCapturedImage(null);
+    setMeasureFrame(null);
     // The match belongs to Results and to nothing else, the same reason one
     // step further along: a later `'results'` section can never render a
     // scan's Candidates after the user has already left them.
@@ -722,21 +742,24 @@ function Gate(): JSX.Element {
     setSection('crop');
   }
 
-  function showMeasure(image: Blob): void {
-    // The image first, then the section — `showCrop`'s reason, unchanged:
-    // `currentScreen` reads both, and setting the section first would give it
-    // one render with `'measure'` and nothing captured, which it answers with
-    // Scan, so the screen would flicker straight back.
+  function showMeasure(): void {
+    // **Sets no image.** `measureFrame` is already held — `onCaptured` put it
+    // there at the shutter press — so unlike `showCrop` there is nothing to
+    // set first and no render in which the section outruns its subject.
+    //
+    // **And it must not touch `capturedImage`.** That is the centre-square
+    // matching frame, and it is what "Adjust crop" on Results crops. Writing
+    // the measuring frame over it would leave the crop editor operating on a
+    // different photograph than the one that produced the candidates on
+    // screen — the same pixels, framed differently, with nothing saying so.
     setSignOutError(null);
     setEditing(null);
     setEditingTile(null);
     setEditingMarker(null);
     setAddingMarker(false);
-    // **The candidates stay.** Measuring is a detour taken *from* a scan that
-    // has already answered, and Back returns to the viewfinder with the size
-    // picker pre-filled — throwing the match away would make measuring cost
-    // the result that prompted it.
-    setCapturedImage(image);
+    // **The candidates and the match frame both stay.** Measuring is a detour
+    // taken *from* a result, and Back returns to it — throwing either away
+    // would make measuring cost the answer that prompted it.
     setSection('measure');
   }
 
@@ -834,12 +857,18 @@ function Gate(): JSX.Element {
           // request and `showResults` lands once it resolves. A rejection
           // propagates back to `ScanScreen`, which renders it beside a live
           // viewfinder — the retake is the shutter, and the crop is offered.
-          onCaptured={async (image) => {
+          onCaptured={async (image, forMeasuring) => {
+            // Held before the request, so a scan that then fails still leaves
+            // a frame good enough to measure — which is exactly the case the
+            // Scan prompt's "Measure the tile" exists for.
+            setMeasureFrame(forMeasuring);
             const result = await submitScan(image, FULL_FRAME, declaredSize);
             showResults(result, image);
           }}
           onCrop={(image) => showCrop(image, 'scan')}
-          onMeasure={(image) => showMeasure(image)}
+          // The frame is already held from the shutter press; this only
+          // asks for the surface.
+          onMeasure={() => showMeasure()}
           declaredSize={declaredSize}
           onDeclareSize={setDeclaredSize}
         />
@@ -915,7 +944,11 @@ function Gate(): JSX.Element {
           // 2:1, so candidates that disagree about Size are the moment a ruler
           // is worth reaching for. `showMeasure` keeps the candidates, so Back
           // returns to them.
-          onMeasure={capturedImage === null ? undefined : () => showMeasure(capturedImage)}
+          // **The measuring frame, never `capturedImage`.** That one is the
+          // centre square at the matching budget, and a marker laid beside
+          // the pattern is often cropped out of it entirely — and what
+          // survives is too few pixels for `api.measure`'s 60px floor.
+          onMeasure={measureFrame === null ? undefined : () => showMeasure()}
         />
       </AppShell>
     );
@@ -1107,17 +1140,17 @@ function Gate(): JSX.Element {
     );
   }
 
-  if (screen === 'measure' && capturedImage !== null) {
+  if (screen === 'measure' && measureFrame !== null) {
     // **The false branch is what is unreachable**: `currentScreen` already
-    // answers `'scan'` for a `'measure'` section with nothing captured, so
+    // answers `'scan'` for a `'measure'` section with no measuring frame, so
     // this condition never fails at runtime. It is written anyway because it
-    // is what narrows `capturedImage` for the prop below — removing it as
+    // is what narrows `measureFrame` for the prop below — removing it as
     // redundant breaks the build, exactly as on the `'crop'` branch.
     return (
       <AppShell {...frame('scan')}>
         {signOutFailure}
         <MeasureScreen
-          image={capturedImage}
+          image={measureFrame}
           // The measured Size lands in the picker the staff member is about to
           // submit with — a *suggestion*, which they can change or clear
           // before scanning (AD-19). Nothing here reaches `POST /scans`
