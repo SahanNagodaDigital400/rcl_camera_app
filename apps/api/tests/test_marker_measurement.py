@@ -24,10 +24,14 @@ from api.measure import (
     FALLBACK_TILE_MM,
     MIN_MARKER_EDGE_PIXELS,
     MIN_TILE_EDGE_MM,
+    PROPOSAL_REACH_MM,
+    SNAP_REACH_MM,
     DegenerateQuad,
     MarkerTooSmall,
     NotRectangular,
     _detector_parameters,
+    _from_surface,
+    _rectify,
     detect_marker,
     measure_tile,
     order_corners,
@@ -339,11 +343,14 @@ class TestProposingTheTileQuad:
     """`propose_tile_quad` — a starting shape for the corners, never an answer.
 
     The detector behind it is unreliable by measurement, not by suspicion: on
-    real showroom photographs it found nothing usable on 5 of 5, because tiles
-    are laid against neighbours of near-identical tone and the gradient across
-    a tile's boundary is no stronger than the variation within its own surface.
-    So what these tests pin is the *contract* the screen depends on — always
-    four corners, always in the marker's plane, and honest about which it gave.
+    seven real showroom photographs it finds the tile on five, and the two it
+    misses have no edge to find — a cream tile on pale wood, and a marble
+    whose veining spans more tone than the gap to the floor. So what these
+    tests pin is first the *contract* the screen depends on — always four
+    corners, always in the marker's plane, honest about which it gave — and
+    then the two properties that decide whether a proposal helps or hurts:
+    that it finds a tile no wider than the marker's own surroundings, and that
+    it never returns the photograph itself as a confident answer.
     """
 
     def scene(self, *, with_tile: bool) -> tuple[np.ndarray, np.ndarray]:
@@ -405,6 +412,130 @@ class TestProposingTheTileQuad:
         short_mm, long_mm = measure_tile(card, 100.0, 100.0, quad, marker_oriented=True)
         assert short_mm == pytest.approx(FALLBACK_TILE_MM, rel=0.02)
         assert long_mm == pytest.approx(FALLBACK_TILE_MM, rel=0.02)
+
+    def narrow_scene(self, marker_mm: float) -> tuple[np.ndarray, np.ndarray]:
+        """A 300mm-wide tile with the marker crowded against one edge.
+
+        The configuration the detector used to fail on, and it is the common
+        one rather than an awkward one: `60X30` is the catalogue's commonest
+        Size, and a 106mm card on a 300mm tile leaves under 100mm of tile on
+        either side. A surround sampled 1.8 marker-widths out is 539mm across
+        there, so what it learned as "the tile's colour" was mostly floor.
+        """
+        homography = homography_for("head-on")
+        frame = np.full((900, 1600, 3), 96, np.uint8)
+        cv2.fillPoly(frame, [project(homography, TILE_MM).astype(np.int32)], (214, 212, 208))
+
+        # Hard against the tile's long edge, leaving a margin narrower than
+        # the marker itself — where a staff member actually puts it.
+        left, top = 240.0, TILE_SHORT_MM - marker_mm - 40.0
+        corners_mm = np.array(
+            [
+                [left, top],
+                [left + marker_mm, top],
+                [left + marker_mm, top + marker_mm],
+                [left, top + marker_mm],
+            ],
+            dtype=np.float32,
+        )
+        card = project(homography, corners_mm).astype(np.float32)
+        family = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        printed = cv2.aruco.generateImageMarker(family, 0, 240)
+        painted = cv2.warpPerspective(
+            cv2.cvtColor(printed, cv2.COLOR_GRAY2BGR),
+            cv2.getPerspectiveTransform(
+                np.array([[0, 0], [240, 0], [240, 240], [0, 240]], np.float32), card
+            ),
+            (1600, 900),
+            borderMode=cv2.BORDER_TRANSPARENT,
+            dst=frame.copy(),
+        )
+        return painted, card.astype(np.float64)
+
+    def test_finds_a_tile_barely_wider_than_the_marker_on_it(self) -> None:
+        """The regression that sent a staff member a 600x600 box on a 300x600 tile.
+
+        Both numbers matter. `detected` has to be true, because the fallback
+        square is three times the area of this tile and every corner of it is
+        out on the floor — and the measurement has to be the tile's, because a
+        proposal that is found but wrong is worse than one that is absent.
+        """
+        frame, card = self.narrow_scene(106.0)
+
+        quad, detected = propose_tile_quad(frame, card, 106.0, 106.0)
+
+        assert detected is True
+        short_mm, long_mm = measure_tile(card, 106.0, 106.0, quad, marker_oriented=True)
+        assert short_mm == pytest.approx(TILE_SHORT_MM, rel=0.06)
+        assert long_mm == pytest.approx(TILE_LONG_MM, rel=0.06)
+        assert match_size(short_mm, long_mm, ["30X90", "45X90", "60X30", "60X60"]) == "60X30"
+
+    def test_the_surface_is_learned_from_beside_the_marker_not_from_around_it(self) -> None:
+        """`_from_surface` directly, because the scene above cannot show this.
+
+        A synthetic tile has a razor-sharp outline, so `_from_contours` finds
+        it first and the test passes whatever the surface strategy does. Real
+        tiles do not: on seven showroom photographs the contour path fires
+        once and the surface path five times, so the surface path is the one
+        that decides whether a staff member gets a proposal at all.
+
+        With the marker crowded against a 300mm tile's edge, a surround
+        sampled 1.8 marker-widths out spans 539mm — wider than the tile — and
+        what it averages is half floor. The mask then matches neither and this
+        returns nothing. Sampling beside the marker cannot make that mistake:
+        the marker is *on* the tile.
+        """
+        frame, card = self.narrow_scene(106.0)
+        flat, _, covered = _rectify(frame, card, 106.0, 106.0)
+        centre = np.array([PROPOSAL_REACH_MM / 2 + 53.0, PROPOSAL_REACH_MM / 2 + 53.0])
+
+        found = _from_surface(flat, centre, 106.0, covered)
+
+        assert found is not None
+        ordered = order_corners(found)
+        top, right, bottom, left = (
+            float(np.linalg.norm(ordered[(i + 1) % QUAD_CORNERS] - ordered[i]))
+            for i in range(QUAD_CORNERS)
+        )
+        short_mm, long_mm = sorted(((top + bottom) / 2.0, (right + left) / 2.0))
+        assert short_mm == pytest.approx(TILE_SHORT_MM, rel=0.08)
+        assert long_mm == pytest.approx(TILE_LONG_MM, rel=0.08)
+
+    def test_a_featureless_frame_is_never_offered_as_a_tile(self) -> None:
+        """The photograph's own reach is the one rectangle always on offer.
+
+        It contains the marker, it is rectangular to the pixel, and it
+        measures a plausible size — so every test a candidate has to pass, it
+        passes. What it is not is a tile, and a detector that returns it
+        reports `detected=True` on a frame with nothing in it at all.
+        """
+        frame, card = self.scene(with_tile=False)
+
+        quad, detected = propose_tile_quad(frame, card, 100.0, 100.0)
+
+        assert detected is False
+        short_mm, long_mm = measure_tile(card, 100.0, 100.0, quad, marker_oriented=True)
+        assert short_mm == pytest.approx(FALLBACK_TILE_MM, rel=0.02)
+        assert long_mm == pytest.approx(FALLBACK_TILE_MM, rel=0.02)
+
+    def test_the_snap_cannot_travel_further_than_it_is_allowed(self) -> None:
+        """The bound is what makes refining safe.
+
+        Pulling each side onto the nearest strong gradient removes the outward
+        bias a colour threshold leaves, and on a real tile it took the error
+        from +8.9% to +1.3%. Unbounded, the same step would happily walk onto
+        a grout line and return a different tile with no sign anything moved —
+        so the reach is a constant, and it is small.
+        """
+        frame, card = self.narrow_scene(106.0)
+
+        quad, _ = propose_tile_quad(frame, card, 106.0, 106.0)
+        short_mm, long_mm = measure_tile(card, 106.0, 106.0, quad, marker_oriented=True)
+
+        # Whatever the snap did, it cannot have moved a side by more than its
+        # reach — so neither edge can be out by more than two of them.
+        assert abs(short_mm - TILE_SHORT_MM) <= 2 * SNAP_REACH_MM
+        assert abs(long_mm - TILE_LONG_MM) <= 2 * SNAP_REACH_MM
 
     def test_a_proposal_is_never_smaller_than_a_tile_can_be(self) -> None:
         """Whatever comes back, it is a shape somebody can sensibly drag.

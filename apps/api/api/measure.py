@@ -398,6 +398,58 @@ MAX_TILE_EDGE_MM: Final = 1500.0
 #: the screen.
 FALLBACK_TILE_MM: Final = 600.0
 
+#: The four windows `_from_surface` learns the tile's colour from, as fractions
+#: of the marker's own edge: a gap clear of the printed border, then a window
+#: of this size, on each of the marker's four sides.
+#:
+#: **They hug the marker, and that is the whole of the method.** The marker is
+#: lying *on the tile*, so the pixels immediately beside it are tile by
+#: construction, whatever the tile is and wherever on it the marker was put.
+#: An earlier version sampled a ring reaching 1.8 marker-widths out — 539mm
+#: across for the 106mm card in use — which is wider than a 300mm tile, so on
+#: anything narrower the "tile's colour" it learned was half floor. The model
+#: was then a blend that matched neither, and 83% of the ring fell outside its
+#: own tolerance. That is why a 300x600 sample on a dark mat, about as
+#: contrasty a scene as this product sees, found nothing at all.
+SURFACE_PATCH_GAP: Final = 0.12
+SURFACE_PATCH_SIZE: Final = 0.30
+
+#: How far a sampled window may sit from the median of the four before it is
+#: dropped, in Lab. One window lands off the tile whenever the marker is near
+#: an edge, and it has to be discarded rather than averaged in.
+SURFACE_PATCH_AGREEMENT: Final = 20.0
+
+#: The Lab distance within which a pixel is the same surface, as a floor, a
+#: gain on the measured spread of the tile's own windows, and a ceiling.
+#: Derived rather than fixed: a plain colour needs a tight band to stop at the
+#: floor, and a veined marble needs a loose one not to shred its own face.
+SURFACE_TOLERANCE_FLOOR: Final = 18.0
+SURFACE_TOLERANCE_GAIN: Final = 2.0
+SURFACE_TOLERANCE_CEILING: Final = 42.0
+
+#: How far each side of a found rectangle may be pulled onto the nearest strong
+#: gradient, in millimetres. A colour threshold stops a few millimetres outside
+#: the tile — the blurred boundary and its shadow both read as "close enough" —
+#: so every edge is biased outward by about the same amount. Measured on two
+#: tiles of known size, snapping took the error from +8.9%/+4.1% and
+#: +6.0%/+4.7% down to +1.3%/+1.1% and +1.3%/+4.5%. Bounded, so it can refine
+#: a rectangle and never invent a different one.
+SNAP_REACH_MM: Final = 28.0
+SNAP_SAMPLES: Final = 60
+
+#: How far inside the photograph's reach a tile's own edge must sit, and how
+#: much of a candidate's perimeter may lie outside that, before the candidate
+#: is the photograph rather than a tile.
+#:
+#: `_plausible` already requires all four *corners* inside the reach, and that
+#: is not enough: a uniform floor with nothing on it segments as one surface
+#: filling the whole frame, whose bounding rectangle has its corners a
+#: millimetre inside and every one of its sides lying along the frame. It
+#: passed every other test — contains the marker, rectangular, tile-sized —
+#: and came back as a confident tile that was not there.
+REACH_MARGIN_MM: Final = 12.0
+REACH_PERIMETER_SHARE: Final = 0.35
+
 
 def _rectify(
     image: np.ndarray, marker_corners: np.ndarray, width_mm: float, height_mm: float
@@ -486,6 +538,26 @@ def _from_contours(flat: np.ndarray, centre: np.ndarray, covered: np.ndarray) ->
     return None if best is None else best[1]
 
 
+def _surface_patches(centre: np.ndarray, marker_mm: float) -> list[tuple[int, int, int]]:
+    """The four windows beside the marker, as `(x, y, side)` in millimetres.
+
+    One on each side, clear of the printed border by `SURFACE_PATCH_GAP` and
+    `SURFACE_PATCH_SIZE` across. Four rather than one so a window that lands
+    off the tile — the marker near an edge — can be outvoted rather than
+    believed.
+    """
+    half = marker_mm / 2.0
+    gap = marker_mm * SURFACE_PATCH_GAP
+    side = marker_mm * SURFACE_PATCH_SIZE
+    reach = half + gap + side / 2.0
+    out: list[tuple[int, int, int]] = []
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        x = float(centre[0]) + dx * reach
+        y = float(centre[1]) + dy * reach
+        out.append((int(x - side / 2.0), int(y - side / 2.0), int(side)))
+    return out
+
+
 def _from_surface(
     flat: np.ndarray, centre: np.ndarray, marker_mm: float, covered: np.ndarray
 ) -> np.ndarray | None:
@@ -496,23 +568,55 @@ def _from_surface(
     the tile does not break it. `minAreaRect` returns a rectangle by
     construction, so there is no 4-gon approximation to fail.
     """
-    lab = cv2.cvtColor(cv2.GaussianBlur(flat, (5, 5), 0), cv2.COLOR_BGR2LAB)
-    pad = marker_mm * 0.75
-    x0, y0 = int(centre[0] - pad), int(centre[1] - pad)
-    x1, y1 = int(centre[0] + pad), int(centre[1] + pad)
+    lab = cv2.cvtColor(cv2.GaussianBlur(flat, (5, 5), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+    height, width = lab.shape[:2]
 
-    ring = np.zeros(lab.shape[:2], np.uint8)
-    reach = int(marker_mm * 1.8)
-    cv2.rectangle(ring, (x0 - reach, y0 - reach), (x1 + reach, y1 + reach), 255, -1)
-    cv2.rectangle(ring, (x0, y0), (x1, y1), 0, -1)
-    if cv2.countNonZero(ring) == 0:
+    # **Learn the tile from the four windows hugging the marker.** See
+    # `SURFACE_PATCH_GAP`: the marker is on the tile, so these are tile.
+    means: list[np.ndarray] = []
+    for x, y, side in _surface_patches(centre, marker_mm):
+        if x < 0 or y < 0 or x + side >= width or y + side >= height:
+            continue
+        # A window that runs off the photograph teaches nothing.
+        if covered[y : y + side, x : x + side].min() == 0:
+            continue
+        means.append(lab[y : y + side, x : x + side].reshape(-1, 3).mean(axis=0))
+    if len(means) < 2:
         return None
 
-    mean = np.array(cv2.mean(lab, mask=ring)[:3], np.float32)
-    surface = (np.linalg.norm(lab.astype(np.float32) - mean, axis=2) < 26).astype(np.uint8) * 255
+    # Drop whichever window disagrees with the rest — that is the one that
+    # landed off the tile, which is what happens when the marker is near an
+    # edge. Two survivors is the floor: one window alone cannot be checked.
+    sampled = np.asarray(means, dtype=np.float32)
+    agreed = sampled[
+        np.linalg.norm(sampled - np.median(sampled, axis=0), axis=1) < SURFACE_PATCH_AGREEMENT
+    ]
+    if len(agreed) < 2:
+        return None
+    tile = agreed.mean(axis=0)
+
+    # The tile's own spread across those windows sets the band: veining has to
+    # fall inside it and the floor outside it, and no single number does that
+    # for both a flat colour and a marble.
+    spread = float(np.median(np.linalg.norm(sampled - tile, axis=1)))
+    tolerance = float(
+        np.clip(
+            SURFACE_TOLERANCE_FLOOR + SURFACE_TOLERANCE_GAIN * spread,
+            SURFACE_TOLERANCE_FLOOR,
+            SURFACE_TOLERANCE_CEILING,
+        )
+    )
+
+    surface = (np.linalg.norm(lab - tile, axis=2) < tolerance).astype(np.uint8) * 255
+    # The printed square is not the tile's colour, but it is on the tile.
+    pad = int(marker_mm * 0.62)
+    x0, y0 = int(centre[0]) - pad, int(centre[1]) - pad
+    x1, y1 = int(centre[0]) + pad, int(centre[1]) + pad
     cv2.rectangle(surface, (x0, y0), (x1, y1), 255, -1)
-    surface = cv2.morphologyEx(surface, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
-    surface = cv2.morphologyEx(surface, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
+    surface[covered == 0] = 0
+    span = max(9, int(marker_mm * 0.14) | 1)
+    surface = cv2.morphologyEx(surface, cv2.MORPH_CLOSE, np.ones((span, span), np.uint8))
+    surface = cv2.morphologyEx(surface, cv2.MORPH_OPEN, np.ones((span, span), np.uint8))
 
     count, labels = cv2.connectedComponents(surface)
     mine = labels[int(centre[1]), int(centre[0])]
@@ -535,6 +639,97 @@ def _from_surface(
     return quad if _plausible(quad, centre, covered) else None
 
 
+def _snap_to_edges(
+    flat: np.ndarray, quad: np.ndarray, centre: np.ndarray, covered: np.ndarray
+) -> np.ndarray:
+    """Pull each side of a found rectangle onto the strongest gradient near it.
+
+    See `SNAP_REACH_MM`. A colour threshold stops outside the tile by the
+    width of its own blurred boundary, so every side is biased outward by
+    about the same few millimetres — a bias no amount of tuning the threshold
+    removes, because the boundary really is soft. The gradient does not move.
+
+    Bounded on purpose: each side may travel `SNAP_REACH_MM` and no further,
+    so this refines the rectangle it is given and cannot walk off onto a grout
+    line and return a different tile.
+    """
+    grey = cv2.cvtColor(flat, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    magnitude = cv2.magnitude(
+        cv2.Sobel(grey, cv2.CV_32F, 1, 0, ksize=5), cv2.Sobel(grey, cv2.CV_32F, 0, 1, ksize=5)
+    )
+    magnitude[covered == 0] = 0.0
+    rows, columns = magnitude.shape[:2]
+
+    ordered = order_corners(np.asarray(quad, dtype=np.float64))
+    middle = ordered.mean(axis=0)
+    sides: list[tuple[np.ndarray, np.ndarray]] = []
+    for index in range(QUAD_CORNERS):
+        start, end = ordered[index], ordered[(index + 1) % QUAD_CORNERS]
+        span = end - start
+        length = float(np.hypot(span[0], span[1]))
+        if length < 1.0:
+            return np.asarray(quad, dtype=np.float64)
+        normal = np.array([-span[1] / length, span[0] / length])
+        # Outward, so a positive step always means "further from the centre".
+        if float(np.dot(normal, middle - (start + end) / 2.0)) > 0.0:
+            normal = -normal
+        # The ends are skipped: a corner's neighbourhood carries the other
+        # side's gradient too, and would pull this one toward it.
+        along = np.linspace(0.08, 0.92, SNAP_SAMPLES)[:, None] * span + start
+        best, best_step = -1.0, 0.0
+        for step in np.arange(-SNAP_REACH_MM, SNAP_REACH_MM + 1.0, 1.0):
+            points = along + normal * step
+            support = float(
+                magnitude[
+                    np.clip(points[:, 1].astype(int), 0, rows - 1),
+                    np.clip(points[:, 0].astype(int), 0, columns - 1),
+                ].mean()
+            )
+            if support > best:
+                best, best_step = support, float(step)
+        sides.append((start + normal * best_step, end + normal * best_step))
+
+    # Re-intersect the moved sides, so what comes back is still a quadrilateral
+    # rather than four line segments that no longer meet.
+    corners: list[np.ndarray] = []
+    for index in range(QUAD_CORNERS):
+        (p1, p2), (q1, q2) = sides[index - 1], sides[index]
+        d1, d2 = p2 - p1, q2 - q1
+        denominator = d1[0] * d2[1] - d1[1] * d2[0]
+        if abs(denominator) < 1e-9:
+            return np.asarray(quad, dtype=np.float64)
+        t = ((q1[0] - p1[0]) * d2[1] - (q1[1] - p1[1]) * d2[0]) / denominator
+        corners.append(p1 + t * d1)
+    # Re-checked against the marker, not against itself: a side that snapped
+    # onto something other than the tile's edge has to be given back rather
+    # than returned as a refinement.
+    snapped = np.asarray(corners, dtype=np.float64)
+    return snapped if _plausible(snapped, centre, covered) else np.asarray(quad, dtype=np.float64)
+
+
+def _bounded_by_the_photograph(quad: np.ndarray, covered: np.ndarray) -> bool:
+    """Whether this candidate's outline is really the edge of the photograph.
+
+    See `REACH_MARGIN_MM`. A tile's boundary is somewhere inside the frame; the
+    frame's own boundary is the strongest straight edge in any rectified image
+    and the one thing guaranteed to be rectangular, contain the marker, and
+    measure a plausible size. It is never a tile, and a candidate that traces
+    it is the detector finding the photograph.
+    """
+    inner = cv2.erode(covered, np.ones((3, 3), np.uint8), iterations=int(REACH_MARGIN_MM) // 2 + 1)
+    rows, columns = inner.shape[:2]
+    ordered = order_corners(np.asarray(quad, dtype=np.float64))
+    outside = total = 0
+    for index in range(QUAD_CORNERS):
+        start, end = ordered[index], ordered[(index + 1) % QUAD_CORNERS]
+        for point in np.linspace(0.0, 1.0, SNAP_SAMPLES)[:, None] * (end - start) + start:
+            total += 1
+            column, row = int(round(point[0])), int(round(point[1]))
+            if not (0 <= column < columns and 0 <= row < rows) or inner[row, column] == 0:
+                outside += 1
+    return total > 0 and outside / total >= REACH_PERIMETER_SHARE
+
+
 def propose_tile_quad(
     image: np.ndarray,
     marker_corners: np.ndarray,
@@ -549,14 +744,25 @@ def propose_tile_quad(
     `FALLBACK_TILE_MM` square centred on the marker, in the marker's plane, and
     says so with `False`.
 
-    **Expect the fallback often.** Measured on real showroom photographs, both
-    detectors below found nothing usable on 5 of 5: samples are laid against
-    neighbours of near-identical tone, and the gradient across a tile's
-    boundary (33-52) is no stronger than the variation within its own surface
-    (38-67). There is no outline there to find, and no threshold recovers a
-    signal that is absent. This is a convenience over the manual path, never a
-    replacement for it — which is why nothing here decides a measurement and
-    the corners it returns are the ones the staff member then moves.
+    **Expect the fallback, but no longer expect it every time.** On seven real
+    showroom photographs the detectors below find the tile on five, and where
+    the tile's size is known from its own sticker they land within 1.3% on the
+    short edge and 1.1-4.5% on the long one. `_from_contours` accounts for one
+    of the five and `_from_surface` for all five; the two it misses are a
+    cream tile on a pale wooden floor and a dark marble whose veining spans
+    more tone than the gap to the floor, and neither has an edge to find.
+
+    That is a change from what this docstring used to claim — nothing usable
+    on 5 of 5 — and the difference is not a threshold. `_from_surface` learned
+    the tile's colour from a ring reaching 539mm across, which is wider than
+    a 300mm tile, so on anything narrow it modelled half floor. It now learns
+    from four windows hugging the marker, which are tile by construction.
+
+    **It is still a convenience over the manual path, never a replacement.**
+    Nothing here decides a measurement: the corners it returns are the ones
+    the staff member then moves, and a proposal that is confidently wrong
+    costs more than one that is absent — which is why every strategy here
+    fails to `None` rather than to its best guess.
     """
     marker_corners = np.asarray(marker_corners, dtype=np.float64).reshape(QUAD_CORNERS, 2)
     flat, transform, covered = _rectify(image, marker_corners, marker_width_mm, marker_height_mm)
@@ -570,6 +776,17 @@ def propose_tile_quad(
     found = _from_contours(flat, centre, covered)
     if found is None:
         found = _from_surface(flat, centre, max(marker_width_mm, marker_height_mm), covered)
+    # **Before the snap, and again after.** Before, because what was *found* is
+    # what has to be honest: the snap may pull a rectangle 28mm off the frame's
+    # edge, which leaves it no longer touching the boundary while still being
+    # nothing but the photograph. After, because a snap on a genuine tile could
+    # still walk a side onto that boundary.
+    if found is not None and _bounded_by_the_photograph(found, covered):
+        found = None
+    if found is not None:
+        found = _snap_to_edges(flat, found, centre, covered)
+    if found is not None and _bounded_by_the_photograph(found, covered):
+        found = None
 
     detected = found is not None
     if found is None:

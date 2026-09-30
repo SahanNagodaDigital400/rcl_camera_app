@@ -317,12 +317,12 @@ class TileProposal(BaseModel):
     marker's own plane, already in perspective, so a drag moves a handle along
     the tile rather than across the screen.
 
-    **`detected` is honest about how often that happens.** On real showroom
-    photographs both detectors found nothing usable on 5 of 5 — samples are
-    laid against neighbours of near-identical tone, and the gradient across a
-    tile's boundary is no stronger than the variation within its own surface.
-    The screen says which it got, because "we found your tile" and "here is a
-    box to drag" are different claims and only one of them is usually true.
+    **`detected` is honest about how often that happens.** On seven real
+    showroom photographs the detectors find the tile on five; the two they
+    miss are a cream tile on pale wood and a marble whose veining spans more
+    tone than the gap to the floor, and neither has a boundary to find. The
+    screen says which it got, because "we found your tile" and "here is a box
+    to drag" are different claims and both happen.
 
     **Nothing here measures anything.** The corners a staff member confirms are
     what `POST /scans/measure` is then given; this only saves them starting

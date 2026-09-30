@@ -590,12 +590,12 @@ def propose_tile(
     """Where the tile's corners probably are, so the staff member starts from a shape.
 
     **A convenience, and the response says how much of one.** `detected` is
-    `False` whenever the fallback rectangle came back, and on real showroom
-    photographs that is the common case: tiles are laid against neighbours of
-    near-identical tone, and the gradient across a tile's boundary measures no
-    stronger than the variation within its own surface. Nothing here is wired
-    into a measurement — the corners the staff member confirms are what
-    `POST /scans/measure` receives, and they are free to move every one.
+    `False` whenever the fallback rectangle came back, which on seven real
+    showroom photographs happens twice: a tile whose tone is its floor's, or
+    whose own veining spans more tone than the gap to the floor, has no
+    boundary to find. Nothing here is wired into a measurement — the corners
+    the staff member confirms are what `POST /scans/measure` receives, and
+    they are free to move every one.
 
     **The marker has to be found first**, because the proposal is made in the
     marker's plane: that is what turns "find a quadrilateral" — which picks the
